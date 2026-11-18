@@ -16,14 +16,18 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/enrich"
 	"github.com/inknironapps/bask-media-server/internal/ffprobe"
+	"github.com/inknironapps/bask-media-server/internal/metadata/tmdb"
 	"github.com/inknironapps/bask-media-server/internal/plexapi"
 	"github.com/inknironapps/bask-media-server/internal/scan"
 	"github.com/inknironapps/bask-media-server/internal/store"
@@ -49,13 +53,17 @@ func (s *sectionFlag) Set(value string) error {
 
 func main() {
 	var (
-		dbPath   = flag.String("db", "bms.db", "path to the library database")
-		addr     = flag.String("addr", "127.0.0.1:32500", "address to listen on")
-		name     = flag.String("name", "Bask Media Server", "name clients show for this server")
-		memLimit = flag.Int64("mem-limit", 256, "soft memory ceiling in MiB; the collector works harder near it")
-		scanNow  = flag.Bool("scan", false, "scan every section before serving")
-		probe    = flag.Bool("probe", true, "measure durations with ffprobe during a scan")
-		sections sectionFlag
+		dbPath     = flag.String("db", "bms.db", "path to the library database")
+		addr       = flag.String("addr", "127.0.0.1:32500", "address to listen on")
+		name       = flag.String("name", "Bask Media Server", "name clients show for this server")
+		memLimit   = flag.Int64("mem-limit", 256, "soft memory ceiling in MiB; the collector works harder near it")
+		scanNow    = flag.Bool("scan", false, "scan every section before serving")
+		probe      = flag.Bool("probe", true, "measure durations with ffprobe during a scan")
+		enrichNow  = flag.Bool("enrich", false, "ask the metadata provider about anything it has not seen")
+		artworkDir = flag.String("artwork", "", "where to cache posters and backdrops (default: beside the database)")
+		artworkMB  = flag.Int64("artwork-cache-mb", 512, "cap on the artwork cache in MiB")
+		tmdbKey    = flag.String("tmdb-key", "", "TMDB API key or v4 read token; falls back to BMS_TMDB_API_KEY")
+		sections   sectionFlag
 	)
 	flag.Var(&sections, "section", `add a library on first run, as "Title:movies|shows:/path" (repeatable)`)
 	flag.Parse()
@@ -70,13 +78,22 @@ func main() {
 		debug.SetMemoryLimit(*memLimit * 1 << 20)
 	}
 
+	key := *tmdbKey
+	if key == "" {
+		key = os.Getenv("BMS_TMDB_API_KEY")
+	}
+
 	if err := run(context.Background(), log, runConfig{
-		dbPath:   *dbPath,
-		addr:     *addr,
-		name:     *name,
-		scanNow:  *scanNow,
-		probe:    *probe,
-		sections: sections.specs,
+		dbPath:     *dbPath,
+		addr:       *addr,
+		name:       *name,
+		scanNow:    *scanNow,
+		probe:      *probe,
+		enrichNow:  *enrichNow,
+		artworkDir: *artworkDir,
+		artworkMB:  *artworkMB,
+		tmdbKey:    key,
+		sections:   sections.specs,
 	}); err != nil {
 		log.Error("bms stopped", "error", err)
 		os.Exit(1)
@@ -84,12 +101,16 @@ func main() {
 }
 
 type runConfig struct {
-	dbPath   string
-	addr     string
-	name     string
-	scanNow  bool
-	probe    bool
-	sections []string
+	dbPath     string
+	addr       string
+	name       string
+	scanNow    bool
+	probe      bool
+	enrichNow  bool
+	artworkDir string
+	artworkMB  int64
+	tmdbKey    string
+	sections   []string
 }
 
 func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
@@ -151,7 +172,33 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 		}
 	}
 
-	api := &plexapi.Server{DB: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version}
+	// Artwork is a cache beside the database by default, so one path is the
+	// whole of this server's state and a backup is a copy of one directory.
+	artworkDir := cfg.artworkDir
+	if artworkDir == "" {
+		artworkDir = filepath.Join(filepath.Dir(cfg.dbPath), "artwork")
+	}
+	images, err := artwork.New(artworkDir, cfg.artworkMB<<20, 2)
+	if err != nil {
+		return err
+	}
+
+	if cfg.enrichNow {
+		if cfg.tmdbKey == "" {
+			log.Warn("no TMDB key, so nothing can be enriched; set -tmdb-key or BMS_TMDB_API_KEY")
+		} else {
+			provider, err := tmdb.New(cfg.tmdbKey, 4)
+			if err != nil {
+				return err
+			}
+			enricher := &enrich.Enricher{DB: db, Provider: provider, Artwork: images, Log: log}
+			if _, err := enricher.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				return err
+			}
+		}
+	}
+
+	api := &plexapi.Server{DB: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version, Artwork: images}
 	srv := &http.Server{
 		Addr:              cfg.addr,
 		Handler:           api.Handler(),

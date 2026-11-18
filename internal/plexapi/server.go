@@ -5,11 +5,13 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/store"
 )
@@ -25,6 +27,10 @@ type Server struct {
 	// once and stored.
 	MachineID string
 	Version   string
+
+	// Artwork is optional: with no cache the library serves no images, which
+	// is a poster-less client rather than a broken one.
+	Artwork *artwork.Cache
 }
 
 type userKey struct{}
@@ -47,6 +53,12 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /library/metadata/{key}", s.metadata)
 	authed("GET /library/metadata/{key}/children", s.children)
 	authed("GET /library/parts/{id}", s.streamPart)
+	authed("GET /library/metadata/{key}/thumb", s.thumb)
+	authed("GET /library/metadata/{key}/art", s.art)
+	// Plex clients ask for a resized image through one endpoint, passing the
+	// image they want as a url parameter. Serving it ourselves is what keeps a
+	// poster wall from pulling full-size images to a phone.
+	authed("GET /photo/:/transcode", s.photoTranscode)
 	authed("GET /hubs/search", s.search)
 	authed("GET /search", s.search)
 	authed("GET /hubs", s.hubs)
@@ -409,6 +421,127 @@ func (s *Server) streamPart(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, p.Path, info.ModTime(), file)
 }
 
+func (s *Server) thumb(w http.ResponseWriter, r *http.Request) { s.serveImage(w, r, false) }
+func (s *Server) art(w http.ResponseWriter, r *http.Request)   { s.serveImage(w, r, true) }
+
+// serveImage sends an item's poster or backdrop, resized when asked.
+func (s *Server) serveImage(w http.ResponseWriter, r *http.Request, backdrop bool) {
+	if s.Artwork == nil {
+		http.Error(w, "no artwork", http.StatusNotFound)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("key"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad key", http.StatusBadRequest)
+		return
+	}
+	item, err := s.DB.Item(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "no such item", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.fail(w, "read item", err)
+		return
+	}
+
+	key := item.PosterKey
+	if backdrop {
+		key = item.ArtKey
+	}
+	if key == "" {
+		http.Error(w, "no image", http.StatusNotFound)
+		return
+	}
+	s.writeImage(w, r, key, intQuery(r, "width"), intQuery(r, "height"))
+}
+
+// photoTranscode serves Plex's resize endpoint.
+//
+// The url parameter is one of this server's own image paths, so the id and
+// which image is wanted are parsed out of it rather than trusted as a target
+// to fetch: an endpoint that resizes whatever URL it is handed is an open
+// proxy, and this one is reachable with any valid token.
+func (s *Server) photoTranscode(w http.ResponseWriter, r *http.Request) {
+	if s.Artwork == nil {
+		http.Error(w, "no artwork", http.StatusNotFound)
+		return
+	}
+	raw := r.URL.Query().Get("url")
+	if raw == "" {
+		http.Error(w, "no url", http.StatusBadRequest)
+		return
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		http.Error(w, "bad url", http.StatusBadRequest)
+		return
+	}
+
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	// library/metadata/{id}/{thumb|art}
+	if len(segments) != 4 || segments[0] != "library" || segments[1] != "metadata" {
+		http.Error(w, "unsupported url", http.StatusBadRequest)
+		return
+	}
+	id, err := strconv.ParseInt(segments[2], 10, 64)
+	if err != nil {
+		http.Error(w, "bad url", http.StatusBadRequest)
+		return
+	}
+	item, err := s.DB.Item(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "no such item", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.fail(w, "read item", err)
+		return
+	}
+
+	key := item.PosterKey
+	if segments[3] == "art" {
+		key = item.ArtKey
+	}
+	if key == "" {
+		http.Error(w, "no image", http.StatusNotFound)
+		return
+	}
+	s.writeImage(w, r, key, intQuery(r, "width"), intQuery(r, "height"))
+}
+
+func (s *Server) writeImage(w http.ResponseWriter, r *http.Request, key string, width, height int) {
+	file, err := s.Artwork.Open(r.Context(), key, width, height)
+	if errors.Is(err, artwork.ErrNotCached) {
+		http.Error(w, "no image", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.fail(w, "open artwork", err)
+		return
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		s.fail(w, "stat artwork", err)
+		return
+	}
+	// Immutable by construction: a rendition's name contains the hash of the
+	// source image and the size, so a client can keep it as long as it likes.
+	w.Header().Set("Cache-Control", "public, max-age=2592000, immutable")
+	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
+}
+
+func intQuery(r *http.Request, name string) int {
+	if v := r.URL.Query().Get(name); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
 // appendItems renders items into the right slice for their kind.
 func (s *Server) appendItems(ctx context.Context, out *container, section *domain.Section, items []domain.Item) {
 	user := userFrom(ctx)
@@ -462,6 +595,12 @@ func (s *Server) renderItem(it domain.Item, section *domain.Section, p domain.Pr
 	}
 	if it.ParentID != nil {
 		e.ParentRatingKey = strconv.FormatInt(*it.ParentID, 10)
+	}
+	if it.PosterKey != "" {
+		e.Thumb = keyFor(it.ID) + "/thumb"
+	}
+	if it.ArtKey != "" {
+		e.Art = keyFor(it.ID) + "/art"
 	}
 	if section != nil {
 		e.LibrarySectionID, e.LibrarySectionTitle = section.ID, section.Title

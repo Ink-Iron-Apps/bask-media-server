@@ -160,6 +160,15 @@ var migrations = []string{
 	)`,
 	`CREATE INDEX progress_recent ON progress(user_id, updated_at DESC)`,
 
+	// Metadata a provider supplied, kept beside the scanned facts rather than
+	// replacing them: the filename is what the file says it is, and the
+	// provider is a second opinion that can be wrong or absent.
+	`ALTER TABLE items ADD COLUMN provider_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE items ADD COLUMN poster_key TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE items ADD COLUMN art_key TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE items ADD COLUMN metadata_at INTEGER NOT NULL DEFAULT 0`,
+	`CREATE INDEX items_unenriched ON items(metadata_at, kind)`,
+
 	// The server's identity, which a Plex client expects to be stable forever:
 	// change it and every client treats this as a different server and forgets
 	// everything it knew.

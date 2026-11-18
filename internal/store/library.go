@@ -106,20 +106,22 @@ func (d *DB) MarkSectionScanned(ctx context.Context, id int64, at time.Time) err
 	return nil
 }
 
-const itemColumns = `id, section_id, kind, parent_id, title, sort_title, year, idx, summary, duration_ms, added_at, updated_at`
+const itemColumns = `id, section_id, kind, parent_id, title, sort_title, year, idx, summary, duration_ms, added_at, updated_at, provider_id, poster_key, art_key, metadata_at`
 
 func scanItem(rows interface{ Scan(...any) error }) (domain.Item, error) {
 	var (
-		it                 domain.Item
-		kind               string
-		parent             sql.NullInt64
-		durationMS         int64
-		addedAt, updatedAt int64
+		it                             domain.Item
+		kind                           string
+		parent                         sql.NullInt64
+		durationMS                     int64
+		addedAt, updatedAt, metadataAt int64
 	)
 	if err := rows.Scan(&it.ID, &it.SectionID, &kind, &parent, &it.Title, &it.SortTitle,
-		&it.Year, &it.Index, &it.Summary, &durationMS, &addedAt, &updatedAt); err != nil {
+		&it.Year, &it.Index, &it.Summary, &durationMS, &addedAt, &updatedAt,
+		&it.ProviderID, &it.PosterKey, &it.ArtKey, &metadataAt); err != nil {
 		return domain.Item{}, err
 	}
+	it.MetadataAt = fromMillis(metadataAt)
 	it.Kind = domain.Kind(kind)
 	if parent.Valid {
 		id := parent.Int64

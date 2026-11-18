@@ -72,6 +72,20 @@ type Item struct {
 	AddedAt   time.Time
 	UpdatedAt time.Time
 
+	// ProviderID is the match in the metadata provider's namespace, kept so a
+	// later pass can fetch more without searching again.
+	ProviderID string
+
+	// PosterKey and ArtKey name images in the artwork cache. Empty means
+	// nothing has been fetched, which is a library that is browsable and
+	// playable and simply has no pictures yet.
+	PosterKey string
+	ArtKey    string
+
+	// MetadataAt is when a provider last answered for this item. Zero means
+	// never, which is what an enrichment pass looks for.
+	MetadataAt time.Time
+
 	// Parts are the files behind a playable item. A movie or episode normally
 	// has exactly one; more than one means multiple versions of the same thing.
 	Parts []Part
