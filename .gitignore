@@ -1,0 +1,15 @@
+# Build output
+/bms
+/bms.exe
+/dist/
+
+# A library database is machine state, never source
+*.db
+*.db-wal
+*.db-shm
+
+# Signing material and local config
+*.jks
+*.keystore
+key.properties
+/bms.env

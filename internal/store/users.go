@@ -1,0 +1,219 @@
+package store
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/inknironapps/bask-media-server/internal/domain"
+)
+
+// CreateUser adds an account.
+func (d *DB) CreateUser(ctx context.Context, username string, admin bool) (*domain.User, error) {
+	now := time.Now().UTC()
+	res, err := d.sql.ExecContext(ctx,
+		`INSERT INTO users (username, admin, created_at) VALUES (?, ?, ?)`, username, admin, millis(now))
+	if err != nil {
+		return nil, fmt.Errorf("create user: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("create user: %w", err)
+	}
+	return &domain.User{ID: id, Username: username, Admin: admin, CreatedAt: now}, nil
+}
+
+// CountUsers reports how many accounts exist, which is how first run is
+// detected without a separate flag to get out of step.
+func (d *DB) CountUsers(ctx context.Context) (int, error) {
+	var n int
+	if err := d.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count users: %w", err)
+	}
+	return n, nil
+}
+
+// IssueToken mints a credential for a user and returns it once, in the clear.
+//
+// Only the hash is stored, so this value cannot be recovered later: a leaked
+// database is not a leaked set of working tokens. 32 bytes from crypto/rand is
+// well past guessing, and the base64 form is safe in both a header and a query
+// string, which is where Plex clients put it.
+func (d *DB) IssueToken(ctx context.Context, userID int64, label string) (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate token: %w", err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(token))
+
+	now := time.Now().UTC()
+	if _, err := d.sql.ExecContext(ctx,
+		`INSERT INTO tokens (user_id, label, hash, created_at) VALUES (?, ?, ?, ?)`,
+		userID, label, sum[:], millis(now)); err != nil {
+		return "", fmt.Errorf("store token: %w", err)
+	}
+	return token, nil
+}
+
+// UserForToken resolves a presented token, or ErrNotFound.
+//
+// The lookup is by hash, so a token is never compared in the clear and never
+// logged. last_seen_at is updated on a best-effort basis: it is diagnostics,
+// not authorisation, and a write failure must not refuse a valid request.
+func (d *DB) UserForToken(ctx context.Context, token string) (*domain.User, error) {
+	if token == "" {
+		return nil, ErrNotFound
+	}
+	sum := sha256.Sum256([]byte(token))
+
+	var (
+		u         domain.User
+		tokenID   int64
+		createdAt int64
+	)
+	err := d.sql.QueryRowContext(ctx,
+		`SELECT t.id, u.id, u.username, u.admin, u.created_at
+		   FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.hash = ?`, sum[:]).
+		Scan(&tokenID, &u.ID, &u.Username, &u.Admin, &createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve token: %w", err)
+	}
+	u.CreatedAt = fromMillis(createdAt)
+
+	_, _ = d.sql.ExecContext(ctx, `UPDATE tokens SET last_seen_at = ? WHERE id = ?`,
+		millis(time.Now().UTC()), tokenID)
+	return &u, nil
+}
+
+// SaveProgress records where a user is in an item.
+//
+// The view count increments only on the transition into watched, so scrubbing
+// back and forth across the threshold does not inflate it, and an item that
+// was already watched stays watched when a viewer dips back in.
+func (d *DB) SaveProgress(ctx context.Context, p domain.Progress) error {
+	watched := p.Watched || domain.Finished(p.Offset, p.Duration)
+
+	var (
+		wasWatched bool
+		views      int
+	)
+	err := d.sql.QueryRowContext(ctx,
+		`SELECT watched, view_count FROM progress WHERE user_id = ? AND item_id = ?`, p.UserID, p.ItemID).
+		Scan(&wasWatched, &views)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("read progress: %w", err)
+	}
+	if watched && !wasWatched {
+		views++
+	}
+
+	now := time.Now().UTC()
+	_, err = d.sql.ExecContext(ctx,
+		`INSERT INTO progress (user_id, item_id, offset_ms, duration_ms, watched, view_count, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(user_id, item_id) DO UPDATE SET
+		   offset_ms = excluded.offset_ms,
+		   duration_ms = CASE WHEN excluded.duration_ms > 0 THEN excluded.duration_ms ELSE progress.duration_ms END,
+		   watched = excluded.watched,
+		   view_count = excluded.view_count,
+		   updated_at = excluded.updated_at`,
+		p.UserID, p.ItemID, p.Offset.Milliseconds(), p.Duration.Milliseconds(), watched, views, millis(now))
+	if err != nil {
+		return fmt.Errorf("save progress: %w", err)
+	}
+	return nil
+}
+
+// Progress reads one user's position in a set of items, for decorating a
+// listing. Returns only what exists, so an item with no row is simply absent.
+func (d *DB) Progress(ctx context.Context, userID int64, itemIDs []int64) (map[int64]domain.Progress, error) {
+	if len(itemIDs) == 0 {
+		return nil, nil
+	}
+	out := make(map[int64]domain.Progress, len(itemIDs))
+
+	// One statement per 200 ids rather than one giant IN list, same reason as
+	// the prune: a client can ask for a 500-item page.
+	const chunk = 200
+	for start := 0; start < len(itemIDs); start += chunk {
+		end := min(start+chunk, len(itemIDs))
+		batch := itemIDs[start:end]
+
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, userID)
+		placeholders := ""
+		for i, id := range batch {
+			if i > 0 {
+				placeholders += ","
+			}
+			placeholders += "?"
+			args = append(args, id)
+		}
+
+		rows, err := d.sql.QueryContext(ctx,
+			`SELECT item_id, offset_ms, duration_ms, watched, view_count, updated_at
+			   FROM progress WHERE user_id = ? AND item_id IN (`+placeholders+`)`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("read progress: %w", err)
+		}
+		for rows.Next() {
+			var (
+				p                    domain.Progress
+				offsetMS, durationMS int64
+				updatedAt            int64
+			)
+			if err := rows.Scan(&p.ItemID, &offsetMS, &durationMS, &p.Watched, &p.ViewCount, &updatedAt); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan progress: %w", err)
+			}
+			p.UserID = userID
+			p.Offset = time.Duration(offsetMS) * time.Millisecond
+			p.Duration = time.Duration(durationMS) * time.Millisecond
+			p.UpdatedAt = fromMillis(updatedAt)
+			out[p.ItemID] = p
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// ContinueWatching lists what a user has started and not finished, newest
+// first: the row every client opens on.
+func (d *DB) ContinueWatching(ctx context.Context, userID int64, limit int) ([]domain.Item, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT `+prefixed("i", itemColumns)+`
+		   FROM progress p JOIN items i ON i.id = p.item_id
+		  WHERE p.user_id = ? AND p.watched = 0 AND p.offset_ms > 0
+		  ORDER BY p.updated_at DESC LIMIT ?`, userID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("continue watching: %w", err)
+	}
+	defer rows.Close()
+	return d.collect(ctx, rows)
+}
+
+// prefixed qualifies a column list with a table alias, so the shared column
+// list can be reused in a join without being written out twice.
+func prefixed(alias, columns string) string {
+	cols := strings.Split(columns, ",")
+	for i, col := range cols {
+		cols[i] = alias + "." + strings.TrimSpace(col)
+	}
+	return strings.Join(cols, ", ")
+}
