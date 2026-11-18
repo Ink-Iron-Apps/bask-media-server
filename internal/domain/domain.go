@@ -156,3 +156,54 @@ func Finished(offset, duration time.Duration) bool {
 	}
 	return float64(offset) >= float64(duration)*WatchedFraction
 }
+
+// MarkerType is a stretch of a file a viewer usually wants to skip.
+type MarkerType string
+
+const (
+	MarkerIntro   MarkerType = "intro"
+	MarkerCredits MarkerType = "credits"
+)
+
+// MarkerSource is how a marker was arrived at, kept because the two are not
+// equally trustworthy and a later pass has to know which of its own work it
+// may replace.
+//
+//   - SourceChapter: a chapter in the file says so. The person who made the
+//     file labelled it, which beats anything guessed from the content.
+//   - SourceAudio: the same audio was found at the same place in other
+//     episodes of the season. Right far more often than not, and the only
+//     thing that works at all on a library with no chapters, but a guess.
+type MarkerSource string
+
+const (
+	SourceChapter MarkerSource = "chapter"
+	SourceAudio   MarkerSource = "audio"
+)
+
+// Marker is one skippable stretch of one item.
+type Marker struct {
+	ID     int64
+	ItemID int64
+	Type   MarkerType
+	Start  time.Duration
+	End    time.Duration
+	Source MarkerSource
+}
+
+// Chapter is a chapter the file declares.
+//
+// Stored as scanned facts in their own right — a client shows them on the
+// timeline — and read a second time by marker detection, which is the cheapest
+// detector there is when the titles are meaningful.
+type Chapter struct {
+	ID     int64
+	ItemID int64
+	Index  int
+	Title  string
+	Start  time.Duration
+	End    time.Duration
+}
+
+// Duration is how long a marker runs for.
+func (m Marker) Duration() time.Duration { return m.End - m.Start }

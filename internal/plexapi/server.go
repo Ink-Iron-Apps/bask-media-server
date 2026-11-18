@@ -198,7 +198,7 @@ func (s *Server) sectionAll(w http.ResponseWriter, r *http.Request) {
 		TotalSize:           total,
 		Offset:              page.Start,
 	}
-	s.appendItems(r.Context(), &out, section, items)
+	s.appendItems(r.Context(), &out, section, items, extrasFrom(r))
 	write(w, r, out)
 }
 
@@ -231,7 +231,7 @@ func (s *Server) metadata(w http.ResponseWriter, r *http.Request) {
 	if section != nil {
 		out.LibrarySectionID, out.LibrarySectionTitle = section.ID, section.Title
 	}
-	s.appendItems(r.Context(), &out, section, []domain.Item{*item})
+	s.appendItems(r.Context(), &out, section, []domain.Item{*item}, allExtras)
 	write(w, r, out)
 }
 
@@ -279,7 +279,7 @@ func (s *Server) children(w http.ResponseWriter, r *http.Request) {
 	if section != nil {
 		out.LibrarySectionID, out.LibrarySectionTitle = section.ID, section.Title
 	}
-	s.appendItems(r.Context(), &out, section, items)
+	s.appendItems(r.Context(), &out, section, items, extrasFrom(r))
 	write(w, r, out)
 }
 
@@ -295,7 +295,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := container{Identifier: "com.plexapp.plugins.library", TotalSize: total}
-	s.appendItems(r.Context(), &out, nil, items)
+	s.appendItems(r.Context(), &out, nil, items, extrasFrom(r))
 	write(w, r, out)
 }
 
@@ -312,7 +312,7 @@ func (s *Server) hubs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := container{Identifier: "com.plexapp.plugins.library"}
-	s.appendItems(r.Context(), &out, nil, items)
+	s.appendItems(r.Context(), &out, nil, items, extrasFrom(r))
 	out.Title1 = "Continue Watching"
 	write(w, r, out)
 }
@@ -543,7 +543,7 @@ func intQuery(r *http.Request, name string) int {
 }
 
 // appendItems renders items into the right slice for their kind.
-func (s *Server) appendItems(ctx context.Context, out *container, section *domain.Section, items []domain.Item) {
+func (s *Server) appendItems(ctx context.Context, out *container, section *domain.Section, items []domain.Item, want extras) {
 	user := userFrom(ctx)
 
 	ids := make([]int64, 0, len(items))
@@ -559,8 +559,30 @@ func (s *Server) appendItems(ctx context.Context, out *container, section *domai
 		}
 	}
 
+	// Two queries for the whole page rather than two per row, and only when
+	// the client said it wants them: a poster wall has no use for markers, and
+	// a season of episodes would otherwise be fifty round trips to find out.
+	var (
+		markersByItem  map[int64][]domain.Marker
+		chaptersByItem map[int64][]domain.Chapter
+	)
+	if want.markers {
+		if m, err := s.DB.Markers(ctx, ids); err == nil {
+			markersByItem = m
+		} else {
+			s.logger().Warn("could not read markers", "error", err)
+		}
+	}
+	if want.chapters {
+		if c, err := s.DB.Chapters(ctx, ids); err == nil {
+			chaptersByItem = c
+		} else {
+			s.logger().Warn("could not read chapters", "error", err)
+		}
+	}
+
 	for _, it := range items {
-		e := s.renderItem(it, section, progress[it.ID])
+		e := s.renderItem(it, section, progress[it.ID], markersByItem[it.ID], chaptersByItem[it.ID])
 		if e.Elem == "Directory" {
 			out.Directory = append(out.Directory, e)
 		} else {
@@ -573,7 +595,13 @@ func (s *Server) appendItems(ctx context.Context, out *container, section *domai
 	}
 }
 
-func (s *Server) renderItem(it domain.Item, section *domain.Section, p domain.Progress) entry {
+func (s *Server) renderItem(
+	it domain.Item,
+	section *domain.Section,
+	p domain.Progress,
+	itemMarkers []domain.Marker,
+	itemChapters []domain.Chapter,
+) entry {
 	e := entry{
 		Elem:      elementFor(it.Kind),
 		RatingKey: strconv.FormatInt(it.ID, 10),
@@ -615,6 +643,28 @@ func (s *Server) renderItem(it domain.Item, section *domain.Section, p domain.Pr
 		e.LastViewedAt = millisOf(p.UpdatedAt)
 	}
 
+	for _, m := range itemMarkers {
+		e.Marker = append(e.Marker, marker{
+			ID:              m.ID,
+			Type:            string(m.Type),
+			StartTimeOffset: m.Start.Milliseconds(),
+			EndTimeOffset:   m.End.Milliseconds(),
+			// Plex marks the credits that run to the end of the file, which is
+			// what lets a client offer "Next episode" instead of "Skip".
+			Final: m.Type == domain.MarkerCredits && reachesEnd(m.End, it.Duration),
+		})
+	}
+	for _, ch := range itemChapters {
+		e.Chapter = append(e.Chapter, chapter{
+			ID:              ch.ID,
+			Index:           ch.Index,
+			Tag:             ch.Title,
+			Title:           ch.Title,
+			StartTimeOffset: ch.Start.Milliseconds(),
+			EndTimeOffset:   ch.End.Milliseconds(),
+		})
+	}
+
 	if len(it.Parts) > 0 {
 		m := media{ID: it.ID, Duration: it.Duration.Milliseconds(), Container: it.Parts[0].Container}
 		for _, pt := range it.Parts {
@@ -630,6 +680,48 @@ func (s *Server) renderItem(it domain.Item, section *domain.Section, p domain.Pr
 		e.Media = append(e.Media, m)
 	}
 	return e
+}
+
+// extras is what a client asked to be told beyond the item itself.
+//
+// Plex makes these opt-in per request (includeMarkers=1, includeChapters=1)
+// and the clients send them only where they matter — Bask asks on the calls it
+// makes before playback, and not while drawing a library. Honouring that is
+// what keeps browsing a library two queries rather than two per poster.
+type extras struct {
+	markers  bool
+	chapters bool
+}
+
+// allExtras is what the single-item metadata call serves regardless of what
+// was asked for: it is one row, the extra cost is two indexed lookups, and a
+// client that forgot the parameter still gets a Skip Intro button.
+var allExtras = extras{markers: true, chapters: true}
+
+func extrasFrom(r *http.Request) extras {
+	q := r.URL.Query()
+	return extras{markers: truthy(q.Get("includeMarkers")), chapters: truthy(q.Get("includeChapters"))}
+}
+
+// truthy accepts what the clients actually send: 1, true, yes.
+func truthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+// reachesEnd reports whether a marker runs to the end of the file, allowing a
+// second of slack: a credits marker and a container's own duration disagree by
+// a frame or two routinely, and a client switching on "is this the end" should
+// not be decided by rounding.
+func reachesEnd(end, duration time.Duration) bool {
+	if duration <= 0 {
+		return false
+	}
+	return duration-end <= time.Second
 }
 
 // pageFrom reads the window the client asked for. Plex clients send it as

@@ -7,14 +7,26 @@
 package ffprobe
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strconv"
 	"time"
+
+	"github.com/inknironapps/bask-media-server/internal/domain"
 )
+
+// maxOutput caps what one probe may write back.
+//
+// ffprobe asked for a duration and a chapter list should answer in a few
+// kilobytes; a file with a thousand chapters is still well inside this. A
+// plain bytes.Buffer would instead grow to whatever a subprocess decides to
+// write, which is an unbounded allocation driven by a file on disk — the one
+// thing docs/RESOURCE-BUDGET.md forbids outright.
+const maxOutput = 1 << 20
 
 // Prober runs a known ffprobe binary.
 type Prober struct {
@@ -38,18 +50,44 @@ func New(path string) (*Prober, error) {
 	return &Prober{Path: path, Timeout: 30 * time.Second}, nil
 }
 
+// Info is what one probe learned about a file.
+type Info struct {
+	Duration time.Duration
+
+	// Chapters are the file's own chapters, in file order, with Index filled
+	// in and ItemID left for the store. Empty for the many files that declare
+	// none.
+	Chapters []domain.Chapter
+}
+
 type probeOutput struct {
 	Format struct {
 		Duration string `json:"duration"`
 	} `json:"format"`
+	Chapters []struct {
+		StartTime string `json:"start_time"`
+		EndTime   string `json:"end_time"`
+		Tags      struct {
+			Title string `json:"title"`
+		} `json:"tags"`
+	} `json:"chapters"`
 }
 
 // Duration reports how long a file plays for.
-//
-// Output is capped by reading into a bounded buffer: ffprobe asked for one
-// field should answer in a few hundred bytes, and a buffer that grows to
-// whatever a subprocess writes is a memory leak with extra steps.
 func (p *Prober) Duration(ctx context.Context, path string) (time.Duration, error) {
+	info, err := p.Probe(ctx, path)
+	if err != nil {
+		return 0, err
+	}
+	return info.Duration, nil
+}
+
+// Probe measures a file: how long it runs, and what chapters it declares.
+//
+// One subprocess for both, because the expensive part of a probe is opening
+// the file and reading its header, and asking twice would double the cost of a
+// scan to learn two things from the same bytes.
+func (p *Prober) Probe(ctx context.Context, path string) (Info, error) {
 	timeout := p.Timeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -60,28 +98,83 @@ func (p *Prober) Duration(ctx context.Context, path string) (time.Duration, erro
 	cmd := exec.CommandContext(ctx, p.Path,
 		"-v", "error",
 		"-show_entries", "format=duration",
+		"-show_chapters",
 		"-of", "json",
 		path)
 
-	var out bytes.Buffer
-	out.Grow(512)
-	cmd.Stdout = &out
+	out := &capped{limit: maxOutput}
+	cmd.Stdout = out
 	cmd.Stderr = nil
 
 	if err := cmd.Run(); err != nil {
-		return 0, fmt.Errorf("probe %s: %w", path, err)
+		return Info{}, fmt.Errorf("probe %s: %w", path, err)
 	}
 
 	var parsed probeOutput
-	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
-		return 0, fmt.Errorf("probe %s: %w", path, err)
+	if err := json.Unmarshal(out.buf, &parsed); err != nil {
+		return Info{}, fmt.Errorf("probe %s: %w", path, err)
 	}
 	if parsed.Format.Duration == "" {
-		return 0, fmt.Errorf("probe %s: no duration reported", path)
+		return Info{}, fmt.Errorf("probe %s: no duration reported", path)
 	}
 	seconds, err := strconv.ParseFloat(parsed.Format.Duration, 64)
 	if err != nil {
-		return 0, fmt.Errorf("probe %s: %w", path, err)
+		return Info{}, fmt.Errorf("probe %s: %w", path, err)
+	}
+
+	info := Info{Duration: time.Duration(seconds * float64(time.Second))}
+	for i, ch := range parsed.Chapters {
+		start, startErr := parseSeconds(ch.StartTime)
+		end, endErr := parseSeconds(ch.EndTime)
+		if startErr != nil || endErr != nil || end <= start {
+			// A chapter with no usable bounds is dropped rather than guessed
+			// at: it would otherwise become a marker with the wrong end, and a
+			// Skip Intro button that skips into the episode.
+			continue
+		}
+		info.Chapters = append(info.Chapters, domain.Chapter{
+			Index: i + 1,
+			Title: ch.Tags.Title,
+			Start: start,
+			End:   end,
+		})
+	}
+	return info, nil
+}
+
+func parseSeconds(value string) (time.Duration, error) {
+	if value == "" {
+		return 0, errors.New("empty")
+	}
+	seconds, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, err
+	}
+	if seconds < 0 {
+		return 0, errors.New("negative")
 	}
 	return time.Duration(seconds * float64(time.Second)), nil
 }
+
+// capped collects output up to a limit and discards the rest, so a subprocess
+// cannot make this process grow.
+type capped struct {
+	buf   []byte
+	limit int
+}
+
+func (c *capped) Write(p []byte) (int, error) {
+	if room := c.limit - len(c.buf); room > 0 {
+		if len(p) <= room {
+			c.buf = append(c.buf, p...)
+		} else {
+			c.buf = append(c.buf, p[:room]...)
+		}
+	}
+	// Claims the whole write either way: reporting a short write would make
+	// ffprobe's own stdout fail, and the truncated JSON is handled where it is
+	// parsed.
+	return len(p), nil
+}
+
+var _ io.Writer = (*capped)(nil)

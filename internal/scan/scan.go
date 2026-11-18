@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/ffprobe"
 	"github.com/inknironapps/bask-media-server/internal/store"
 )
 
@@ -27,7 +28,7 @@ type Result struct {
 // no durations is still browsable and playable, and the duration is filled in
 // on the next scan once ffprobe is there.
 type Prober interface {
-	Duration(ctx context.Context, path string) (time.Duration, error)
+	Probe(ctx context.Context, path string) (ffprobe.Info, error)
 }
 
 // Scanner walks a section's roots and writes what it finds.
@@ -210,10 +211,13 @@ func (s *Scanner) walk(ctx context.Context, section domain.Section, out chan<- f
 }
 
 func (s *Scanner) toFound(ctx context.Context, section domain.Section, f found) (store.Found, bool) {
-	var duration time.Duration
+	var (
+		duration time.Duration
+		chapters []domain.Chapter
+	)
 	if s.Prober != nil {
-		if d, err := s.Prober.Duration(ctx, f.path); err == nil {
-			duration = d
+		if info, err := s.Prober.Probe(ctx, f.path); err == nil {
+			duration, chapters = info.Duration, info.Chapters
 		} else if s.Log != nil {
 			s.Log.Debug("could not probe", "path", f.path, "error", err)
 		}
@@ -226,6 +230,7 @@ func (s *Scanner) toFound(ctx context.Context, section domain.Section, f found) 
 		Container:  containerOf(f.path),
 		ModifiedAt: f.mod,
 		Duration:   duration,
+		Chapters:   chapters,
 	}
 	switch {
 	case f.movie != nil:

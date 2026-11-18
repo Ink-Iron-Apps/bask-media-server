@@ -176,6 +176,34 @@ var migrations = []string{
 		key   TEXT PRIMARY KEY,
 		value TEXT NOT NULL
 	)`,
+
+	// Chapters a file declares, and the markers worked out from them or from
+	// the audio. Separate tables because they answer different questions: a
+	// client draws chapters on the timeline, and offers a Skip button for a
+	// marker.
+	`CREATE TABLE chapters (
+		id       INTEGER PRIMARY KEY AUTOINCREMENT,
+		item_id  INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+		idx      INTEGER NOT NULL,
+		title    TEXT NOT NULL DEFAULT '',
+		start_ms INTEGER NOT NULL,
+		end_ms   INTEGER NOT NULL
+	)`,
+	`CREATE UNIQUE INDEX chapters_item_idx ON chapters(item_id, idx)`,
+
+	// Unique on where a marker starts rather than on its type, because a file
+	// can legitimately carry two of a kind — a two-part opening, a mid-credits
+	// scene — and because it makes a detector's write idempotent.
+	`CREATE TABLE markers (
+		id       INTEGER PRIMARY KEY AUTOINCREMENT,
+		item_id  INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+		type     TEXT NOT NULL,
+		source   TEXT NOT NULL,
+		start_ms INTEGER NOT NULL,
+		end_ms   INTEGER NOT NULL
+	)`,
+	`CREATE UNIQUE INDEX markers_item_type_start ON markers(item_id, type, source, start_ms)`,
+	`CREATE INDEX markers_item ON markers(item_id)`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {
@@ -242,6 +270,11 @@ func millis(t time.Time) int64 {
 		return 0
 	}
 	return t.UnixMilli()
+}
+
+// millisDuration reads a stored millisecond count as a duration.
+func millisDuration(ms int64) time.Duration {
+	return time.Duration(ms) * time.Millisecond
 }
 
 func fromMillis(ms int64) time.Time {

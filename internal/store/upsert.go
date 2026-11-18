@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/markers"
 )
 
 // Found is one thing a scan discovered on disk, in the scanner's terms.
@@ -35,6 +36,11 @@ type Found struct {
 	Size       int64
 	Container  string
 	ModifiedAt time.Time
+
+	// Chapters the file declares, if ffprobe found any. Written as scanned
+	// facts and read again by marker detection, which is why a library with
+	// labelled chapters gets Skip Intro out of a plain scan.
+	Chapters []domain.Chapter
 }
 
 // Writer applies scan results in batches inside one transaction.
@@ -114,6 +120,9 @@ func (w *Writer) Add(ctx context.Context, f Found) error {
 	if err := w.upsertPart(ctx, itemID, f); err != nil {
 		return err
 	}
+	if err := w.applyChapters(ctx, itemID, f); err != nil {
+		return err
+	}
 
 	w.seen[f.Path] = struct{}{}
 	w.pending++
@@ -121,6 +130,27 @@ func (w *Writer) Add(ctx context.Context, f Found) error {
 		return w.Commit(ctx)
 	}
 	return nil
+}
+
+// applyChapters stores what the file said and what that implies.
+//
+// Only when the probe actually returned chapters: a scan without ffprobe, or
+// of a file that declares none, must not delete the chapters an earlier scan
+// recorded. A file whose chapters really went away comes back as a changed
+// file, and the next probe that reads it replaces them.
+func (w *Writer) applyChapters(ctx context.Context, itemID int64, f Found) error {
+	if len(f.Chapters) == 0 {
+		return nil
+	}
+	chapters := make([]domain.Chapter, len(f.Chapters))
+	copy(chapters, f.Chapters)
+	for i := range chapters {
+		chapters[i].ItemID = itemID
+	}
+	if err := replaceChaptersTx(ctx, w.tx, itemID, chapters); err != nil {
+		return err
+	}
+	return replaceMarkersTx(ctx, w.tx, itemID, domain.SourceChapter, markers.FromChapters(chapters))
 }
 
 // Commit flushes the open batch, if any.

@@ -97,6 +97,32 @@ type entry struct {
 
 	Media    []media    `xml:"Media,omitempty" json:"Media,omitempty"`
 	Location []location `xml:"Location,omitempty" json:"Location,omitempty"`
+	Marker   []marker   `xml:"Marker,omitempty" json:"Marker,omitempty"`
+	Chapter  []chapter  `xml:"Chapter,omitempty" json:"Chapter,omitempty"`
+}
+
+// marker is a stretch a client offers to skip. The attribute names are Plex's,
+// down to the millisecond offsets, because that is what the clients read: Bask
+// looks for exactly id, type, startTimeOffset and endTimeOffset, and drops any
+// marker missing one of them.
+type marker struct {
+	ID              int64  `xml:"id,attr" json:"id"`
+	Type            string `xml:"type,attr" json:"type"`
+	StartTimeOffset int64  `xml:"startTimeOffset,attr" json:"startTimeOffset"`
+	EndTimeOffset   int64  `xml:"endTimeOffset,attr" json:"endTimeOffset"`
+	Final           bool   `xml:"final,attr,omitempty" json:"final,omitempty"`
+}
+
+// chapter is a chapter on the timeline. Plex carries the title as `tag`; Bask
+// accepts either, and sending both costs nothing and helps anything that only
+// reads one.
+type chapter struct {
+	ID              int64  `xml:"id,attr" json:"id"`
+	Index           int    `xml:"index,attr,omitempty" json:"index,omitempty"`
+	Tag             string `xml:"tag,attr,omitempty" json:"tag,omitempty"`
+	Title           string `xml:"title,attr,omitempty" json:"title,omitempty"`
+	StartTimeOffset int64  `xml:"startTimeOffset,attr" json:"startTimeOffset"`
+	EndTimeOffset   int64  `xml:"endTimeOffset,attr" json:"endTimeOffset"`
 }
 
 type media struct {
