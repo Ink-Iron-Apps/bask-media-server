@@ -24,9 +24,11 @@ import (
 	"time"
 
 	"github.com/inknironapps/bask-media-server/internal/artwork"
+	"github.com/inknironapps/bask-media-server/internal/detect"
 	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/enrich"
 	"github.com/inknironapps/bask-media-server/internal/ffprobe"
+	"github.com/inknironapps/bask-media-server/internal/fingerprint"
 	"github.com/inknironapps/bask-media-server/internal/metadata/tmdb"
 	"github.com/inknironapps/bask-media-server/internal/plexapi"
 	"github.com/inknironapps/bask-media-server/internal/scan"
@@ -60,6 +62,9 @@ func main() {
 		scanNow    = flag.Bool("scan", false, "scan every section before serving")
 		probe      = flag.Bool("probe", true, "measure durations with ffprobe during a scan")
 		enrichNow  = flag.Bool("enrich", false, "ask the metadata provider about anything it has not seen")
+		detectNow  = flag.Bool("detect-markers", false, "find intro and credits markers by comparing each season's audio")
+		ffmpegPath = flag.String("ffmpeg", "", "path to ffmpeg, used for marker detection (default: found on PATH)")
+		detectJobs = flag.Int("detect-workers", 0, "how many files to fingerprint at once (default: half the CPUs)")
 		artworkDir = flag.String("artwork", "", "where to cache posters and backdrops (default: beside the database)")
 		artworkMB  = flag.Int64("artwork-cache-mb", 512, "cap on the artwork cache in MiB")
 		tmdbKey    = flag.String("tmdb-key", "", "TMDB API key or v4 read token; falls back to BMS_TMDB_API_KEY")
@@ -90,6 +95,9 @@ func main() {
 		scanNow:    *scanNow,
 		probe:      *probe,
 		enrichNow:  *enrichNow,
+		detectNow:  *detectNow,
+		ffmpegPath: *ffmpegPath,
+		detectJobs: *detectJobs,
 		artworkDir: *artworkDir,
 		artworkMB:  *artworkMB,
 		tmdbKey:    key,
@@ -107,6 +115,9 @@ type runConfig struct {
 	scanNow    bool
 	probe      bool
 	enrichNow  bool
+	detectNow  bool
+	ffmpegPath string
+	detectJobs int
 	artworkDir string
 	artworkMB  int64
 	tmdbKey    string
@@ -194,6 +205,26 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 			enricher := &enrich.Enricher{DB: db, Provider: provider, Artwork: images, Log: log}
 			if _, err := enricher.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				return err
+			}
+		}
+	}
+
+	// Markers after metadata, and before serving: both are catch-up passes
+	// over whatever the scan just found, and a client that connects while one
+	// is running simply sees fewer markers than it will later.
+	if cfg.detectNow {
+		printer, err := fingerprint.New(cfg.ffmpegPath)
+		if err != nil {
+			log.Warn("no ffmpeg, so no markers can be detected; install one or pass -ffmpeg", "error", err)
+		} else {
+			detector := &detect.Detector{DB: db, Printer: printer, Log: log, Workers: cfg.detectJobs}
+			if _, err := detector.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				return err
+			}
+			if swept, err := db.SweepFingerprints(ctx); err != nil {
+				log.Warn("could not sweep stale fingerprints", "error", err)
+			} else if swept > 0 {
+				log.Info("dropped fingerprints for files that have changed", "count", swept)
 			}
 		}
 	}

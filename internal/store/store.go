@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -33,19 +34,10 @@ type DB struct {
 
 // Open opens or creates the database at path and brings the schema up to date.
 //
-// The pragmas are the interesting part:
-//
-//   - WAL, so a scan writing in the background does not block a client reading
-//     in the foreground. This is the single biggest responsiveness win.
-//   - busy_timeout, so the rare collision waits rather than failing a request.
-//   - cache_size as a negative number, which SQLite reads as KiB rather than
-//     pages: 8 MiB, deliberately small. The default would grow with use, and
-//     the budget has no room for a page cache that decides its own size.
-//   - foreign_keys, so a deleted section cannot leave orphaned items behind.
-//   - synchronous NORMAL, which under WAL loses at most the last transaction on
-//     a power cut. A rescan rebuilds anything lost; a slow scanner is forever.
+// The pragmas live in the connection string: see [dsn] for them and for why
+// they cannot be statements run after opening.
 func Open(ctx context.Context, path string) (*DB, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
@@ -57,26 +49,52 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	db.SetMaxIdleConns(2)
 	db.SetConnMaxIdleTime(5 * time.Minute)
 
-	pragmas := []string{
-		"PRAGMA journal_mode = WAL",
-		"PRAGMA busy_timeout = 5000",
-		"PRAGMA foreign_keys = ON",
-		"PRAGMA synchronous = NORMAL",
-		"PRAGMA cache_size = -8000",
-	}
-	for _, p := range pragmas {
-		if _, err := db.ExecContext(ctx, p); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("%s: %w", p, err)
-		}
-	}
-
 	wrapped := &DB{sql: db}
 	if err := wrapped.migrate(ctx); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return wrapped, nil
+}
+
+// dsn builds the connection string, pragmas included.
+//
+// In the connection string and not as statements after opening, which is the
+// correction of a real bug: a pragma is per-connection, and database/sql hands
+// out whichever of its pooled connections is free. Running them once after
+// Open configured exactly one connection and left the rest on the defaults —
+// so a write that happened to land on another connection had no busy timeout
+// and failed outright with SQLITE_BUSY the moment two goroutines wrote at
+// once, and foreign keys were off there, which is the setting that stops a
+// deleted section leaving orphaned rows behind.
+//
+// The pragmas themselves:
+//
+//   - WAL, so a scan writing in the background does not block a client reading
+//     in the foreground. This is the single biggest responsiveness win.
+//   - busy_timeout, so the rare collision waits rather than failing a request.
+//   - cache_size as a negative number, which SQLite reads as KiB rather than
+//     pages: 8 MiB, deliberately small. The default would grow with use, and
+//     the budget has no room for a page cache that decides its own size.
+//   - foreign_keys, so a deleted section cannot leave orphaned items behind.
+//   - synchronous NORMAL, which under WAL loses at most the last transaction on
+//     a power cut. A rescan rebuilds anything lost; a slow scanner is forever.
+func dsn(path string) string {
+	pragmas := []string{
+		"_pragma=journal_mode(WAL)",
+		"_pragma=busy_timeout(5000)",
+		"_pragma=foreign_keys(on)",
+		"_pragma=synchronous(normal)",
+		"_pragma=cache_size(-8000)",
+	}
+	// A path is a filename, not a URL: anything that would be read as the
+	// start of the query or a fragment has to be escaped, and nothing else
+	// should be, because percent-escaping a whole path breaks a directory
+	// named with a percent sign.
+	escaped := strings.ReplaceAll(path, "%", "%25")
+	escaped = strings.ReplaceAll(escaped, "?", "%3f")
+	escaped = strings.ReplaceAll(escaped, "#", "%23")
+	return "file:" + escaped + "?" + strings.Join(pragmas, "&")
 }
 
 // Close releases the database.
@@ -204,6 +222,27 @@ var migrations = []string{
 	)`,
 	`CREATE UNIQUE INDEX markers_item_type_start ON markers(item_id, type, source, start_ms)`,
 	`CREATE INDEX markers_item ON markers(item_id)`,
+
+	// Audio fingerprints, which are a cache: ~19 KiB per end of a file, and
+	// derivable again from the file at the cost of a decode. Keyed on the
+	// file's size and mtime as well as its id, so a replaced file is a miss
+	// rather than a marker computed from a file that is no longer there.
+	`CREATE TABLE fingerprints (
+		part_id     INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+		segment     TEXT NOT NULL,
+		offset_ms   INTEGER NOT NULL,
+		data        BLOB NOT NULL,
+		size        INTEGER NOT NULL,
+		modified_at INTEGER NOT NULL,
+		created_at  INTEGER NOT NULL,
+		PRIMARY KEY (part_id, segment)
+	)`,
+
+	// When an audio pass last finished for a season, recorded even when it
+	// found nothing so a show with no detectable intro is not decoded again
+	// on every pass.
+	`ALTER TABLE items ADD COLUMN markers_at INTEGER NOT NULL DEFAULT 0`,
+	`CREATE INDEX items_undetected ON items(kind, markers_at)`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

@@ -117,8 +117,18 @@ func (w *Writer) Add(ctx context.Context, f Found) error {
 	if err != nil {
 		return err
 	}
-	if err := w.upsertPart(ctx, itemID, f); err != nil {
+	changed, err := w.upsertPart(ctx, itemID, f)
+	if err != nil {
 		return err
+	}
+	// A season whose files changed is new evidence about where its intro is,
+	// and a newly added episode has no marker at all yet, so the audio pass
+	// has to look at this season again. Cleared here rather than in the pass
+	// because this is the only place that knows a file moved.
+	if changed && parentID != nil {
+		if _, err := w.tx.ExecContext(ctx, `UPDATE items SET markers_at = 0 WHERE id = ?`, *parentID); err != nil {
+			return fmt.Errorf("reopen season for detection: %w", err)
+		}
 	}
 	if err := w.applyChapters(ctx, itemID, f); err != nil {
 		return err
@@ -249,8 +259,11 @@ func (w *Writer) upsertItem(ctx context.Context, sectionID int64, kind domain.Ki
 
 // upsertPart records the file, and leaves the row untouched when nothing about
 // it has changed. That is what makes a rescan cost a stat per file.
-func (w *Writer) upsertPart(ctx context.Context, itemID int64, f Found) error {
-	_, err := w.tx.ExecContext(ctx,
+//
+// Reports whether the row actually moved, which is how the scan knows a season
+// is worth detecting markers for again.
+func (w *Writer) upsertPart(ctx context.Context, itemID int64, f Found) (bool, error) {
+	res, err := w.tx.ExecContext(ctx,
 		`INSERT INTO parts (item_id, path, size, container, modified_at) VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(path) DO UPDATE SET
 		   item_id = excluded.item_id,
@@ -260,9 +273,15 @@ func (w *Writer) upsertPart(ctx context.Context, itemID int64, f Found) error {
 		 WHERE parts.size <> excluded.size OR parts.modified_at <> excluded.modified_at OR parts.item_id <> excluded.item_id`,
 		itemID, f.Path, f.Size, f.Container, millis(f.ModifiedAt))
 	if err != nil {
-		return fmt.Errorf("upsert part: %w", err)
+		return false, fmt.Errorf("upsert part: %w", err)
 	}
-	return nil
+	affected, err := res.RowsAffected()
+	if err != nil {
+		// A driver that cannot say assumes it changed: detecting again costs
+		// a pass, and not detecting costs a missing button.
+		return true, nil
+	}
+	return affected > 0, nil
 }
 
 // PrunePaths removes parts whose files are no longer on disk, and then any

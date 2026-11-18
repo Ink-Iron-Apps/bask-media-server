@@ -12,6 +12,7 @@ that can be enforced.
 | Idle, library loaded | < 60 MB | HTTP listener, SQLite, nothing else awake |
 | Scanning 100k files | < 150 MB peak | Bounded workers, batched writes, no library-wide maps |
 | Four concurrent direct plays | < 120 MB | Kernel does the work; we hold 32 KiB per stream |
+| Detecting markers in a season | < 100 MB peak | One ffmpeg per worker, plus ~19 KiB of fingerprint per end of per episode |
 | Admin web UI open | +0 MB server side | Static assets served from `go:embed`, no render process |
 
 Peak means peak: a scan that allocates 400 MB for a moment and settles back to
@@ -48,7 +49,15 @@ Peak means peak: a scan that allocates 400 MB for a moment and settles back to
    framework, no Node at serve time, no embedded browser. SQLite is the pure-Go
    `modernc.org/sqlite`, which costs some speed against the cgo driver and buys
    a Windows build with no C toolchain anywhere.
-8. **Images are files, not objects.** Thumbnails are generated to disk on first
+8. **Fingerprints are measured, bounded and cached on disk.** Marker detection
+   reduces each end of a file to a 32-bit hash per 128 ms — about 19 KiB for
+   ten minutes, against the ~100 MB those ten minutes are as PCM — and never
+   holds the audio: ffmpeg is read in 32 KiB chunks and each frame is folded
+   into a hash and dropped. One season is the working set, capped at 60
+   episodes (~2.3 MB of fingerprints); the cache lives in SQLite, is keyed on
+   each file's size and mtime, and is swept when a file no longer matches,
+   which bounds it at two rows per file on disk and nothing in memory.
+9. **Images are files, not objects.** Thumbnails are generated to disk on first
    request under a concurrency semaphore, then served as files. A decoded image
    is never held past the request that made it.
 

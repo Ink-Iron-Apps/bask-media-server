@@ -16,11 +16,13 @@ and the Plex vocabulary never reaches storage or scanning.
 - Playback by direct play, with HTTP range requests so seeking works
 - Playback progress, resume offsets and watched state, per user
 - Local accounts and tokens; the first run prints an admin token once
+- Posters, backdrops and summaries from TMDB, cached on disk under a byte cap
+- Skip Intro and Skip Credits: markers read from a file's chapters, and
+  measured from the audio a season's episodes share where there are none
 
 ## Not yet
 
 - Transcoding (direct play only)
-- Artwork and external metadata providers
 - The admin web interface
 - Music and photos
 
@@ -36,6 +38,22 @@ go build ./cmd/bms
 
 The first start prints the admin token. Point a client at the address and give
 it that token.
+
+Two catch-up passes are opt-in, because each one costs real time the first
+time it runs and nothing afterwards:
+
+```
+# Posters, backdrops and summaries. Needs a TMDB key, from the flag or
+# BMS_TMDB_API_KEY.
+./bms -db ~/bms.db -enrich -tmdb-key "$TMDB_KEY"
+
+# Skip Intro and Skip Credits. Needs ffmpeg; decodes the first and last ten
+# minutes of each episode once, then compares each season's episodes.
+./bms -db ~/bms.db -detect-markers
+```
+
+Both are resumable: a season or an item that has been looked at is not looked
+at again, and a file that changes puts itself back in the queue.
 
 ## Resource use
 
