@@ -198,10 +198,19 @@ function jobBadge(job) {
 }
 
 function jobProgress(job) {
-  const pct = job.total > 0 ? Math.min(100, Math.round((job.done / job.total) * 100)) : 0;
-  const bar = el('div', { class: 'bar' + (job.total > 0 ? '' : ' indeterminate') }, el('i'));
-  bar.firstChild.style.width = job.total > 0 ? pct + '%' : '';
-  return bar;
+  // Known total: a <progress>, which carries its value as an attribute and so
+  // needs no inline style — the page's content security policy forbids those.
+  // Unknown total: a bar that animates from the stylesheet, because a scan
+  // does not know how many files it will find until it has found them.
+  if (job.total > 0) {
+    return el('progress', {
+      class: 'bar',
+      value: Math.min(100, Math.round((job.done / job.total) * 100)),
+      max: 100,
+      'aria-label': 'progress',
+    });
+  }
+  return el('div', { class: 'bar indeterminate' }, el('i'));
 }
 
 function jobLine(job, onCancel) {

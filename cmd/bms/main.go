@@ -34,6 +34,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/plexapi"
 	"github.com/inknironapps/bask-media-server/internal/scan"
 	"github.com/inknironapps/bask-media-server/internal/store"
+	"github.com/inknironapps/bask-media-server/internal/web"
 )
 
 // version is stamped by the build; a client shows it and the update path will
@@ -67,6 +68,7 @@ func main() {
 		ffmpegPath = flag.String("ffmpeg", "", "path to ffmpeg, used for marker detection (default: found on PATH)")
 		detectJobs = flag.Int("detect-workers", 0, "how many files to fingerprint at once (default: half the CPUs)")
 		adminUI    = flag.Bool("admin", true, "serve the admin web interface at /admin")
+		webUI      = flag.Bool("web", true, "serve the viewing web interface at /web")
 		artworkDir = flag.String("artwork", "", "where to cache posters and backdrops (default: beside the database)")
 		artworkMB  = flag.Int64("artwork-cache-mb", 512, "cap on the artwork cache in MiB")
 		tmdbKey    = flag.String("tmdb-key", "", "TMDB API key or v4 read token; falls back to BMS_TMDB_API_KEY")
@@ -99,6 +101,7 @@ func main() {
 		enrichNow:  *enrichNow,
 		detectNow:  *detectNow,
 		adminUI:    *adminUI,
+		webUI:      *webUI,
 		ffmpegPath: *ffmpegPath,
 		detectJobs: *detectJobs,
 		artworkDir: *artworkDir,
@@ -120,6 +123,7 @@ type runConfig struct {
 	enrichNow  bool
 	detectNow  bool
 	adminUI    bool
+	webUI      bool
 	ffmpegPath string
 	detectJobs int
 	artworkDir string
@@ -256,23 +260,33 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 
 	api := &plexapi.Server{DB: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version, Artwork: images}
 
-	// One listener for both surfaces. The Plex-compatible API owns the root,
-	// because that is where clients look for it, and the admin interface is
-	// mounted under /admin — where Go's mux redirects /admin to /admin/ for
-	// the browser by itself.
+	// One listener for every surface. The Plex-compatible API owns the root,
+	// because that is where clients look for it; the interfaces are mounted
+	// under /admin and /web, where Go's mux redirects the bare path to the
+	// directory form for a browser by itself.
 	handler := http.Handler(api.Handler())
-	if cfg.adminUI {
+	if cfg.adminUI || cfg.webUI {
 		root := http.NewServeMux()
-		root.Handle("/admin/", (&admin.Server{
-			DB:        db,
-			Jobs:      runner,
-			Log:       log,
-			Name:      cfg.name,
-			MachineID: machineID,
-			Version:   version,
-			Artwork:   images,
-			Started:   time.Now(),
-		}).Handler())
+		if cfg.adminUI {
+			root.Handle("/admin/", (&admin.Server{
+				DB:        db,
+				Jobs:      runner,
+				Log:       log,
+				Name:      cfg.name,
+				MachineID: machineID,
+				Version:   version,
+				Artwork:   images,
+				Started:   time.Now(),
+			}).Handler())
+		}
+		if cfg.webUI {
+			root.Handle("/web/", (&web.Server{
+				DB:      db,
+				Log:     log,
+				Name:    cfg.name,
+				Artwork: images,
+			}).Handler())
+		}
 		root.Handle("/", api.Handler())
 		handler = root
 	}
@@ -290,7 +304,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	errs := make(chan error, 1)
 	go func() {
 		log.Info("serving", "addr", cfg.addr, "machineIdentifier", machineID, "version", version,
-			"admin", cfg.adminUI)
+			"admin", cfg.adminUI, "web", cfg.webUI)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- err
 			return

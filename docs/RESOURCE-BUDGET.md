@@ -14,6 +14,7 @@ that can be enforced.
 | Four concurrent direct plays | < 120 MB | Kernel does the work; we hold 32 KiB per stream |
 | Detecting markers in a season | < 100 MB peak | One ffmpeg per worker, plus ~19 KiB of fingerprint per end of per episode |
 | Admin web UI open | +0 MB server side | Static assets served from `go:embed`, no render process |
+| Watching in a browser | Same as any direct play | The page is embedded; the video is `http.ServeContent` over the same 32 KiB buffer |
 | Background passes remembered | < 10 KB | The job history is capped at twenty finished jobs and holds counters, not output |
 
 Peak means peak: a scan that allocates 400 MB for a moment and settles back to

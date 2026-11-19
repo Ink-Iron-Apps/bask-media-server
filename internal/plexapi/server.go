@@ -3,16 +3,17 @@ package plexapi
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/serve"
 	"github.com/inknironapps/bask-media-server/internal/store"
 )
 
@@ -420,23 +421,16 @@ func (s *Server) streamPart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	file, err := os.Open(p.Path)
-	if err != nil {
-		// The row outlived the file. Report it as gone rather than as a server
-		// fault, and let the next scan prune the row.
-		s.logger().Warn("part file is missing", "path", p.Path, "error", err)
-		http.Error(w, "file is gone", http.StatusNotFound)
-		return
+	if err := serve.File(w, r, p.Path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// The row outlived the file. Report it as gone rather than as a
+			// server fault, and let the next scan prune the row.
+			s.logger().Warn("part file is missing", "path", p.Path, "error", err)
+			http.Error(w, "file is gone", http.StatusNotFound)
+			return
+		}
+		s.fail(w, "stream part", err)
 	}
-	defer file.Close()
-
-	info, err := file.Stat()
-	if err != nil {
-		s.fail(w, "stat part", err)
-		return
-	}
-	w.Header().Set("Accept-Ranges", "bytes")
-	http.ServeContent(w, r, p.Path, info.ModTime(), file)
 }
 
 func (s *Server) thumb(w http.ResponseWriter, r *http.Request) { s.serveImage(w, r, false) }
@@ -529,26 +523,13 @@ func (s *Server) photoTranscode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) writeImage(w http.ResponseWriter, r *http.Request, key string, width, height int) {
-	file, err := s.Artwork.Open(r.Context(), key, width, height)
-	if errors.Is(err, artwork.ErrNotCached) {
-		http.Error(w, "no image", http.StatusNotFound)
-		return
+	if err := serve.Image(w, r, s.Artwork, key, width, height); err != nil {
+		if errors.Is(err, artwork.ErrNotCached) {
+			http.Error(w, "no image", http.StatusNotFound)
+			return
+		}
+		s.fail(w, "serve artwork", err)
 	}
-	if err != nil {
-		s.fail(w, "open artwork", err)
-		return
-	}
-	defer file.Close()
-
-	info, err := file.Stat()
-	if err != nil {
-		s.fail(w, "stat artwork", err)
-		return
-	}
-	// Immutable by construction: a rendition's name contains the hash of the
-	// source image and the size, so a client can keep it as long as it likes.
-	w.Header().Set("Cache-Control", "public, max-age=2592000, immutable")
-	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
 }
 
 func intQuery(r *http.Request, name string) int {

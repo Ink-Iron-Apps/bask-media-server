@@ -21,6 +21,8 @@ and the Plex vocabulary never reaches storage or scanning.
   measured from the audio a season's episodes share where there are none
 - An admin web interface at `/admin`: libraries, scan and detection progress,
   accounts and tokens, served from the binary with nothing to install
+- A web interface for watching at `/web`: libraries, search, Continue
+  Watching, and a player with Skip Intro for anything the browser can decode
 
 ## Not yet
 
@@ -83,6 +85,27 @@ From there:
 It is one page, one stylesheet and one script compiled into the binary, so a
 release is still a single file and there is no Node, no bundler and no
 framework at serve time. Run with `-admin=false` to leave it off entirely.
+
+## Watching in a browser
+
+`http://<server>/web` is the same library, for watching rather than
+administering. Any account signs in — not only an administrator — with the
+token issued for that device, and gets a session of its own.
+
+- Continue Watching, the libraries, and search across all of them.
+- A show opens on its seasons and a season on its episodes; a film opens on
+  Play, or on Resume where you left it.
+- The player reports position as it goes, so stopping on a laptop and picking
+  up on the television works in both directions, and each account's position
+  is its own.
+- Skip Intro and Skip Credits come from the markers the detector found, and
+  the end of an episode offers the next one.
+
+**It plays what the browser can decode.** BMS does not transcode, so an MP4 of
+H.264 and AAC plays anywhere, and an MKV of H.265 or DTS usually will not — in
+a browser. The page says so in a sentence and offers the file rather than
+spinning, and the same file plays directly in Bask. `-web=false` leaves this
+interface off.
 
 ## Resource use
 

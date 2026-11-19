@@ -82,3 +82,20 @@ func imbalance(source string) (depth, line int) {
 	}
 	return len(stack), stack[0]
 }
+
+// The page declares a content security policy that forbids inline styles, so
+// the script must not set one: a width assigned as element.style is silently
+// blocked by the browser, which is a progress bar that never moves and no
+// error anywhere but the developer console. Anything that varies at runtime
+// is an attribute an element understands — a <progress> value — or a class.
+func TestTheScriptSetsNoInlineStyles(t *testing.T) {
+	source, err := os.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{".style.", "style:", "setAttribute('style'", "cssText"} {
+		if strings.Contains(string(source), forbidden) {
+			t.Errorf("the script uses %q, which the content security policy blocks", forbidden)
+		}
+	}
+}
