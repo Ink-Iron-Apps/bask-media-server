@@ -1,0 +1,209 @@
+/* The admin interface, in one stylesheet.
+   Dark because a media server is operated in a dark room, and sized so the
+   same markup works on a phone: this is the page somebody opens to find out
+   why a scan has not finished, and that happens on whatever is to hand. */
+
+:root {
+  --bg: #0f1116;
+  --panel: #171a22;
+  --panel-2: #1d212b;
+  --line: #262b37;
+  --text: #e8eaf0;
+  --muted: #98a0b2;
+  --accent: #e9a13b;
+  --accent-ink: #20170a;
+  --good: #52b788;
+  --bad: #e5736a;
+  --radius: 10px;
+  --side: 220px;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+/* The sign-in screen and the app are each hidden with the hidden attribute,
+   and both carry a display of their own — which beats the browser's own rule
+   for [hidden] and showed them one above the other. */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+h2 { font-size: 1.05rem; margin: 0 0 .75rem; letter-spacing: .01em; }
+h3 { font-size: .95rem; margin: 0 0 .4rem; }
+p { margin: .35rem 0; }
+a { color: var(--accent); text-decoration: none; }
+
+.muted { color: var(--muted); }
+.error { color: var(--bad); }
+.good { color: var(--good); }
+.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .85em; }
+
+/* Layout */
+
+.app { display: grid; grid-template-columns: var(--side) 1fr; min-height: 100vh; }
+
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+  padding: 1rem .6rem;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+
+.brand { display: flex; align-items: center; gap: .55rem; padding: .25rem .5rem 1rem; }
+.brand-name { font-weight: 650; letter-spacing: .01em; }
+.mark {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #ffd27f, var(--accent));
+  box-shadow: 0 0 14px rgba(233, 161, 59, .45);
+}
+
+.side a {
+  padding: .5rem .65rem;
+  border-radius: 8px;
+  color: var(--text);
+  font-size: .94rem;
+}
+.side a:hover { background: var(--panel-2); }
+.side a.on { background: var(--panel-2); color: var(--accent); font-weight: 600; }
+
+.side-foot {
+  margin-top: auto;
+  padding: .75rem .65rem 0;
+  border-top: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: .3rem;
+  font-size: .85rem;
+}
+
+.main { padding: 1.5rem clamp(1rem, 3vw, 2.25rem); max-width: 1100px; }
+
+.head { display: flex; align-items: flex-end; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; flex-wrap: wrap; }
+
+/* Cards, tiles, tables */
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  margin-bottom: 1rem;
+}
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; margin-bottom: 1rem; }
+.tile {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: .8rem .9rem;
+}
+.tile .n { font-size: 1.5rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.tile .k { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+td.right, th.right { text-align: right; }
+
+/* Controls */
+
+button, .button {
+  font: inherit;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  padding: .4rem .75rem;
+  border-radius: 8px;
+  cursor: pointer;
+}
+button:hover { border-color: #3a4151; }
+button:disabled { opacity: .5; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 650; }
+button.danger:hover { border-color: var(--bad); color: var(--bad); }
+button.link { background: none; border: 0; padding: 0; color: var(--muted); text-align: left; text-decoration: underline; }
+button.link:hover { color: var(--accent); }
+
+.row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+/* A row of actions stays on one line and stays to the right of its cell:
+   wrapped buttons under a table row read as a second row. */
+.actions { flex-wrap: nowrap; justify-content: flex-end; }
+
+label { display: block; font-size: .82rem; color: var(--muted); margin: .6rem 0 .2rem; }
+input, select {
+  font: inherit;
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: .45rem .6rem;
+}
+input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Badges and progress */
+
+.badge {
+  display: inline-block;
+  padding: .1rem .45rem;
+  border-radius: 999px;
+  font-size: .75rem;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.badge.running { color: var(--accent); border-color: var(--accent); }
+.badge.done { color: var(--good); border-color: #2c5c47; }
+.badge.failed, .badge.canceled { color: var(--bad); border-color: #5c3330; }
+
+.bar { height: 6px; border-radius: 999px; background: var(--panel-2); overflow: hidden; margin-top: .35rem; }
+.bar > i { display: block; height: 100%; background: var(--accent); transition: width .4s ease; }
+.bar.indeterminate > i { width: 35%; animation: slide 1.4s ease-in-out infinite; }
+@keyframes slide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+
+/* Sign-in */
+
+.signin { min-height: 100vh; display: grid; place-items: center; padding: 1.5rem; }
+.signin-card { width: min(380px, 100%); margin: 0; }
+.signin-card h1 { margin-bottom: .1rem; }
+.signin-card button { width: 100%; margin-top: 1rem; }
+
+/* The one-time secret: a token is shown once and never again, so it is given
+   its own block that invites a copy rather than a line that scrolls past. */
+.secret {
+  background: var(--bg);
+  border: 1px dashed var(--accent);
+  border-radius: 8px;
+  padding: .6rem .7rem;
+  margin: .6rem 0;
+  word-break: break-all;
+}
+
+.toast {
+  position: fixed;
+  inset: auto 1rem 1rem auto;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: .6rem .8rem;
+  max-width: min(420px, calc(100vw - 2rem));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .4);
+}
+.toast.bad { border-left-color: var(--bad); }
+
+.picker { max-height: 240px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; margin-top: .4rem; }
+.picker button { width: 100%; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; text-align: left; }
+.picker button:hover { background: var(--panel-2); }
+
+@media (max-width: 760px) {
+  .app { grid-template-columns: 1fr; }
+  .side { flex-direction: row; flex-wrap: wrap; align-items: center; border-right: 0; border-bottom: 1px solid var(--line); }
+  .brand { padding: .25rem .5rem; }
+  .side-foot { margin: 0 0 0 auto; border: 0; flex-direction: row; gap: .75rem; padding: 0 .5rem; }
+}

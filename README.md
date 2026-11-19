@@ -19,11 +19,12 @@ and the Plex vocabulary never reaches storage or scanning.
 - Posters, backdrops and summaries from TMDB, cached on disk under a byte cap
 - Skip Intro and Skip Credits: markers read from a file's chapters, and
   measured from the audio a season's episodes share where there are none
+- An admin web interface at `/admin`: libraries, scan and detection progress,
+  accounts and tokens, served from the binary with nothing to install
 
 ## Not yet
 
 - Transcoding (direct play only)
-- The admin web interface
 - Music and photos
 
 ## Running it
@@ -54,6 +55,34 @@ time it runs and nothing afterwards:
 
 Both are resumable: a season or an item that has been looked at is not looked
 at again, and a file that changes puts itself back in the queue.
+
+## The admin interface
+
+Open `http://<server>/admin` and sign in with an admin token — the one printed
+on first run, or one issued from the Users page. There is no password store
+here and no account service anywhere: the token is the credential, and signing
+in exchanges it for a browser session that expires on its own.
+
+From there:
+
+- **Libraries.** Add one by browsing to its folder rather than typing a path,
+  rename it, point it somewhere else, or remove it — removing a library
+  forgets rows and never deletes a file. A folder that has gone away is
+  reported on the row rather than quietly pruning the library on the next scan.
+- **Activity.** Start a scan, a metadata pass or marker detection, watch what
+  each one is doing, and stop one. Every pass commits as it goes, so stopping
+  one keeps what it has already written.
+- **Users.** Add accounts, make one an administrator, and issue or revoke a
+  token per device. A token is shown once, because only its hash is stored.
+  The last administrator cannot be deleted or demoted: there is nothing to
+  recover from that but editing the database by hand.
+- **Settings.** Rename the server — clients see it immediately and nothing
+  else about the server changes — and save the TMDB key so the metadata pass
+  can run without a restart.
+
+It is one page, one stylesheet and one script compiled into the binary, so a
+release is still a single file and there is no Node, no bundler and no
+framework at serve time. Run with `-admin=false` to leave it off entirely.
 
 ## Resource use
 

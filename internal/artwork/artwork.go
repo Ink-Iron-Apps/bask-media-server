@@ -308,3 +308,30 @@ func (c *Cache) Sweep() (freed int64, err error) {
 	}
 	return freed, nil
 }
+
+// Usage reports what the cache is holding, for a status page.
+//
+// A walk rather than a counter: the counter would have to be kept correct
+// across eviction, a restart and a file someone deleted by hand, and the walk
+// costs a stat per cached image on a page nobody opens in a loop.
+func (c *Cache) Usage() (bytes int64, files int, err error) {
+	for _, dir := range []string{"originals", "renditions"} {
+		root := filepath.Join(c.Root, dir)
+		walkErr := filepath.WalkDir(root, func(_ string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			bytes += info.Size()
+			files++
+			return nil
+		})
+		if walkErr != nil {
+			return bytes, files, walkErr
+		}
+	}
+	return bytes, files, nil
+}

@@ -23,13 +23,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/inknironapps/bask-media-server/internal/admin"
 	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/detect"
 	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/enrich"
 	"github.com/inknironapps/bask-media-server/internal/ffprobe"
 	"github.com/inknironapps/bask-media-server/internal/fingerprint"
-	"github.com/inknironapps/bask-media-server/internal/metadata/tmdb"
+	"github.com/inknironapps/bask-media-server/internal/jobs"
 	"github.com/inknironapps/bask-media-server/internal/plexapi"
 	"github.com/inknironapps/bask-media-server/internal/scan"
 	"github.com/inknironapps/bask-media-server/internal/store"
@@ -65,6 +66,7 @@ func main() {
 		detectNow  = flag.Bool("detect-markers", false, "find intro and credits markers by comparing each season's audio")
 		ffmpegPath = flag.String("ffmpeg", "", "path to ffmpeg, used for marker detection (default: found on PATH)")
 		detectJobs = flag.Int("detect-workers", 0, "how many files to fingerprint at once (default: half the CPUs)")
+		adminUI    = flag.Bool("admin", true, "serve the admin web interface at /admin")
 		artworkDir = flag.String("artwork", "", "where to cache posters and backdrops (default: beside the database)")
 		artworkMB  = flag.Int64("artwork-cache-mb", 512, "cap on the artwork cache in MiB")
 		tmdbKey    = flag.String("tmdb-key", "", "TMDB API key or v4 read token; falls back to BMS_TMDB_API_KEY")
@@ -96,6 +98,7 @@ func main() {
 		probe:      *probe,
 		enrichNow:  *enrichNow,
 		detectNow:  *detectNow,
+		adminUI:    *adminUI,
 		ffmpegPath: *ffmpegPath,
 		detectJobs: *detectJobs,
 		artworkDir: *artworkDir,
@@ -116,6 +119,7 @@ type runConfig struct {
 	probe      bool
 	enrichNow  bool
 	detectNow  bool
+	adminUI    bool
 	ffmpegPath string
 	detectJobs int
 	artworkDir string
@@ -162,27 +166,6 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 		return err
 	}
 
-	if cfg.scanNow {
-		scanner := &scan.Scanner{DB: db, Log: log}
-		if cfg.probe {
-			prober, err := ffprobe.New("")
-			if err != nil {
-				log.Warn("no ffprobe; durations will be missing until one is installed", "error", err)
-			} else {
-				scanner.Prober = prober
-			}
-		}
-		list, err := db.Sections(ctx)
-		if err != nil {
-			return err
-		}
-		for _, section := range list {
-			if _, err := scanner.Section(ctx, section); err != nil {
-				return fmt.Errorf("scan %s: %w", section.Title, err)
-			}
-		}
-	}
-
 	// Artwork is a cache beside the database by default, so one path is the
 	// whole of this server's state and a backup is a copy of one directory.
 	artworkDir := cfg.artworkDir
@@ -194,14 +177,57 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 		return err
 	}
 
-	if cfg.enrichNow {
-		if cfg.tmdbKey == "" {
-			log.Warn("no TMDB key, so nothing can be enriched; set -tmdb-key or BMS_TMDB_API_KEY")
+	// The outside tools, found once at startup and shared by the command-line
+	// passes and the admin interface alike. Each one is optional: a library
+	// with no ffprobe has no durations, a library with no ffmpeg has no
+	// detected intros, and both are browsable and playable regardless.
+	var prober scan.Prober
+	if cfg.probe {
+		found, err := ffprobe.New("")
+		if err != nil {
+			log.Warn("no ffprobe; durations and chapters will be missing until one is installed", "error", err)
 		} else {
-			provider, err := tmdb.New(cfg.tmdbKey, 4)
-			if err != nil {
-				return err
+			prober = found
+		}
+	}
+	var printer detect.Printer
+	if found, err := fingerprint.New(cfg.ffmpegPath); err != nil {
+		log.Warn("no ffmpeg; intros cannot be detected from audio until one is installed", "error", err)
+	} else {
+		printer = found
+	}
+
+	runner := &jobs.Runner{
+		DB:       db,
+		Log:      log,
+		Prober:   prober,
+		Printer:  printer,
+		Provider: jobs.TMDBProvider(db, cfg.tmdbKey, 4),
+		Artwork:  images,
+		Workers:  cfg.detectJobs,
+	}
+	// Nothing started here outlives the process: rule 4 of the resource
+	// budget, and the reason a job is cancellable in the first place.
+	defer runner.Shutdown()
+
+	if cfg.scanNow {
+		scanner := &scan.Scanner{DB: db, Prober: prober, Log: log}
+		list, err := db.Sections(ctx)
+		if err != nil {
+			return err
+		}
+		for _, section := range list {
+			if _, err := scanner.Section(ctx, section); err != nil {
+				return fmt.Errorf("scan %s: %w", section.Title, err)
 			}
+		}
+	}
+
+	if cfg.enrichNow {
+		provider, err := runner.Provider(ctx)
+		if err != nil {
+			log.Warn("nothing can be enriched", "error", err)
+		} else {
 			enricher := &enrich.Enricher{DB: db, Provider: provider, Artwork: images, Log: log}
 			if _, err := enricher.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				return err
@@ -213,9 +239,8 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	// over whatever the scan just found, and a client that connects while one
 	// is running simply sees fewer markers than it will later.
 	if cfg.detectNow {
-		printer, err := fingerprint.New(cfg.ffmpegPath)
-		if err != nil {
-			log.Warn("no ffmpeg, so no markers can be detected; install one or pass -ffmpeg", "error", err)
+		if printer == nil {
+			log.Warn("no ffmpeg, so no markers can be detected; install one or pass -ffmpeg")
 		} else {
 			detector := &detect.Detector{DB: db, Printer: printer, Log: log, Workers: cfg.detectJobs}
 			if _, err := detector.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -230,9 +255,31 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	}
 
 	api := &plexapi.Server{DB: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version, Artwork: images}
+
+	// One listener for both surfaces. The Plex-compatible API owns the root,
+	// because that is where clients look for it, and the admin interface is
+	// mounted under /admin — where Go's mux redirects /admin to /admin/ for
+	// the browser by itself.
+	handler := http.Handler(api.Handler())
+	if cfg.adminUI {
+		root := http.NewServeMux()
+		root.Handle("/admin/", (&admin.Server{
+			DB:        db,
+			Jobs:      runner,
+			Log:       log,
+			Name:      cfg.name,
+			MachineID: machineID,
+			Version:   version,
+			Artwork:   images,
+			Started:   time.Now(),
+		}).Handler())
+		root.Handle("/", api.Handler())
+		handler = root
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.addr,
-		Handler:           api.Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		// No write timeout on purpose: a response here can be a two-hour film
 		// streaming at the speed the client plays it, and a write deadline
@@ -242,7 +289,8 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 
 	errs := make(chan error, 1)
 	go func() {
-		log.Info("serving", "addr", cfg.addr, "machineIdentifier", machineID, "version", version)
+		log.Info("serving", "addr", cfg.addr, "machineIdentifier", machineID, "version", version,
+			"admin", cfg.adminUI)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- err
 			return

@@ -57,6 +57,14 @@ type Scanner struct {
 	// Batch is how many items a write transaction covers. Zero means the
 	// store's default.
 	Batch int
+
+	// Progress is told how many files this section has written so far.
+	//
+	// Called from the single writer goroutine, so an implementation must not
+	// block: the admin interface stores a counter and reads it from the HTTP
+	// side. Optional, because a scan started from the command line reports at
+	// the end and has nothing to tell anybody meanwhile.
+	Progress func(files int)
 }
 
 type found struct {
@@ -123,6 +131,9 @@ func (s *Scanner) Section(ctx context.Context, section domain.Section) (Result, 
 			return result, err
 		}
 		result.Files++
+		if s.Progress != nil {
+			s.Progress(result.Files)
+		}
 	}
 	if err := writer.Commit(ctx); err != nil {
 		return result, err

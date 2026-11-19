@@ -38,6 +38,10 @@ type Enricher struct {
 	// cold library commits as it goes and can be stopped without losing what
 	// it has already matched.
 	Batch int
+
+	// Progress is told what the pass has done so far, after each item. Called
+	// from the pass's own goroutine, so it must not block. Optional.
+	Progress func(Result)
 }
 
 // Run enriches until nothing is left or the context ends.
@@ -85,6 +89,9 @@ func (e *Enricher) Run(ctx context.Context) (Result, error) {
 				result.Matched++
 			} else {
 				result.Unmatched++
+			}
+			if e.Progress != nil {
+				e.Progress(result)
 			}
 		}
 	}

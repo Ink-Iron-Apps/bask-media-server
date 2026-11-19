@@ -14,6 +14,7 @@ that can be enforced.
 | Four concurrent direct plays | < 120 MB | Kernel does the work; we hold 32 KiB per stream |
 | Detecting markers in a season | < 100 MB peak | One ffmpeg per worker, plus ~19 KiB of fingerprint per end of per episode |
 | Admin web UI open | +0 MB server side | Static assets served from `go:embed`, no render process |
+| Background passes remembered | < 10 KB | The job history is capped at twenty finished jobs and holds counters, not output |
 
 Peak means peak: a scan that allocates 400 MB for a moment and settles back to
 60 MB has failed this budget, because the machine had to find 400 MB.
@@ -66,9 +67,11 @@ Peak means peak: a scan that allocates 400 MB for a moment and settles back to
 - `go test ./...` runs `goleak` per package: goroutine leaks fail the build.
 - `go test -run TestScanPeakMemory -tags bench ./internal/scan` scans a
   synthetic 100k-entry tree and asserts peak heap against the table above.
-- `/debug/metrics` exposes heap, goroutines, open streams, cache occupancy and
-  scan progress as plain expvar JSON; `/debug/pprof` is behind the admin token
-  so a heap profile is one command away on the real library rather than a
-  reproduction attempt.
+- The admin interface's status page reports heap, goroutines, artwork cache
+  occupancy against its cap, database size and what every background pass is
+  doing, read from the same process rather than from a second accounting of
+  it. A machine-readable `/debug/metrics` and a token-gated `/debug/pprof`
+  are still to come; until they are, the page and the hourly log line are how
+  a leak gets noticed.
 - The server logs its own RSS hourly. A number in a log is how a slow leak gets
   noticed before it matters.

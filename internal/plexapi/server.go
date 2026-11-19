@@ -106,12 +106,30 @@ func (s *Server) logger() *slog.Logger {
 	return slog.Default()
 }
 
+// friendlyName is what clients show for this server.
+//
+// Read per request rather than held, because the admin interface can rename
+// the server while it is running and a client that asked a second ago should
+// see the new name without the server being restarted. It is one indexed point
+// read against a table with a handful of rows.
+func (s *Server) friendlyName(ctx context.Context) string {
+	stored, err := s.DB.ServerValue(ctx, store.KeyFriendlyName)
+	if err != nil {
+		s.logger().Warn("could not read the server name", "error", err)
+		return s.Name
+	}
+	if stored != "" {
+		return stored
+	}
+	return s.Name
+}
+
 func (s *Server) identity(w http.ResponseWriter, r *http.Request) {
 	write(w, r, container{
 		Size:              0,
 		MachineIdentifier: s.MachineID,
 		Version:           s.Version,
-		FriendlyName:      s.Name,
+		FriendlyName:      s.friendlyName(r.Context()),
 		Claimed:           false,
 	})
 }
@@ -127,7 +145,7 @@ func (s *Server) sections(w http.ResponseWriter, r *http.Request) {
 		Identifier:     "com.plexapp.plugins.library",
 		MediaTagPrefix: "/system/bundle/media/flags/",
 		AllowSync:      true,
-		Title1:         s.Name,
+		Title1:         s.friendlyName(r.Context()),
 	}
 	for _, sec := range sections {
 		e := entry{

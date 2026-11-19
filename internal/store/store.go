@@ -29,7 +29,8 @@ var ErrNotFound = errors.New("not found")
 
 // DB is a handle on the library database.
 type DB struct {
-	sql *sql.DB
+	sql  *sql.DB
+	path string
 }
 
 // Open opens or creates the database at path and brings the schema up to date.
@@ -49,7 +50,7 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	db.SetMaxIdleConns(2)
 	db.SetConnMaxIdleTime(5 * time.Minute)
 
-	wrapped := &DB{sql: db}
+	wrapped := &DB{sql: db, path: path}
 	if err := wrapped.migrate(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -99,6 +100,10 @@ func dsn(path string) string {
 
 // Close releases the database.
 func (d *DB) Close() error { return d.sql.Close() }
+
+// Path is where the database file lives, which is how a status page reports
+// its size without being told separately where it was opened from.
+func (d *DB) Path() string { return d.path }
 
 // SQL exposes the underlying handle for the few places that need a transaction
 // of their own, such as the scanner's batched writes.
@@ -243,6 +248,20 @@ var migrations = []string{
 	// on every pass.
 	`ALTER TABLE items ADD COLUMN markers_at INTEGER NOT NULL DEFAULT 0`,
 	`CREATE INDEX items_undetected ON items(kind, markers_at)`,
+
+	// Browser sessions for the admin interface. Separate from tokens on
+	// purpose: a token is a credential a television keeps for years, and
+	// signing out of a web page must not log the television out of the
+	// library. Hashed like a token, and with an expiry a token does not have.
+	`CREATE TABLE sessions (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		hash         BLOB NOT NULL UNIQUE,
+		created_at   INTEGER NOT NULL,
+		expires_at   INTEGER NOT NULL,
+		last_seen_at INTEGER NOT NULL DEFAULT 0
+	)`,
+	`CREATE INDEX sessions_expiry ON sessions(expires_at)`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

@@ -51,6 +51,10 @@ type Detector struct {
 	// decides whether a detection pass leaves the machine usable.
 	Workers int
 
+	// Progress is told what the pass has done so far, after each season.
+	// Called from the pass's own goroutine, so it must not block. Optional.
+	Progress func(Result)
+
 	// MaxEpisodes bounds one season's working set. Fingerprints are about
 	// 19 KiB per end, so sixty episodes is a couple of megabytes — but a
 	// misparsed library that put four hundred files in one season must not
@@ -109,6 +113,9 @@ func (d *Detector) Run(ctx context.Context) (Result, error) {
 			result.Episodes += episodes
 			result.Intros += intros
 			result.Credits += credits
+			if d.Progress != nil {
+				d.Progress(result)
+			}
 		}
 	}
 
