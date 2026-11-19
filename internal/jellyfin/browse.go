@@ -43,7 +43,11 @@ func (s *Server) items(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := store.Page{Start: intQuery(r, "StartIndex"), Size: intQuery(r, "Limit")}
-	wanted := wantedKinds(query.Get("IncludeItemTypes"))
+	wanted, understood := wantedKinds(query.Get("IncludeItemTypes"))
+	if !understood {
+		nothing(w, page)
+		return
+	}
 
 	parent := strings.TrimSpace(query.Get("ParentId"))
 	if parent == "" {
@@ -168,7 +172,12 @@ func (s *Server) searchItems(w http.ResponseWriter, r *http.Request, term string
 		s.fail(w, "search", err)
 		return
 	}
-	found = keepKinds(found, wantedKinds(r.URL.Query().Get("IncludeItemTypes")))
+	wanted, understood := wantedKinds(r.URL.Query().Get("IncludeItemTypes"))
+	if !understood {
+		nothing(w, page)
+		return
+	}
+	found = keepKinds(found, wanted)
 	s.writeItems(w, r, found, total, page, user)
 }
 
@@ -355,6 +364,35 @@ func (s *Server) nextUp(w http.ResponseWriter, r *http.Request) {
 	s.writeItems(w, r, items, len(items), store.Page{}, user)
 }
 
+// emptyList and emptyItems answer for the things BMS does not have: a bare
+// array and an envelope respectively, because Jellyfin uses both shapes and a
+// client parses whichever it expects.
+func (s *Server) emptyList(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, []item{})
+}
+
+func (s *Server) emptyItems(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, itemsReply{Items: []item{}})
+}
+
+// displayPreferences is where a client keeps its own view settings. BMS does
+// not store them, and an empty set is a server saying "you decide".
+func (s *Server) displayPreferences(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"Id":                 r.PathValue("id"),
+		"SortBy":             "SortName",
+		"SortOrder":          "Ascending",
+		"RememberIndexing":   false,
+		"RememberSorting":    false,
+		"ScrollDirection":    "Horizontal",
+		"ShowBackdrop":       true,
+		"ShowSidebar":        false,
+		"PrimaryImageHeight": 250,
+		"PrimaryImageWidth":  250,
+		"CustomPrefs":        map[string]any{},
+	})
+}
+
 /* ---------- shared ---------- */
 
 func (s *Server) writeItems(w http.ResponseWriter, r *http.Request, items []domain.Item, total int, page store.Page, user *domain.User) {
@@ -387,13 +425,19 @@ func (s *Server) progressFor(r *http.Request, user *domain.User, items []domain.
 	return progress
 }
 
-// wantedKinds reads IncludeItemTypes. An unknown type is dropped rather than
-// refused: a client asking for BoxSet on a server that has none should get an
-// empty list, not an error.
-func wantedKinds(value string) map[domain.Kind]bool {
+// wantedKinds reads IncludeItemTypes.
+//
+// Three answers, and the third one matters: no filter at all, a filter this
+// server understands, and a filter naming only things it does not have —
+// Playlist, BoxSet, LiveTvChannel. The last is not "no filter": a client
+// asking for playlists on a server with none must be told there are none,
+// and the first version of this answered it with every film, artist and
+// photo album in the library, which is what a client's Playlists tab then
+// showed.
+func wantedKinds(value string) (kinds map[domain.Kind]bool, understood bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return nil
+		return nil, true
 	}
 	out := map[domain.Kind]bool{}
 	for _, name := range strings.Split(value, ",") {
@@ -418,7 +462,15 @@ func wantedKinds(value string) map[domain.Kind]bool {
 			out[domain.KindPhoto] = true
 		}
 	}
-	return out
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+// nothing answers a query for something this server does not have.
+func nothing(w http.ResponseWriter, page store.Page) {
+	writeJSON(w, http.StatusOK, itemsReply{Items: []item{}, StartIndex: page.Start})
 }
 
 func keepKinds(items []domain.Item, wanted map[domain.Kind]bool) []domain.Item {

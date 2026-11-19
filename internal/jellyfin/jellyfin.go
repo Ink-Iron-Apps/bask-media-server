@@ -60,78 +60,146 @@ type Server struct {
 	Transcoder *transcode.Manager
 }
 
+// route is one pattern this presenter answers.
+type route struct {
+	pattern string
+	handler http.HandlerFunc
+	open    bool // answered without a token
+}
+
+// routes is the whole surface, in one table.
+//
+// One table rather than a list of mux registrations plus a separate list of
+// prefixes for whoever mounts this beside another API: the two drifted the
+// first time a route was added, and the server 404'd a path its own tests
+// said it answered. [Prefixes] is derived from here, so it cannot lag again.
+func (s *Server) routes() []route {
+	return []route{
+		// Answered without a token: this is how an address becomes a server
+		// in somebody's list, before anybody has a credential.
+		{"GET /System/Info/Public", s.publicInfo, true},
+		{"POST /Users/AuthenticateByName", s.authenticateByName, true},
+		{"GET /QuickConnect/Enabled", s.quickConnectDisabled, true},
+
+		{"GET /System/Info", s.systemInfo, false},
+		{"GET /Users/Me", s.me, false},
+		{"GET /Users/{user}", s.userByID, false},
+		{"GET /Users/{user}/Views", s.views, false},
+		{"GET /Users/{user}/Items", s.items, false},
+		{"GET /Users/{user}/Items/Latest", s.latest, false},
+		{"GET /Users/{user}/Items/Resume", s.resume, false},
+		{"GET /Users/{user}/Items/{item}", s.item, false},
+		{"GET /Items", s.items, false},
+		{"GET /Items/{item}/Images/{type}", s.image, false},
+		{"GET /Items/{item}/PlaybackInfo", s.playbackInfo, false},
+		{"POST /Items/{item}/PlaybackInfo", s.playbackInfo, false},
+		{"GET /Shows/{series}/Seasons", s.seasons, false},
+		{"GET /Shows/{series}/Episodes", s.episodes, false},
+		{"GET /Shows/NextUp", s.nextUp, false},
+		{"GET /Artists", s.artists, false},
+		{"GET /Artists/AlbumArtists", s.artists, false},
+
+		{"GET /Videos/{item}/stream", s.stream, false},
+		{"GET /Audio/{item}/stream", s.stream, false},
+		// Clients ask for the file by name as often as by path —
+		// `stream.mkv`, `stream.mp3` — and a pattern cannot carry a wildcard
+		// inside a segment, so the name arrives whole and the handler reads
+		// it.
+		{"GET /Videos/{item}/{file}", s.streamNamed, false},
+		{"GET /Audio/{item}/{file}", s.streamNamed, false},
+		// Jellyfin spells a subtitle request `…/Subtitles/{index}/Stream.vtt`,
+		// and sometimes puts a start offset between the two.
+		{"GET /Videos/{item}/{source}/Subtitles/{index}/{file}", s.subtitleStream, false},
+		{"GET /Videos/{item}/{source}/Subtitles/{index}/{position}/{file}", s.subtitleStream, false},
+
+		// A client announces itself and reports where it is in a file. None
+		// of it changes the library, and the last one is how progress gets
+		// home.
+		{"POST /Sessions/Capabilities/Full", s.noContent, false},
+		{"POST /Sessions/Playing", s.playing, false},
+		{"POST /Sessions/Playing/Progress", s.playing, false},
+		{"POST /Sessions/Playing/Stopped", s.stopped, false},
+		{"POST /Users/{user}/PlayedItems/{item}", s.markPlayed, false},
+		{"DELETE /Users/{user}/PlayedItems/{item}", s.markUnplayed, false},
+
+		// The spellings a current client uses, where the account is the token
+		// rather than a path segment. A server that answers only the older
+		// user-scoped forms 404s its Continue Watching row and every
+		// watched-state write.
+		{"GET /UserItems/Resume", s.resume, false},
+		{"POST /UserItems/{item}/UserData", s.writeUserData, false},
+		{"DELETE /UserItems/{item}/UserData", s.clearUserData, false},
+		{"POST /UserPlayedItems/{item}", s.markPlayed, false},
+		{"DELETE /UserPlayedItems/{item}", s.markUnplayed, false},
+
+		// Answered so a client's shelves resolve rather than error. BMS has
+		// no favourites, no trailers and no extras, and says so with an empty
+		// answer instead of a 404 — a missing route reads as a broken server.
+		{"POST /UserFavoriteItems/{item}", s.favourite, false},
+		{"DELETE /UserFavoriteItems/{item}", s.favourite, false},
+		{"GET /Items/{item}/LocalTrailers", s.emptyList, false},
+		{"GET /Items/{item}/SpecialFeatures", s.emptyList, false},
+		{"GET /Items/{item}/Similar", s.emptyItems, false},
+		{"GET /DisplayPreferences/{id}", s.displayPreferences, false},
+		{"POST /DisplayPreferences/{id}", s.noContent, false},
+	}
+}
+
 // Handler builds the routes.
 //
 // Jellyfin's paths are case-insensitive in practice — its own clients send
-// `/Users/{id}/Views` and `/users/{id}/views` interchangeably — so every
-// pattern is registered as written and the mux is wrapped in a normaliser
-// that fixes the case of the fixed segments. Go's mux matches paths exactly,
-// and a client that guesses the other case would otherwise get a 404 from a
-// server that has the route.
+// `/Users/{id}/Views` and `/users/{id}/views` interchangeably — so the mux is
+// wrapped in a normaliser that fixes the case of the fixed segments. Go's mux
+// matches paths exactly, and a client that guesses the other case would
+// otherwise get a 404 from a server that has the route.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-
-	// Unauthenticated: this is how a client decides whether an address is a
-	// server at all, before anybody has typed a password.
-	mux.HandleFunc("GET /System/Info/Public", s.publicInfo)
-	mux.HandleFunc("POST /Users/AuthenticateByName", s.authenticateByName)
-	mux.HandleFunc("GET /QuickConnect/Enabled", s.quickConnectDisabled)
-
-	authed := func(pattern string, h http.HandlerFunc) {
-		mux.Handle(pattern, s.authenticate(h))
+	for _, r := range s.routes() {
+		if r.open {
+			mux.HandleFunc(r.pattern, r.handler)
+			continue
+		}
+		mux.Handle(r.pattern, s.authenticate(r.handler))
 	}
-
-	authed("GET /System/Info", s.systemInfo)
-	authed("GET /Users/Me", s.me)
-	authed("GET /Users/{user}", s.userByID)
-	authed("GET /Users/{user}/Views", s.views)
-	authed("GET /Users/{user}/Items", s.items)
-	authed("GET /Users/{user}/Items/Latest", s.latest)
-	authed("GET /Users/{user}/Items/Resume", s.resume)
-	authed("GET /Users/{user}/Items/{item}", s.item)
-	authed("GET /Items", s.items)
-	authed("GET /Items/{item}/Images/{type}", s.image)
-	authed("GET /Items/{item}/PlaybackInfo", s.playbackInfo)
-	authed("POST /Items/{item}/PlaybackInfo", s.playbackInfo)
-	authed("GET /Shows/{series}/Seasons", s.seasons)
-	authed("GET /Shows/{series}/Episodes", s.episodes)
-	authed("GET /Shows/NextUp", s.nextUp)
-	authed("GET /Artists", s.artists)
-	authed("GET /Artists/AlbumArtists", s.artists)
-	authed("GET /Videos/{item}/stream", s.stream)
-	authed("GET /Audio/{item}/stream", s.stream)
-	// Clients ask for the file by name as often as by path — `stream.mkv`,
-	// `stream.mp3` — and a pattern cannot carry a wildcard inside a segment,
-	// so the name arrives whole and the handler reads it.
-	authed("GET /Videos/{item}/{file}", s.streamNamed)
-	authed("GET /Audio/{item}/{file}", s.streamNamed)
-	// Jellyfin spells a subtitle request `…/Subtitles/{index}/Stream.vtt`, and
-	// sometimes puts a start offset between the two; the file name carries
-	// the format, so it arrives whole — a pattern cannot split a segment.
-	authed("GET /Videos/{item}/{source}/Subtitles/{index}/{file}", s.subtitleStream)
-	authed("GET /Videos/{item}/{source}/Subtitles/{index}/{position}/{file}", s.subtitleStream)
-
-	// A client announces itself and reports where it is in a file. None of it
-	// changes the library, and the last one is how progress gets home.
-	authed("POST /Sessions/Capabilities/Full", s.noContent)
-	authed("POST /Sessions/Playing", s.playing)
-	authed("POST /Sessions/Playing/Progress", s.playing)
-	authed("POST /Sessions/Playing/Stopped", s.stopped)
-	authed("DELETE /Items/{item}/UserData", s.noContent)
-	authed("POST /Users/{user}/PlayedItems/{item}", s.markPlayed)
-	authed("DELETE /Users/{user}/PlayedItems/{item}", s.markUnplayed)
-
-	// An image is fetched by an <img> tag that cannot set a header, so the
-	// token rides in the query string there — see authenticate.
 	return normalisePath(mux)
+}
+
+// Prefixes are the paths this presenter answers, for a server that mounts it
+// beside another API at the same root.
+//
+// Derived from [Server.routes], so a route added without a prefix cannot
+// 404 behind a mux that never sends it here. The two vocabularies do not
+// overlap: Plex's are lower-case and start at `/library`, `/identity` and
+// `/:`, and every path here is PascalCase.
+func Prefixes() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range (&Server{}).routes() {
+		_, path, found := strings.Cut(r.pattern, " ")
+		if !found {
+			continue
+		}
+		segments := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 2)
+		first := segments[0]
+		if first == "" || seen[first] {
+			continue
+		}
+		seen[first] = true
+		// Both spellings: the bare path for the routes that are one segment
+		// (`/Items`, `/Artists`), and the subtree for everything under it.
+		out = append(out, "/"+first, "/"+first+"/")
+	}
+	return out
 }
 
 // normalisePath fixes the case of Jellyfin's fixed path segments.
 //
 // The API is PascalCase and its clients mostly send it that way, but not all
-// of them do, and a server that 404s on `/users/x/views` is a server that
-// half the ecosystem cannot talk to. Only the known segment names are
-// touched: an item id is a path value and is left exactly as it arrived.
+// of them do, and a server that 404s on `/users/x/views` is a server half the
+// ecosystem cannot talk to. Only the known segment names are touched: an item
+// id is a path value and is left exactly as it arrived, and `stream` is a
+// file name rather than a segment name — renaming it to `Stream` turned a
+// request for a file into a 404 from a server that had it.
 func normalisePath(next http.Handler) http.Handler {
 	known := map[string]string{}
 	for _, segment := range []string{
@@ -139,11 +207,9 @@ func normalisePath(next http.Handler) http.Handler {
 		"Latest", "Resume", "Images", "PlaybackInfo", "Shows", "Seasons", "Episodes",
 		"NextUp", "Artists", "AlbumArtists", "Videos", "Audio", "Subtitles",
 		"Sessions", "Capabilities", "Full", "Playing", "Progress", "Stopped", "Me",
-		// "Stream" is deliberately absent: it is a file name here, not a
-		// fixed segment, and `/Videos/{id}/stream` is the spelling the route
-		// matches. Normalising it to "Stream" turned a stream request into a
-		// 404 on a server that had the file.
-		"QuickConnect", "Enabled", "UserData", "PlayedItems",
+		"QuickConnect", "Enabled", "UserData", "PlayedItems", "UserItems",
+		"UserPlayedItems", "UserFavoriteItems", "DisplayPreferences",
+		"LocalTrailers", "SpecialFeatures", "Similar",
 	} {
 		known[strings.ToLower(segment)] = segment
 	}
@@ -201,7 +267,21 @@ func tokenFrom(r *http.Request) string {
 			return token
 		}
 	}
-	return r.URL.Query().Get("api_key")
+	// And in the query string, for the URLs that end up in an <img> or get
+	// handed to a media player, where nothing can set a header. Clients spell
+	// the parameter `api_key` and `ApiKey` about equally often, and a query
+	// key is case-sensitive: reading only one spelling is a 401 on the URL
+	// the player was told to open, which looks to a viewer like a file that
+	// will not play.
+	for key, values := range r.URL.Query() {
+		switch strings.ToLower(key) {
+		case "api_key", "apikey", "x-emby-token", "x-mediabrowser-token":
+			if len(values) > 0 && values[0] != "" {
+				return values[0]
+			}
+		}
+	}
+	return ""
 }
 
 // tokenInAuthorization reads the Token field out of Jellyfin's own
@@ -338,18 +418,4 @@ func intQuery(r *http.Request, name string) int {
 func boolQuery(r *http.Request, name string) bool {
 	value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get(name)))
 	return value == "true" || value == "1"
-}
-
-// Prefixes are the paths this presenter answers.
-//
-// Two APIs share one root here — a client looks for the Plex one at `/` and
-// the Jellyfin one at paths of its own — so the server that mounts both needs
-// to know which paths belong to which. The two vocabularies do not overlap:
-// Plex's are lower-case and start at `/library`, `/identity` and `/:`, and
-// every path below is PascalCase.
-func Prefixes() []string {
-	return []string{
-		"/System/", "/Users/", "/Items", "/Items/", "/Videos/", "/Audio/",
-		"/Shows/", "/Artists", "/Artists/", "/Sessions/", "/QuickConnect/",
-	}
 }

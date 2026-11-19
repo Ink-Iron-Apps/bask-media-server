@@ -584,3 +584,147 @@ func TestThePathIsReadWhicheverWayItIsSpelled(t *testing.T) {
 		}
 	}
 }
+
+// A client's Playlists tab asks for IncludeItemTypes=Playlist. BMS has no
+// playlists, and the honest answer is none — not every film, artist and
+// photo album in the library, which is what the first version answered and
+// what the tablet then drew under "Playlists".
+func TestAskingForSomethingThisServerHasNoneOfReturnsNone(t *testing.T) {
+	server, token, _ := library(t)
+	c := call{t: t, server: server, token: token}
+
+	for _, query := range []string{
+		"/Items?IncludeItemTypes=Playlist&Recursive=true",
+		"/Items?IncludeItemTypes=BoxSet&Recursive=true",
+		"/Users/" + c.me() + "/Items?IncludeItemTypes=Playlist&Recursive=true",
+	} {
+		if items := c.items(query); len(items) != 0 {
+			names := make([]string, 0, len(items))
+			for _, row := range items {
+				names = append(names, row["Name"].(string))
+			}
+			t.Errorf("GET %s returned %d items: %v", query, len(items), names)
+		}
+	}
+
+	// A filter this server does understand still works, which is what makes
+	// the one above a filter rather than a refusal.
+	films := c.items("/Items?IncludeItemTypes=Movie&Recursive=true")
+	if len(films) != 1 || films[0]["Name"] != "Arrival" {
+		t.Errorf("films = %v", films)
+	}
+}
+
+// A URL handed to a media player carries its credential in the query string,
+// because nothing can set a header on it — and clients spell that parameter
+// `api_key` and `ApiKey` about equally often. Reading one spelling is a 401
+// on the URL the player was told to open, which looks like a file that will
+// not play.
+func TestTheTokenIsReadWhicheverWayTheQuerySpellsIt(t *testing.T) {
+	server, token, _ := library(t)
+	c := call{t: t, server: server, token: token}
+
+	films := c.items("/Users/" + c.me() + "/Items?ParentId=" + c.views()["Films"]["Id"].(string))
+	id := films[0]["Id"].(string)
+
+	for _, spelling := range []string{"api_key", "ApiKey", "X-Emby-Token"} {
+		req := httptest.NewRequest(http.MethodGet, "/Videos/"+id+"/stream?Static=true&"+spelling+"="+token, nil)
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: status %d", spelling, rec.Code)
+		}
+	}
+
+	// And a wrong token is still refused, whichever way it is spelled.
+	req := httptest.NewRequest(http.MethodGet, "/Videos/"+id+"/stream?ApiKey=not-a-token", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("a wrong token was accepted: %d", rec.Code)
+	}
+}
+
+// The routes a current client uses, where the account is the token rather
+// than a path segment. A server that answers only the older user-scoped
+// spellings 404s its Continue Watching row and every watched-state write.
+func TestTheModernUserRoutesAnswerToo(t *testing.T) {
+	server, token, _ := library(t)
+	c := call{t: t, server: server, token: token}
+
+	episodes := c.items("/Shows/" + c.items("/Users/" + c.me() + "/Items?ParentId=" + c.views()["TV Shows"]["Id"].(string))[0]["Id"].(string) + "/Episodes")
+	id := episodes[0]["Id"].(string)
+	quarter := int64(30*time.Minute/100) / 4
+
+	res, body := c.do(http.MethodPost, "/UserItems/"+id+"/UserData",
+		map[string]any{"PlaybackPositionTicks": quarter})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("UserData: %d %s", res.StatusCode, body)
+	}
+
+	resume := c.items("/UserItems/Resume")
+	if len(resume) != 1 || resume[0]["Id"] != id {
+		t.Fatalf("resume = %v", resume)
+	}
+
+	// Posting a zero is how a client takes something off that row without
+	// claiming it was watched.
+	if res, _ := c.do(http.MethodPost, "/UserItems/"+id+"/UserData",
+		map[string]any{"PlaybackPositionTicks": 0}); res.StatusCode != http.StatusOK {
+		t.Fatalf("clear: %d", res.StatusCode)
+	}
+	if resume := c.items("/UserItems/Resume"); len(resume) != 0 {
+		t.Errorf("still resumable: %v", resume)
+	}
+
+	if res, _ := c.do(http.MethodPost, "/UserPlayedItems/"+id, nil); res.StatusCode != http.StatusOK {
+		t.Errorf("played: %d", res.StatusCode)
+	}
+	if data, _ := c.json("/Users/" + c.me() + "/Items/" + id)["UserData"].(map[string]any); data["Played"] != true {
+		t.Errorf("not marked played: %v", data)
+	}
+}
+
+// This presenter shares a root with the Plex one, and whoever mounts it uses
+// Prefixes() to decide what to send here. A route added without a prefix is a
+// path the server answers in its own tests and 404s in the product, which is
+// exactly what happened to the modern user routes.
+func TestEveryRouteIsReachableThroughThePrefixes(t *testing.T) {
+	server, token, _ := library(t)
+
+	// A root mux assembled the way cmd/bms assembles one.
+	root := http.NewServeMux()
+	root.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "this is the other API", http.StatusNotFound)
+	}))
+	handler := server.Handler()
+	for _, prefix := range jellyfin.Prefixes() {
+		root.Handle(prefix, handler)
+	}
+
+	c := call{t: t, server: server, token: token}
+	films := c.items("/Users/" + c.me() + "/Items?ParentId=" + c.views()["Films"]["Id"].(string))
+	id := films[0]["Id"].(string)
+
+	// One representative path per family the routes declare.
+	for _, path := range []string{
+		"/System/Info/Public",
+		"/Users/Me",
+		"/Items?IncludeItemTypes=Movie",
+		"/Shows/NextUp",
+		"/Artists",
+		"/Videos/" + id + "/stream",
+		"/Audio/" + id + "/stream",
+		"/UserItems/Resume",
+		"/DisplayPreferences/usersettings",
+		"/QuickConnect/Enabled",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("X-Emby-Token", token)
+		rec := httptest.NewRecorder()
+		root.ServeHTTP(rec, req)
+		if rec.Code == http.StatusNotFound {
+			t.Errorf("GET %s fell through to the other API", path)
+		}
+	}
+}
