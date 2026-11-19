@@ -285,6 +285,31 @@ var migrations = []string{
 	// A scan rewrites a file's subtitles wholesale, and this is what makes
 	// that idempotent: the same stream or the same sidecar is the same row.
 	`CREATE UNIQUE INDEX subtitles_identity ON subtitles(part_id, external, stream_index, path)`,
+
+	// Music and photographs, which need two facts the other kinds do not.
+	//
+	// disc is part of a track's identity, because the two discs of an album
+	// both have a track 1 and nothing else about them differs; taken_at is
+	// what a photo album is ordered by, since a folder of pictures belongs in
+	// the order they happened rather than the order of their filenames.
+	`ALTER TABLE items ADD COLUMN disc INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE items ADD COLUMN taken_at INTEGER NOT NULL DEFAULT 0`,
+	`DROP INDEX items_identity`,
+	`CREATE UNIQUE INDEX items_identity ON items(section_id, kind, IFNULL(parent_id, 0), title, year, idx, disc)`,
+	`CREATE INDEX items_parent_taken ON items(parent_id, taken_at)`,
+
+	// A photograph's dimensions and the rotation its EXIF asks for. On the
+	// part rather than the item because they describe the file: a photograph
+	// with two versions on disk has two sizes, and this is the row that is
+	// one file.
+	`ALTER TABLE parts ADD COLUMN width INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE parts ADD COLUMN height INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE parts ADD COLUMN orientation INTEGER NOT NULL DEFAULT 0`,
+
+	// Who plays on a track, where that is not the album's artist. Its own
+	// column because it is per track while the artist is per album, and
+	// because a compilation is unreadable without it.
+	`ALTER TABLE items ADD COLUMN performer TEXT NOT NULL DEFAULT ''`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

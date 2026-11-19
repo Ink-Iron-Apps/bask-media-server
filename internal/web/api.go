@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/inknironapps/bask-media-server/internal/artwork"
@@ -23,12 +24,27 @@ type itemView struct {
 	Subtitle string `json:"subtitle,omitempty"`
 	Year     int    `json:"year,omitempty"`
 	Index    int    `json:"index,omitempty"`
+	Disc     int    `json:"disc,omitempty"`
 	Summary  string `json:"summary,omitempty"`
 
 	DurationMS int64 `json:"durationMs,omitempty"`
 	Poster     bool  `json:"poster"`
 	Art        bool  `json:"art"`
 	ParentID   int64 `json:"parentId,omitempty"`
+
+	// Performer is who plays on a track, where that is not the album's own
+	// artist. The page puts it under the title on a compilation and leaves
+	// the row alone on every other album.
+	Performer string `json:"performer,omitempty"`
+
+	// TakenAt is when a photograph was taken, as a date the page can show
+	// without parsing a timestamp, and empty for everything else.
+	TakenAt string `json:"takenAt,omitempty"`
+
+	// Width and Height are a photograph's, as it is meant to be seen, so the
+	// page can reserve the right shape before the picture arrives.
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
 
 	// Where this viewer is in it. Their own row and nobody else's: progress
 	// is per account, which is the point of having accounts.
@@ -69,9 +85,18 @@ func (s *Server) views(ctx context.Context, items []domain.Item, userID int64) (
 	for _, it := range items {
 		view := itemView{
 			ID: it.ID, Kind: string(it.Kind), Title: it.Title, Year: it.Year,
-			Index: it.Index, Summary: it.Summary,
+			Index: it.Index, Disc: it.Disc, Summary: it.Summary,
 			DurationMS: it.Duration.Milliseconds(),
-			Poster:     it.PosterKey != "", Art: it.ArtKey != "",
+			// A photograph and an album of them have no poster in the cache:
+			// the picture itself is the thumbnail, made on request.
+			Poster: it.PosterKey != "" || it.Kind == domain.KindPhoto || it.Kind == domain.KindPhotoAlbum,
+			Art:    it.ArtKey != "",
+		}
+		if !it.TakenAt.IsZero() {
+			view.TakenAt = it.TakenAt.Format("2006-01-02")
+		}
+		if it.Kind == domain.KindPhoto && len(it.Parts) > 0 {
+			view.Width, view.Height = displaySize(it.Parts[0])
 		}
 		if it.ParentID != nil {
 			view.ParentID = *it.ParentID
@@ -91,6 +116,29 @@ func (s *Server) views(ctx context.Context, items []domain.Item, userID int64) (
 		}
 		if it.Kind == domain.KindSeason && it.Title == "" {
 			view.Title = "Season " + strconv.Itoa(it.Index)
+		}
+		// A track says who plays it and what it is on, which is what makes a
+		// search result readable and what a compilation needs on every row.
+		if it.Kind == domain.KindTrack && it.ParentID != nil {
+			view.Performer = it.Performer
+			var bits []string
+			if it.Performer != "" {
+				bits = append(bits, it.Performer)
+			}
+			if album := parent(*it.ParentID); album != nil {
+				if len(bits) == 0 && album.ParentID != nil {
+					if artist := parent(*album.ParentID); artist != nil {
+						bits = append(bits, artist.Title)
+					}
+				}
+				bits = append(bits, album.Title)
+			}
+			view.Subtitle = strings.Join(bits, " · ")
+		}
+		if it.Kind == domain.KindAlbum && it.ParentID != nil {
+			if artist := parent(*it.ParentID); artist != nil {
+				view.Subtitle = artist.Title
+			}
 		}
 		out = append(out, view)
 	}
@@ -163,11 +211,8 @@ func (s *Server) section(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kind := domain.KindMovie
-	if section.Kind == domain.SectionShows {
-		kind = domain.KindShow
-	}
 	page := store.Page{Start: intQuery(r, "start"), Size: intQuery(r, "size")}
+	kind := section.Kind.TopKind()
 	items, total, err := s.DB.SectionItems(r.Context(), id, kind, page)
 	if err != nil {
 		s.fail(w, "list items", err)
@@ -355,6 +400,24 @@ func (s *Server) image(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clamped, because the width is a number from a URL and rendering is the
+	// memory-hungry half of serving artwork.
+	width, height := min(intQuery(r, "w"), 4000), min(intQuery(r, "h"), 4000)
+
+	// A photograph is served from the library, where it already is: see
+	// serve.Photo. Everything else is a poster in the artwork cache.
+	if part, found := s.photoSource(r.Context(), item); found {
+		if err := serve.Photo(w, r, s.Artwork, part.Path, width, height, part.Orientation); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				s.logger().Warn("a photograph is missing", "path", part.Path)
+				http.Error(w, "file is gone", http.StatusNotFound)
+				return
+			}
+			s.fail(w, "serve photo", err)
+		}
+		return
+	}
+
 	key := item.PosterKey
 	if r.URL.Query().Get("kind") == "art" {
 		key = item.ArtKey
@@ -363,9 +426,6 @@ func (s *Server) image(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no image", http.StatusNotFound)
 		return
 	}
-	// Clamped, because the width is a number from a URL and rendering is the
-	// memory-hungry half of serving artwork.
-	width, height := min(intQuery(r, "w"), 2000), min(intQuery(r, "h"), 2000)
 	if err := serve.Image(w, r, s.Artwork, key, width, height); err != nil {
 		if errors.Is(err, artwork.ErrNotCached) {
 			http.Error(w, "no image", http.StatusNotFound)
@@ -373,6 +433,44 @@ func (s *Server) image(w http.ResponseWriter, r *http.Request) {
 		}
 		s.fail(w, "serve artwork", err)
 	}
+}
+
+// photoSource is the file a photograph is shown from, or the earliest
+// photograph inside an album of them, which is the only cover it has.
+func (s *Server) photoSource(ctx context.Context, item *domain.Item) (domain.Part, bool) {
+	switch item.Kind {
+	case domain.KindPhoto:
+		parts := item.Parts
+		if len(parts) == 0 {
+			found, err := s.DB.Parts(ctx, item.ID)
+			if err != nil {
+				s.logger().Warn("could not read a photograph's file", "item", item.ID, "error", err)
+				return domain.Part{}, false
+			}
+			parts = found
+		}
+		if len(parts) > 0 {
+			return parts[0], true
+		}
+	case domain.KindPhotoAlbum:
+		part, err := s.DB.AlbumCover(ctx, item.ID)
+		if err == nil {
+			return *part, true
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			s.logger().Warn("could not read an album cover", "item", item.ID, "error", err)
+		}
+	}
+	return domain.Part{}, false
+}
+
+// displaySize is a photograph's dimensions as they are meant to be seen: its
+// stored size with a quarter turn applied where its EXIF asks for one.
+func displaySize(p domain.Part) (width, height int) {
+	if p.Orientation >= 5 && p.Orientation <= 8 {
+		return p.Height, p.Width
+	}
+	return p.Width, p.Height
 }
 
 // stream sends the file itself, with ranges, which is what lets the browser's

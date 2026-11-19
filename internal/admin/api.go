@@ -85,6 +85,7 @@ type sectionView struct {
 	Roots     []string  `json:"roots"`
 	ScannedAt time.Time `json:"scannedAt,omitempty"`
 	Items     int       `json:"items"`
+	Leaves    int       `json:"leaves"`
 	Episodes  int       `json:"episodes"`
 	Files     int       `json:"files"`
 	Bytes     int64     `json:"bytes"`
@@ -109,7 +110,8 @@ func (s *Server) listSections(w http.ResponseWriter, r *http.Request) {
 		view := sectionView{
 			ID: sec.ID, Title: sec.Title, Kind: string(sec.Kind), Roots: sec.Roots,
 			ScannedAt: sec.ScannedAt,
-			Items:     stats.Items, Episodes: stats.Episodes, Files: stats.Files, Bytes: stats.Bytes,
+			Items:     stats.Items, Leaves: stats.Leaves, Episodes: stats.Episodes,
+			Files: stats.Files, Bytes: stats.Bytes,
 		}
 		// A root that is not there is the single most common reason a library
 		// empties itself: an unplugged disk, or a drive letter that moved. Say
@@ -189,8 +191,9 @@ func (s *Server) validSection(w http.ResponseWriter, title, kind string, roots [
 		return "", "", nil, false
 	}
 	sectionKind := domain.SectionKind(strings.TrimSpace(kind))
-	if sectionKind != domain.SectionMovies && sectionKind != domain.SectionShows {
-		writeError(w, http.StatusBadRequest, `a library holds either "movies" or "shows"`)
+	if !sectionKind.Valid() {
+		writeError(w, http.StatusBadRequest,
+			`a library holds "movies", "shows", "music" or "photos"`)
 		return "", "", nil, false
 	}
 

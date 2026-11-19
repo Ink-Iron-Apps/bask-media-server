@@ -136,6 +136,18 @@ func Decide(info ffprobe.Info, container string, caps Capabilities) Plan {
 	if plan.Mode == ModeDirect && !supported(caps.Containers, container) {
 		plan.Mode = ModeRemux
 		reasons = append(reasons, fmt.Sprintf("%s is not a container this client plays", strings.ToUpper(container)))
+
+		// A remux has to put the packets somewhere, and the somewhere is
+		// fragmented MP4. Most audio codecs go in one; the older lossless
+		// ones do not, and copying them into it produces a file that either
+		// fails to write or fails to play. Those are re-encoded instead,
+		// which for an audio-only file costs a fraction of a core.
+		if video == nil && audio != nil && !fitsInMP4(audio.Codec) {
+			plan.Mode = ModeTranscode
+			plan.AudioCodec = "aac"
+			reasons = append(reasons,
+				fmt.Sprintf("%s cannot be rewrapped without re-encoding", display(audio.Codec)))
+		}
 	}
 
 	if plan.Mode != ModeDirect && plan.VideoCodec == "h264" {
@@ -174,6 +186,19 @@ func bitRateFor(height int) int64 {
 		return 6_000_000
 	default:
 		return 10_000_000
+	}
+}
+
+// fitsInMP4 reports whether a codec's packets can be carried in a fragmented
+// MP4 untouched, which is what a remux does.
+func fitsInMP4(codec string) bool {
+	switch strings.ToLower(codec) {
+	case "aac", "alac", "mp3", "ac3", "eac3", "flac", "opus", "dts", "truehd":
+		return true
+	default:
+		// Vorbis, WMA, PCM, Monkey's Audio, WavPack and the rest: formats
+		// that predate MP4 or were never mapped into it.
+		return false
 	}
 }
 

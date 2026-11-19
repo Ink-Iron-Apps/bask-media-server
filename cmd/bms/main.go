@@ -52,7 +52,7 @@ func (s *sectionFlag) String() string { return strings.Join(s.specs, ",") }
 
 func (s *sectionFlag) Set(value string) error {
 	if strings.Count(value, ":") < 2 {
-		return errors.New(`want "Title:movies|shows:/path"`)
+		return errors.New(`want "Title:movies|shows|music|photos:/path"`)
 	}
 	s.specs = append(s.specs, value)
 	return nil
@@ -78,7 +78,7 @@ func main() {
 		tmdbKey    = flag.String("tmdb-key", "", "TMDB API key or v4 read token; falls back to BMS_TMDB_API_KEY")
 		sections   sectionFlag
 	)
-	flag.Var(&sections, "section", `add a library on first run, as "Title:movies|shows:/path" (repeatable)`)
+	flag.Var(&sections, "section", `add a library on first run, as "Title:movies|shows|music|photos:/path" (repeatable)`)
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -240,7 +240,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	defer runner.Shutdown()
 
 	if cfg.scanNow {
-		scanner := &scan.Scanner{DB: db, Prober: prober, Log: log}
+		scanner := &scan.Scanner{DB: db, Prober: prober, Log: log, Artwork: images}
 		list, err := db.Sections(ctx)
 		if err != nil {
 			return err
@@ -424,8 +424,8 @@ func addSections(ctx context.Context, db *store.DB, log *slog.Logger, specs []st
 	for _, spec := range specs {
 		parts := strings.SplitN(spec, ":", 3)
 		title, kind, root := parts[0], domain.SectionKind(parts[1]), parts[2]
-		if kind != domain.SectionMovies && kind != domain.SectionShows {
-			return fmt.Errorf("section %q: kind must be movies or shows", title)
+		if !kind.Valid() {
+			return fmt.Errorf("section %q: kind must be movies, shows, music or photos", title)
 		}
 		if have[title] {
 			continue

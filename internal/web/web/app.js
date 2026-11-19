@@ -133,11 +133,21 @@ document.getElementById('search-form').addEventListener('submit', (event) => {
 
 /* ---------- posters ---------- */
 
+// square names the things that are not film posters: a cover, an artist, an
+// album of photographs. Asking for the wrong shape is not only ugly — the
+// server renders and caches whatever size is asked for, so a poster-shaped
+// request for a square cover is a second rendition of the same picture.
+function square(kind) {
+  return kind === 'artist' || kind === 'album' || kind === 'track' ||
+    kind === 'photoalbum' || kind === 'photo';
+}
+
 function poster(item, width) {
-  const box = el('div', { class: 'poster' });
+  const box = el('div', { class: 'poster' + (square(item.kind) ? ' square' : '') });
   if (item.poster) {
     box.append(el('img', {
-      src: '/web/image/' + item.id + '?w=' + width + '&h=' + Math.round(width * 1.5),
+      src: '/web/image/' + item.id + '?w=' + width + '&h=' +
+        (square(item.kind) ? width : Math.round(width * 1.5)),
       alt: '', loading: 'lazy',
     }));
   } else {
@@ -159,10 +169,15 @@ function poster(item, width) {
 }
 
 function card(item) {
-  const where = item.kind === 'episode' || item.kind === 'movie'
-    ? '#/item/' + item.id
-    : '#/item/' + item.id;
-  return el('a', { class: 'card', href: where },
+  if (item.kind === 'track') {
+    // A track is played, not opened: there is no page for one, and a search
+    // that found it should start it rather than offer a dead end.
+    return el('button', { class: 'card', on: { click: () => playTracks([item], 0, null) } },
+      poster(item, 300),
+      el('div', { class: 'title', text: item.title }),
+      el('div', { class: 'sub', text: item.subtitle || '' }));
+  }
+  return el('a', { class: 'card', href: '#/item/' + item.id },
     poster(item, 300),
     el('div', { class: 'title', text: item.title }),
     el('div', { class: 'sub', text: item.subtitle || (item.year ? String(item.year) : '') }));
@@ -207,7 +222,7 @@ async function homeView() {
 
   const resume = home.continue || [];
   fill(main(),
-    resume.length ? el('h2', { text: 'Continue watching' }) : null,
+    resume.length ? el('h2', { text: 'Where you left off' }) : null,
     resume.length ? grid(resume) : null,
     el('h2', { text: 'Libraries' }),
     (home.sections || []).length
@@ -216,11 +231,21 @@ async function homeView() {
       : el('p', { class: 'empty', text: 'No libraries yet. Whoever runs this server adds them in the admin interface.' }));
 }
 
+// holds is what one of these libraries is full of, said properly.
+function holds(kind, n) {
+  const word = kind === 'shows' ? 'show'
+    : kind === 'music' ? 'artist'
+      : kind === 'photos' ? 'album'
+        : 'film';
+  if (word === 'film') return n + (n === 1 ? ' film' : ' films');
+  return n + ' ' + word + (n === 1 ? '' : 's');
+}
+
 async function libraryView(id) {
   const page = await api('GET', '/sections/' + id + '?size=120');
   fill(main(),
     el('h1', { text: page.title }),
-    el('p', { class: 'muted', text: page.total + (page.kind === 'shows' ? ' shows' : ' films') }),
+    el('p', { class: 'muted', text: holds(page.kind, page.total) }),
     page.items.length ? grid(page.items) : el('p', { class: 'empty', text: 'Nothing here yet. It may not have been scanned.' }));
 
   // More of the library, a page at a time, because the server pages and so
@@ -258,6 +283,14 @@ async function itemView(id) {
   const item = detail.item;
   const children = detail.children || [];
   const parts = detail.parts || [];
+
+  // Music and photographs are browsed differently enough that sharing the
+  // film hero would mean a page of hedged conditionals: an album is a list of
+  // tracks with one cover, and a photo album is a wall of pictures.
+  if (item.kind === 'album') return albumView(detail);
+  if (item.kind === 'artist') return artistView(detail);
+  if (item.kind === 'photoalbum') return photoAlbumView(detail);
+  if (item.kind === 'photo') return photoView(detail);
 
   const hero = el('div', { class: 'hero' + (item.art ? ' with-art' : '') });
   if (item.art) hero.append(el('img', { src: '/web/image/' + item.id + '?kind=art&w=1280', alt: '' }));
@@ -304,6 +337,414 @@ async function itemView(id) {
     el('span', { class: 'muted', text: episode.watched ? 'watched' : (episode.offsetMs ? clock(episode.offsetMs) : runtime(episode.durationMs)) })))) : null);
 }
 
+/* ---------- music ---------- */
+
+async function artistView(detail) {
+  const item = detail.item;
+  const albums = (detail.children || []).filter((child) => child.kind === 'album');
+
+  fill(main(),
+    el('div', { class: 'head' },
+      el('h1', { text: item.title }),
+      el('p', { class: 'muted', text: count(albums.length, 'album') })),
+    albums.length ? grid(albums) : el('p', { class: 'empty', text: 'Nothing here yet.' }));
+}
+
+async function albumView(detail) {
+  const item = detail.item;
+  const tracks = (detail.children || []).filter((child) => child.kind === 'track');
+  const total = tracks.reduce((sum, track) => sum + (track.durationMs || 0), 0);
+
+  const meta = [item.subtitle, item.year ? String(item.year) : '',
+    count(tracks.length, 'track'), runtime(total)].filter(Boolean).join(' · ');
+
+  const head = el('div', { class: 'album-head' },
+    poster(item, 300),
+    el('div', { class: 'about' },
+      el('h1', { text: item.title }),
+      el('div', { class: 'meta', text: meta }),
+      el('div', { class: 'row actions' },
+        tracks.length
+          ? el('button', { class: 'primary', text: 'Play album', on: { click: () => playTracks(tracks, 0, item) } })
+          : null,
+        detail.parent
+          ? el('a', { class: 'button', href: '#/item/' + detail.parent.id, text: '‹ ' + detail.parent.title })
+          : null)));
+
+  // Discs only where there is more than one, because "Disc 1" above an album
+  // that has one disc is a heading that says nothing.
+  const discs = [...new Set(tracks.map((track) => track.disc || 0))];
+  const rows = [];
+  for (const disc of discs) {
+    if (discs.length > 1) rows.push(el('h2', { class: 'disc', text: 'Disc ' + (disc || 1) }));
+    for (const track of tracks.filter((t) => (t.disc || 0) === disc)) {
+      rows.push(trackRow(track, tracks, item));
+    }
+  }
+
+  fill(main(), head, tracks.length ? el('div', { class: 'tracks' }, rows) : el('p', { class: 'empty', text: 'No tracks.' }));
+  markPlaying();
+}
+
+function trackRow(track, queue, album) {
+  const row = el('button', {
+    class: 'track',
+    'data-track': track.id,
+    on: { click: () => playTracks(queue, queue.indexOf(track), album) },
+  },
+  el('span', { class: 'n', text: track.index ? String(track.index) : '·' }),
+  el('span', { class: 'body' },
+    el('div', { text: track.title }),
+    // Who plays it, and only where that is not the album's own artist: on a
+    // compilation this is the only thing that tells the rows apart, and on
+    // every other album it would repeat the title at the top of the page.
+    track.performer ? el('div', { class: 'sum', text: track.performer }) : null),
+  el('span', { class: 'muted mono', text: clock(track.durationMs) }));
+  return row;
+}
+
+// markPlaying highlights the row that is sounding, so a list of twenty tracks
+// says which one you are hearing.
+function markPlaying() {
+  const id = queue.tracks.length ? String(queue.tracks[queue.at].id) : '';
+  for (const row of document.querySelectorAll('.track')) {
+    row.classList.toggle('on', row.dataset.track === id);
+  }
+}
+
+/* ---------- the audio player ---------- */
+
+const audio = document.getElementById('audio');
+const audioBox = document.getElementById('audio-player');
+const queue = { tracks: [], at: 0, album: null, session: null, timer: null, hls: null };
+
+async function playTracks(tracks, index, album) {
+  if (!tracks.length) return;
+  queue.tracks = tracks;
+  queue.at = Math.max(0, Math.min(index, tracks.length - 1));
+  queue.album = album || queue.album;
+  await startTrack(0);
+}
+
+// startTrack plays whatever the queue is pointing at. offsetMs resumes.
+async function startTrack(offsetMs) {
+  const track = queue.tracks[queue.at];
+  if (!track) return closeAudio();
+
+  stopReporting();
+  detachAudioHls();
+  audioBox.hidden = false;
+  document.getElementById('audio-title').textContent = track.title;
+  document.getElementById('audio-sub').textContent =
+    track.subtitle || (queue.album ? queue.album.title : '');
+  document.getElementById('audio-mode').textContent = '';
+
+  const art = document.getElementById('audio-cover');
+  const cover = queue.album && queue.album.poster ? queue.album : (track.poster ? track : null);
+  if (cover) art.src = '/web/image/' + cover.id + '?w=120&h=120';
+  else art.removeAttribute('src');
+  document.getElementById('audio-art').href =
+    '#/item/' + (queue.album ? queue.album.id : track.id);
+
+  let answer;
+  try {
+    answer = await api('POST', '/play', {
+      itemId: track.id,
+      startMs: Math.round(offsetMs || 0),
+      capabilities: capabilities(),
+    });
+  } catch (err) {
+    failed(err);
+    return;
+  }
+  queue.session = answer.session || null;
+
+  const mode = document.getElementById('audio-mode');
+  mode.textContent = answer.mode === 'direct' ? '' : answer.label;
+  mode.className = answer.mode === 'direct' ? 'muted' : 'converting';
+
+  if (answer.mode === 'unsupported') {
+    toast('This browser cannot play ' + track.title + ': ' + answer.why, true);
+    return nextTrack();
+  }
+
+  if (answer.hls && !audio.canPlayType('application/vnd.apple.mpegurl')) {
+    try {
+      const Hls = await loadHls();
+      if (!Hls || !Hls.isSupported()) throw new Error('this browser cannot play a converted stream');
+      const hls = new Hls({ maxBufferLength: 30, enableWorker: true });
+      queue.hls = hls;
+      hls.on(Hls.Events.MANIFEST_PARSED, () => audio.play().catch(() => {}));
+      hls.on(Hls.Events.ERROR, (event, data) => {
+        if (data && data.fatal) toast('The converted stream stopped.', true);
+      });
+      hls.loadSource(answer.url);
+      hls.attachMedia(audio);
+    } catch (err) {
+      failed(err);
+      return;
+    }
+  } else {
+    audio.src = answer.url;
+    if (offsetMs > 0) {
+      audio.addEventListener('loadedmetadata', function once() {
+        audio.removeEventListener('loadedmetadata', once);
+        try { audio.currentTime = offsetMs / 1000; } catch (err) { /* already there */ }
+      });
+    }
+    audio.play().catch(() => { /* a browser that wants a click first */ });
+  }
+
+  document.getElementById('audio-toggle').textContent = 'Pause';
+  // Every ten seconds, the same as the video player: a track that was half
+  // heard resumes where it was, on this browser or on the television.
+  queue.timer = setInterval(reportAudio, 10000);
+  markPlaying();
+}
+
+function nextTrack() {
+  reportAudio();
+  if (queue.at + 1 >= queue.tracks.length) return closeAudio();
+  queue.at++;
+  return startTrack(0);
+}
+
+function previousTrack() {
+  // The first few seconds of a track mean "the one before"; after that they
+  // mean "start this one again", which is what every player has always done.
+  if (audio.currentTime > 5) {
+    audio.currentTime = 0;
+    return;
+  }
+  reportAudio();
+  if (queue.at === 0) {
+    audio.currentTime = 0;
+    return;
+  }
+  queue.at--;
+  startTrack(0);
+}
+
+function reportAudio() {
+  const track = queue.tracks[queue.at];
+  if (!track || !audio.duration || Number.isNaN(audio.duration)) return;
+  fetch(API + '/progress', {
+    method: 'POST',
+    headers: { 'X-BMS-Web': '1', 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({
+      itemId: track.id,
+      offsetMs: Math.round(audio.currentTime * 1000),
+      durationMs: Math.round(audio.duration * 1000),
+    }),
+    keepalive: true,
+  }).catch(() => { /* a lost report costs a few seconds of position */ });
+}
+
+function stopReporting() {
+  clearInterval(queue.timer);
+  queue.timer = null;
+}
+
+function detachAudioHls() {
+  if (queue.hls) {
+    try { queue.hls.destroy(); } catch (err) { /* already gone */ }
+    queue.hls = null;
+  }
+}
+
+function closeAudio() {
+  reportAudio();
+  stopReporting();
+  if (queue.session) {
+    fetch(API + '/play/' + queue.session + '/stop', {
+      method: 'POST',
+      headers: { 'X-BMS-Web': '1' },
+      credentials: 'same-origin',
+      keepalive: true,
+    }).catch(() => { /* the watchdog is the backstop */ });
+    queue.session = null;
+  }
+  detachAudioHls();
+  audio.pause();
+  audio.removeAttribute('src');
+  audio.load();
+  queue.tracks = [];
+  audioBox.hidden = true;
+  markPlaying();
+}
+
+document.getElementById('audio-next').addEventListener('click', nextTrack);
+document.getElementById('audio-prev').addEventListener('click', previousTrack);
+document.getElementById('audio-close').addEventListener('click', closeAudio);
+document.getElementById('audio-toggle').addEventListener('click', () => {
+  if (audio.paused) audio.play().catch(() => {});
+  else audio.pause();
+});
+audio.addEventListener('play', () => { document.getElementById('audio-toggle').textContent = 'Pause'; });
+audio.addEventListener('pause', () => {
+  document.getElementById('audio-toggle').textContent = 'Play';
+  reportAudio();
+});
+audio.addEventListener('ended', nextTrack);
+audio.addEventListener('timeupdate', () => {
+  const bar = document.getElementById('audio-progress');
+  if (audio.duration && !Number.isNaN(audio.duration)) {
+    bar.value = Math.round((audio.currentTime / audio.duration) * 100);
+  }
+  document.getElementById('audio-time').textContent =
+    clock(audio.currentTime * 1000) + (audio.duration ? ' / ' + clock(audio.duration * 1000) : '');
+});
+audio.addEventListener('error', () => {
+  const track = queue.tracks[queue.at];
+  if (track) toast('Could not play ' + track.title + '.', true);
+});
+window.addEventListener('beforeunload', () => { if (queue.tracks.length) reportAudio(); });
+
+/* ---------- photographs ---------- */
+
+async function photoAlbumView(detail) {
+  const item = detail.item;
+  const children = detail.children || [];
+  const albums = children.filter((child) => child.kind === 'photoalbum');
+  const pictures = children.filter((child) => child.kind === 'photo');
+
+  const meta = [
+    albums.length ? count(albums.length, 'album') : '',
+    pictures.length ? count(pictures.length, 'photograph') : '',
+    span(pictures),
+  ].filter(Boolean).join(' · ');
+
+  fill(main(),
+    el('div', { class: 'head' },
+      el('h1', { text: item.title }),
+      meta ? el('p', { class: 'muted', text: meta }) : null,
+      detail.parent
+        ? el('a', { class: 'button', href: '#/item/' + detail.parent.id, text: '‹ ' + detail.parent.title })
+        : null),
+    albums.length ? grid(albums) : null,
+    pictures.length ? wall(pictures) : null,
+    !albums.length && !pictures.length
+      ? el('p', { class: 'empty', text: 'Nothing here yet. It may not have been scanned.' })
+      : null);
+}
+
+// span is the stretch of time an album covers, which is the one fact about a
+// folder of photographs that is not already in its name.
+function span(pictures) {
+  const dates = pictures.map((photo) => photo.takenAt).filter(Boolean).sort();
+  if (!dates.length) return '';
+  const first = dates[0].slice(0, 4);
+  const last = dates[dates.length - 1].slice(0, 4);
+  return first === last ? first : first + '–' + last;
+}
+
+// wall is the grid of thumbnails. Every picture is a button rather than a
+// link, because opening one is opening the viewer over this page and not
+// going anywhere else.
+function wall(pictures) {
+  return el('div', { class: 'wall' }, pictures.map((photo, index) =>
+    el('button', {
+      class: 'shot',
+      title: photo.title,
+      on: { click: () => openLightbox(pictures, index) },
+    },
+    el('img', { src: '/web/image/' + photo.id + '?w=400&h=400', alt: photo.title, loading: 'lazy' }))));
+}
+
+async function photoView(detail) {
+  // One photograph on its own — reached from a link rather than from its
+  // album — opens the viewer over the album it is in, so that the arrows
+  // still work.
+  const item = detail.item;
+  let pictures = [item];
+  let at = 0;
+  if (detail.parent) {
+    try {
+      const album = await api('GET', '/items/' + detail.parent.id);
+      const found = (album.children || []).filter((child) => child.kind === 'photo');
+      const index = found.findIndex((child) => child.id === item.id);
+      if (index >= 0) {
+        pictures = found;
+        at = index;
+      }
+    } catch (err) { /* the one picture is enough */ }
+  }
+
+  fill(main(),
+    el('div', { class: 'head' },
+      el('h1', { text: item.title }),
+      detail.parent
+        ? el('a', { class: 'button', href: '#/item/' + detail.parent.id, text: '‹ ' + detail.parent.title })
+        : null));
+  openLightbox(pictures, at);
+}
+
+const lightbox = document.getElementById('lightbox');
+let viewing = null; // { pictures, at }
+
+function openLightbox(pictures, index) {
+  viewing = { pictures, at: index };
+  lightbox.hidden = false;
+  showPhoto();
+}
+
+function showPhoto() {
+  if (!viewing) return;
+  const photo = viewing.pictures[viewing.at];
+  if (!photo) return closeLightbox();
+
+  // A size rather than the original: the server renders and caches it once,
+  // and a phone on a slow link is not sent a twelve-megapixel file to shrink
+  // in its own layer. The original is one click away, under Download.
+  document.getElementById('lightbox-img').src = '/web/image/' + photo.id + '?w=2000&h=2000';
+  document.getElementById('lightbox-img').alt = photo.title;
+  document.getElementById('lightbox-title').textContent = photo.title;
+  document.getElementById('lightbox-when').textContent = photo.takenAt || '';
+  document.getElementById('lightbox-count').textContent =
+    (viewing.at + 1) + ' / ' + viewing.pictures.length;
+  const file = document.getElementById('lightbox-file');
+  file.href = '/web/image/' + photo.id;
+  file.setAttribute('download', photo.title);
+
+  // The next one and the one before are fetched now, so that moving through
+  // an album is instant rather than a wait per picture.
+  for (const near of [viewing.at + 1, viewing.at - 1]) {
+    const other = viewing.pictures[near];
+    if (other) new Image().src = '/web/image/' + other.id + '?w=2000&h=2000';
+  }
+}
+
+function stepPhoto(by) {
+  if (!viewing) return;
+  const at = viewing.at + by;
+  if (at < 0 || at >= viewing.pictures.length) return;
+  viewing.at = at;
+  showPhoto();
+}
+
+function closeLightbox() {
+  viewing = null;
+  lightbox.hidden = true;
+  document.getElementById('lightbox-img').removeAttribute('src');
+}
+
+document.getElementById('lightbox-back').addEventListener('click', closeLightbox);
+document.getElementById('lightbox-next').addEventListener('click', () => stepPhoto(1));
+document.getElementById('lightbox-prev').addEventListener('click', () => stepPhoto(-1));
+document.addEventListener('keydown', (event) => {
+  if (lightbox.hidden) return;
+  if (event.key === 'Escape') closeLightbox();
+  if (event.key === 'ArrowRight') stepPhoto(1);
+  if (event.key === 'ArrowLeft') stepPhoto(-1);
+});
+
+// count is "1 album" or "12 albums", which is said in enough places to be
+// worth one function.
+function count(n, word) {
+  return n + ' ' + word + (n === 1 ? '' : 's');
+}
+
 /* ---------- what this browser can actually play ---------- */
 
 // capabilities asks the browser rather than telling it.
@@ -332,14 +773,37 @@ function capabilities() {
   if (can('video/webm; codecs="vp9"') || can('video/mp4; codecs="vp09.00.10.08"')) video.push('vp9');
   if (can('video/mp4; codecs="av01.0.05M.08"')) video.push('av1');
 
+  // Music is asked about separately, through an audio element: a browser
+  // answers differently for the two — Chrome plays FLAC in an <audio> and
+  // says no to it in a <video> — and a wrong answer here is either a track
+  // that will not play or a server re-encoding a file that would have.
+  const sound = document.createElement('audio');
+  const hear = (type) => {
+    const answer = sound.canPlayType(type);
+    return answer === 'probably' || answer === 'maybe';
+  };
+  if (hear('audio/mpeg')) containers.push('mp3');
+  if (hear('audio/flac') || hear('audio/x-flac')) containers.push('flac');
+  if (hear('audio/mp4')) containers.push('m4a', 'm4b', 'aac', 'alac');
+  if (hear('audio/ogg; codecs="vorbis"')) containers.push('ogg', 'oga');
+  if (hear('audio/ogg; codecs="opus"')) containers.push('opus', 'ogg');
+  if (hear('audio/wav') || hear('audio/wave') || hear('audio/x-wav')) containers.push('wav');
+  if (hear('audio/aiff') || hear('audio/x-aiff')) containers.push('aiff', 'aif');
+
   const audio = [];
+  if (hear('audio/wav') || hear('audio/x-wav')) {
+    // What ffprobe calls the contents of a WAV, which is the codec name the
+    // server compares against.
+    audio.push('pcm_s16le', 'pcm_s24le', 'pcm_f32le', 'pcm_u8');
+  }
+  if (hear('audio/mp4; codecs="alac"')) audio.push('alac');
   if (can('audio/mp4; codecs="mp4a.40.2"')) audio.push('aac');
   if (can('audio/mpeg')) audio.push('mp3');
   if (can('audio/mp4; codecs="ac-3"')) audio.push('ac3');
   if (can('audio/mp4; codecs="ec-3"')) audio.push('eac3');
   if (can('audio/webm; codecs="opus"') || can('audio/ogg; codecs="opus"')) audio.push('opus');
   if (can('audio/webm; codecs="vorbis"') || can('audio/ogg; codecs="vorbis"')) audio.push('vorbis');
-  if (can('audio/flac') || can('audio/x-flac')) audio.push('flac');
+  if (can('audio/flac') || can('audio/x-flac') || hear('audio/flac')) audio.push('flac');
 
   return { containers, video, audio };
 }
@@ -453,6 +917,9 @@ async function play(detail, offsetMs) {
     return;
   }
   const startMs = Math.max(0, Math.round(offsetMs || 0));
+
+  // Two things playing at once is nobody's intention.
+  if (!audio.paused) audio.pause();
 
   document.getElementById('player-title').textContent =
     (detail.item.subtitle ? detail.item.subtitle + ' · ' : '') + detail.item.title;
@@ -703,7 +1170,11 @@ document.addEventListener('keydown', (event) => {
 });
 
 window.addEventListener('beforeunload', () => { if (playing) report(); });
-window.addEventListener('hashchange', () => { if (playerBox.hidden) render(); });
+window.addEventListener('hashchange', () => {
+  // A photograph open over an album belongs to the page that opened it.
+  if (!lightbox.hidden) closeLightbox();
+  if (playerBox.hidden) render();
+});
 
 /* ---------- start ---------- */
 

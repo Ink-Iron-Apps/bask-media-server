@@ -18,6 +18,17 @@ const (
 	KindShow    Kind = "show"
 	KindSeason  Kind = "season"
 	KindEpisode Kind = "episode"
+
+	// Music, three levels deep for the same reason television is: an artist
+	// gathers albums, an album gathers tracks, and only the track is a file.
+	KindArtist Kind = "artist"
+	KindAlbum  Kind = "album"
+	KindTrack  Kind = "track"
+
+	// Photos, where the hierarchy is the folder tree itself: an album holds
+	// photos and other albums, however deep the person who filed them went.
+	KindPhotoAlbum Kind = "photoalbum"
+	KindPhoto      Kind = "photo"
 )
 
 // SectionKind is what a library holds. A section is the unit a client browses
@@ -27,7 +38,34 @@ type SectionKind string
 const (
 	SectionMovies SectionKind = "movies"
 	SectionShows  SectionKind = "shows"
+	SectionMusic  SectionKind = "music"
+	SectionPhotos SectionKind = "photos"
 )
+
+// TopKind is the kind a section's top level holds: what a client sees when it
+// opens the library, and what a scan's first level creates.
+func (k SectionKind) TopKind() Kind {
+	switch k {
+	case SectionShows:
+		return KindShow
+	case SectionMusic:
+		return KindArtist
+	case SectionPhotos:
+		return KindPhotoAlbum
+	default:
+		return KindMovie
+	}
+}
+
+// Valid reports whether this is a kind of library BMS knows how to scan.
+func (k SectionKind) Valid() bool {
+	switch k {
+	case SectionMovies, SectionShows, SectionMusic, SectionPhotos:
+		return true
+	default:
+		return false
+	}
+}
 
 // Section is one configured library: a kind plus the directories that hold it.
 type Section struct {
@@ -63,8 +101,25 @@ type Item struct {
 	SortTitle string
 
 	Year    int
-	Index   int // episode number within a season, or season number within a show
+	Index   int // episode number within a season, season number within a show, or track number within an album
 	Summary string
+
+	// Performer is who plays on a track when that is not the album's artist,
+	// which is the whole of what makes a compilation readable: every row of
+	// "Now That's What I Call Music" is by somebody different, and the album
+	// is filed under one name.
+	Performer string
+
+	// Disc is which disc of an album a track is on, and zero for everything
+	// else. Part of an item's identity, because two discs of one album
+	// routinely both have a track 1.
+	Disc int
+
+	// TakenAt is when a photograph was taken, read from the file's own EXIF
+	// and falling back to its mtime. Zero for everything that is not a photo,
+	// and what a photo album is ordered by: a folder of holiday pictures
+	// belongs in the order they happened, not in the order of their names.
+	TakenAt time.Time
 
 	// Duration is the runtime, measured by ffprobe when the file was scanned.
 	Duration time.Duration
@@ -93,7 +148,18 @@ type Item struct {
 
 // Playable reports whether an item has files of its own, as opposed to
 // gathering children.
-func (i Item) Playable() bool { return i.Kind == KindMovie || i.Kind == KindEpisode }
+func (i Item) Playable() bool {
+	switch i.Kind {
+	case KindMovie, KindEpisode, KindTrack, KindPhoto:
+		return true
+	default:
+		return false
+	}
+}
+
+// Audio reports whether an item is listened to rather than watched, which is
+// what decides whether a client reaches for a video element or an audio one.
+func (i Item) Audio() bool { return i.Kind == KindTrack }
 
 // Part is one file on disk.
 type Part struct {
@@ -102,6 +168,15 @@ type Part struct {
 	Path      string
 	Size      int64
 	Container string
+
+	// Width, Height and Orientation describe a photograph: its pixels as
+	// stored, and the rotation its EXIF asks for. Zero for everything else,
+	// including video — a film's dimensions are read at playback time,
+	// because what matters about them is what the client can display, while a
+	// photograph's dimensions are its content.
+	Width       int
+	Height      int
+	Orientation int
 
 	// ModifiedAt is the file's mtime as the last scan saw it. A scan that finds
 	// the same path at the same size and mtime leaves the row alone, which is

@@ -27,10 +27,17 @@ and the Plex vocabulary never reaches storage or scanning.
   direct play — the file itself, untouched — for every client that can
 - Subtitles: the sidecar files beside the media and the streams inside it,
   with language, forced and SDH read from where they are written
+- Music libraries: artists, albums and tracks from the files' own tags, with
+  covers from the folder or from inside the files, and an album that plays in
+  the browser while the library is browsed
+- Photo libraries: the folder tree as albums, EXIF for when a photograph was
+  taken and which way up it goes, and thumbnails made from the originals
+  where they are
 
 ## Not yet
 
-- Music and photos
+- Nothing from the list this project set out with. What comes next is whatever
+  the household asks for.
 
 ## Running it
 
@@ -39,6 +46,8 @@ go build ./cmd/bms
 ./bms -db ~/bms.db -addr 127.0.0.1:32500 \
       -section "Movies:movies:/mnt/media/Movies" \
       -section "TV Shows:shows:/mnt/media/TV Shows" \
+      -section "Music:music:/mnt/media/Music" \
+      -section "Photos:photos:/mnt/media/Pictures" \
       -scan
 ```
 
@@ -95,7 +104,7 @@ framework at serve time. Run with `-admin=false` to leave it off entirely.
 administering. Any account signs in — not only an administrator — with the
 token issued for that device, and gets a session of its own.
 
-- Continue Watching, the libraries, and search across all of them.
+- Where you left off, the libraries, and search across all of them.
 - A show opens on its seasons and a season on its episodes; a film opens on
   Play, or on Resume where you left it.
 - The player reports position as it goes, so stopping on a laptop and picking
@@ -103,6 +112,8 @@ token issued for that device, and gets a session of its own.
   is its own.
 - Skip Intro and Skip Credits come from the markers the detector found, and
   the end of an episode offers the next one.
+- An album plays in a bar along the bottom, and a photograph opens over the
+  album it is in, with the arrow keys moving through it.
 
 `-web=false` leaves this interface off.
 
@@ -131,6 +142,72 @@ and times the cues, and the player has a menu to choose one or turn them off.
 PGS and VobSub are pictures of words rather than text: they are listed, marked
 as pictures, and left to a player that can draw them, which is what a direct
 play in Bask does.
+
+## Music
+
+A music library is scanned the other way round from a film one. A film says
+what it is in its path, because the tool that fetched it wrote the name there;
+a music file carries tags written by whoever published it, and those beat any
+reading of `01 - track.mp3`. So the tags decide, the path fills the gaps, and
+a file with neither is still filed — under "Unknown Artist", where somebody
+can find it — rather than dropped.
+
+- **Artists, albums and tracks**, from `album_artist`, `album`, `track` and
+  `disc`. The album artist is what keeps a compilation together instead of
+  scattering it across twenty artists, and the performer is kept per track,
+  which is the only thing that makes a row of *Now 42* readable.
+- **Both multi-disc layouts**: a folder per disc (`CD1`, `Disc 2`) and a
+  filename that carries both (`2-05 Closing Time.mp3`). The disc is part of a
+  track's identity, because the two discs of an album both have a track 1 and
+  nothing else about them differs.
+- **Covers from either place.** A `cover.jpg`, `folder.jpg` or the one picture
+  in a folder of music is the album's; where there is none, the picture inside
+  the files themselves is read — ID3's `APIC`, FLAC's picture block, an MP4
+  `covr` atom — because anything ripped from a streaming service has the cover
+  only there, and a wall of blank squares is the wrong answer when the picture
+  has been there all along. No ffmpeg is needed for any of it.
+- **In the browser**, an album plays in a bar along the bottom while the
+  library is still being browsed, which is the whole difference between
+  listening and watching. It reports position like the video player, so a
+  half-heard track resumes where it was.
+- **For a client**, tracks are Plex `Track` elements under `album` under
+  `artist`, with the album and the artist on every row so a music client needs
+  no second request to draw a list.
+
+Playback is the same decision as for video: the browser says what it can
+decode and the file is sent untouched wherever it can be. FLAC, MP3, AAC, Opus
+and Vorbis play as they are in a current browser; the formats MP4 cannot carry
+— WMA, Monkey's Audio, WavPack — are re-encoded, which for audio costs a
+fraction of a core.
+
+## Photographs
+
+The folder tree *is* the metadata. People file photographs in folders that
+mean something — a year, a holiday, a person — and anything cleverer would be
+a guess over the top of an answer somebody already gave. Every level of the
+tree is an album, as deep as it goes, and a loose file at the top of the
+library is put in an album named after the library.
+
+- **When it was taken** comes from EXIF `DateTimeOriginal`, falling back to the
+  file's mtime, and an album is ordered by it: a folder of holiday pictures
+  belongs in the order they happened, not the order of their filenames.
+- **Which way up** comes from EXIF `Orientation`, and is applied when a
+  thumbnail is made. Without it every photograph taken on an upright phone
+  arrives on its side.
+- **Nothing is decoded during a scan.** The dimensions come out of the
+  format's header and the rest out of the EXIF segment, so a camera roll of
+  forty thousand files costs a read of the front of each one.
+- **Originals stay where they are.** Only thumbnails are cached, which is what
+  keeps the cache's byte cap meaningful: a copy of a photo library would
+  double what it costs on disk for pictures that are already on the disk.
+- **HEIC and AVIF** are listed and served as they are. Go cannot decode them,
+  so they have no dimensions and no thumbnail of our making — a phone and a
+  current browser display them directly, and a library that had silently
+  omitted half a camera roll would be the worse answer.
+
+Thumbnail caches are skipped by name (`@eaDir`, `.thumbnails` and the hidden
+folders), or a library would gain a second copy of itself at a quarter of the
+size.
 
 ## Direct play first, and conversion when there is no other way
 

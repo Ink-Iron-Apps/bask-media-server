@@ -10,6 +10,11 @@ import (
 
 // NeedsMetadata lists items a provider has never answered for.
 //
+// Films and television only. The provider BMS ships with is TMDB, which knows
+// nothing about an album or a photograph, and handing it one would spend a
+// request to learn that "Unknown Album" is not a film — on every pass, for
+// every row in a library of thousands.
+//
 // Ordered so containers come before their contents: a show has to be matched
 // before its episodes can be looked up, because an episode is addressed by the
 // show's provider id and a season number. Limited, because an enrichment pass
@@ -19,7 +24,8 @@ func (d *DB) NeedsMetadata(ctx context.Context, limit int) ([]domain.Item, error
 		limit = 200
 	}
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT `+itemColumns+` FROM items WHERE metadata_at = 0
+		`SELECT `+itemColumns+` FROM items
+		  WHERE metadata_at = 0 AND kind IN ('movie','show','season','episode')
 		  ORDER BY CASE kind WHEN 'show' THEN 0 WHEN 'movie' THEN 1 WHEN 'season' THEN 2 ELSE 3 END, id
 		  LIMIT ?`, limit)
 	if err != nil {

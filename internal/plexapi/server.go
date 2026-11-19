@@ -179,11 +179,20 @@ func (s *Server) sections(w http.ResponseWriter, r *http.Request) {
 	write(w, r, out)
 }
 
+// sectionType is what a client calls this kind of library. The names are
+// Plex's, because a client decides which interface to show from this string:
+// "artist" is a music library and "photo" is a photo one.
 func sectionType(kind domain.SectionKind) string {
-	if kind == domain.SectionShows {
+	switch kind {
+	case domain.SectionShows:
 		return "show"
+	case domain.SectionMusic:
+		return "artist"
+	case domain.SectionPhotos:
+		return "photo"
+	default:
+		return "movie"
 	}
-	return "movie"
 }
 
 func (s *Server) sectionAll(w http.ResponseWriter, r *http.Request) {
@@ -202,11 +211,8 @@ func (s *Server) sectionAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kind := domain.KindMovie
-	viewGroup := "movie"
-	if section.Kind == domain.SectionShows {
-		kind, viewGroup = domain.KindShow, "show"
-	}
+	kind := section.Kind.TopKind()
+	viewGroup := string(kind)
 
 	page := pageFrom(r)
 	items, total, err := s.DB.SectionItems(r.Context(), id, kind, page)
@@ -292,15 +298,11 @@ func (s *Server) children(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	viewGroup := "season"
-	if parent.Kind == domain.KindSeason {
-		viewGroup = "episode"
-	}
 	out := container{
 		Identifier:     "com.plexapp.plugins.library",
 		MediaTagPrefix: "/system/bundle/media/flags/",
 		AllowSync:      true,
-		ViewGroup:      viewGroup,
+		ViewGroup:      childViewGroup(parent.Kind),
 		Title1:         parent.Title,
 		TotalSize:      total,
 		Offset:         page.Start,
@@ -310,6 +312,30 @@ func (s *Server) children(w http.ResponseWriter, r *http.Request) {
 	}
 	s.appendItems(r.Context(), &out, section, items, extrasFrom(r))
 	write(w, r, out)
+}
+
+// childViewGroup is what is under one of these, which is how a client lays
+// the next screen out: a grid of albums, a list of tracks, a wall of
+// thumbnails.
+//
+// A photo album holds both albums and photographs, and "photo" is what Plex
+// calls that mixture — the clients that read this show a wall of thumbnails
+// with the folders among them, which is the right screen either way.
+func childViewGroup(kind domain.Kind) string {
+	switch kind {
+	case domain.KindSeason:
+		return "episode"
+	case domain.KindShow:
+		return "season"
+	case domain.KindArtist:
+		return "album"
+	case domain.KindAlbum:
+		return "track"
+	case domain.KindPhotoAlbum:
+		return "photo"
+	default:
+		return string(kind)
+	}
 }
 
 func (s *Server) search(w http.ResponseWriter, r *http.Request) {
@@ -467,15 +493,7 @@ func (s *Server) serveImage(w http.ResponseWriter, r *http.Request, backdrop boo
 		return
 	}
 
-	key := item.PosterKey
-	if backdrop {
-		key = item.ArtKey
-	}
-	if key == "" {
-		http.Error(w, "no image", http.StatusNotFound)
-		return
-	}
-	s.writeImage(w, r, key, intQuery(r, "width"), intQuery(r, "height"))
+	s.writeItemImage(w, r, item, backdrop, intQuery(r, "width"), intQuery(r, "height"))
 }
 
 // photoTranscode serves Plex's resize endpoint.
@@ -521,15 +539,64 @@ func (s *Server) photoTranscode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.writeItemImage(w, r, item, segments[3] == "art", intQuery(r, "width"), intQuery(r, "height"))
+}
+
+// writeItemImage sends whichever picture stands for an item.
+//
+// Two sources, because the two kinds of library work differently: a film's
+// poster was fetched and lives in the artwork cache, while a photograph is
+// the picture — it stays in the library and only its thumbnail is cached.
+func (s *Server) writeItemImage(w http.ResponseWriter, r *http.Request, item *domain.Item, backdrop bool, width, height int) {
+	if part, found := s.photoSource(r.Context(), item); found {
+		if err := serve.Photo(w, r, s.Artwork, part.Path, width, height, part.Orientation); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				http.Error(w, "file is gone", http.StatusNotFound)
+				return
+			}
+			s.fail(w, "serve photo", err)
+		}
+		return
+	}
+
 	key := item.PosterKey
-	if segments[3] == "art" {
+	if backdrop {
 		key = item.ArtKey
 	}
 	if key == "" {
 		http.Error(w, "no image", http.StatusNotFound)
 		return
 	}
-	s.writeImage(w, r, key, intQuery(r, "width"), intQuery(r, "height"))
+	s.writeImage(w, r, key, width, height)
+}
+
+// photoSource is the file a photograph is shown from, or — for an album of
+// them — the earliest photograph inside it, which is the only cover it has.
+func (s *Server) photoSource(ctx context.Context, item *domain.Item) (domain.Part, bool) {
+	switch item.Kind {
+	case domain.KindPhoto:
+		parts := item.Parts
+		if len(parts) == 0 {
+			found, err := s.DB.Parts(ctx, item.ID)
+			if err != nil {
+				s.logger().Warn("could not read a photograph's file", "item", item.ID, "error", err)
+				return domain.Part{}, false
+			}
+			parts = found
+		}
+		if len(parts) > 0 {
+			return parts[0], true
+		}
+	case domain.KindPhotoAlbum:
+		part, err := s.DB.AlbumCover(ctx, item.ID)
+		if err == nil {
+			return *part, true
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			s.logger().Warn("could not read an album cover", "item", item.ID, "error", err)
+		}
+	}
+	return domain.Part{}, false
 }
 
 func (s *Server) writeImage(w http.ResponseWriter, r *http.Request, key string, width, height int) {
@@ -599,8 +666,10 @@ func (s *Server) appendItems(ctx context.Context, out *container, section *domai
 		}
 	}
 
+	rel := s.relatives(ctx, items, ids)
+
 	for _, it := range items {
-		e := s.renderItem(it, section, progress[it.ID],
+		e := s.renderItem(it, section, rel, progress[it.ID],
 			markersByItem[it.ID], chaptersByItem[it.ID], subtitlesByItem[it.ID])
 		if e.Elem == "Directory" {
 			out.Directory = append(out.Directory, e)
@@ -614,9 +683,81 @@ func (s *Server) appendItems(ctx context.Context, out *container, section *domai
 	}
 }
 
+// related is the context a page of rows is rendered against: the containers
+// above them, and how many things are under each.
+type related struct {
+	parents map[int64]domain.Item
+	counts  map[int64]int
+}
+
+func (r related) parent(id *int64) (domain.Item, bool) {
+	if id == nil {
+		return domain.Item{}, false
+	}
+	parent, found := r.parents[*id]
+	return parent, found
+}
+
+// relatives reads what a page of rows needs to know about what is around it.
+//
+// Two queries for the page, not two per row: a client listing an album's
+// tracks shows the album and the artist on every line, and a client listing
+// photo albums shows how many photographs are in each. Both answers are the
+// same for every row that shares a parent, and both are what a sixty-track
+// album would otherwise ask sixty times.
+func (s *Server) relatives(ctx context.Context, items []domain.Item, ids []int64) related {
+	out := related{}
+
+	wanted := make([]int64, 0, len(items))
+	for _, it := range items {
+		if it.ParentID != nil {
+			wanted = append(wanted, *it.ParentID)
+		}
+	}
+	if len(wanted) > 0 {
+		parents, err := s.DB.ItemsByIDs(ctx, wanted)
+		if err != nil {
+			s.logger().Warn("could not read parents", "error", err)
+		} else {
+			out.parents = parents
+			// One more level, for the artist above an album and the show
+			// above a season: a track's row carries both.
+			grand := make([]int64, 0, len(parents))
+			for _, parent := range parents {
+				if parent.ParentID != nil {
+					grand = append(grand, *parent.ParentID)
+				}
+			}
+			if len(grand) > 0 {
+				if more, err := s.DB.ItemsByIDs(ctx, grand); err == nil {
+					for id, item := range more {
+						out.parents[id] = item
+					}
+				}
+			}
+		}
+	}
+
+	var containers []int64
+	for _, it := range items {
+		if isContainer(it.Kind) {
+			containers = append(containers, it.ID)
+		}
+	}
+	if len(containers) > 0 {
+		if counts, err := s.DB.ChildCounts(ctx, containers); err == nil {
+			out.counts = counts
+		} else {
+			s.logger().Warn("could not count children", "error", err)
+		}
+	}
+	return out
+}
+
 func (s *Server) renderItem(
 	it domain.Item,
 	section *domain.Section,
+	rel related,
 	p domain.Progress,
 	itemMarkers []domain.Marker,
 	itemChapters []domain.Chapter,
@@ -636,16 +777,60 @@ func (s *Server) renderItem(
 		UpdatedAt: millisOf(it.UpdatedAt),
 		GUID:      "bms://" + string(it.Kind) + "/" + strconv.FormatInt(it.ID, 10),
 	}
-	if it.Kind == domain.KindShow || it.Kind == domain.KindSeason {
+	if isContainer(it.Kind) {
 		// A container's key is its children, which is how a client knows to
 		// descend rather than to play.
 		e.Key = keyFor(it.ID) + "/children"
 	}
-	if it.ParentID != nil {
+	if n := rel.counts[it.ID]; n > 0 {
+		e.ChildCount = n
+	}
+	if it.Disc > 0 {
+		// Plex carries a track's disc as the parent's index, because the disc
+		// is a level the hierarchy here does not have a row for.
+		e.ParentIndex = it.Disc
+	}
+	if it.Kind == domain.KindTrack && it.Performer != "" {
+		e.OriginalTitle = it.Performer
+	}
+	if !it.TakenAt.IsZero() {
+		e.OriginallyAvailableAt = it.TakenAt.Format("2006-01-02")
+	}
+
+	if parent, found := rel.parent(it.ParentID); found {
+		e.ParentRatingKey = strconv.FormatInt(parent.ID, 10)
+		e.ParentKey = keyFor(parent.ID) + "/children"
+		e.ParentTitle = parent.Title
+		if parent.Index > 0 && it.Disc == 0 {
+			e.ParentIndex = parent.Index
+		}
+		if parent.PosterKey != "" {
+			e.ParentThumb = keyFor(parent.ID) + "/thumb"
+		}
+		if grand, found := rel.parent(parent.ParentID); found {
+			e.GrandparentRatingKey = strconv.FormatInt(grand.ID, 10)
+			e.GrandparentTitle = grand.Title
+			if grand.PosterKey != "" {
+				e.GrandparentThumb = keyFor(grand.ID) + "/thumb"
+			}
+		}
+	} else if it.ParentID != nil {
 		e.ParentRatingKey = strconv.FormatInt(*it.ParentID, 10)
 	}
-	if it.PosterKey != "" {
+
+	switch {
+	case it.Kind == domain.KindPhoto || it.Kind == domain.KindPhotoAlbum:
+		// A photograph is its own thumbnail, and an album's is the first
+		// photograph in it: neither has artwork of its own in the cache, and
+		// the thumb endpoint makes one from the file.
 		e.Thumb = keyFor(it.ID) + "/thumb"
+	case it.PosterKey != "":
+		e.Thumb = keyFor(it.ID) + "/thumb"
+	case e.ParentThumb != "":
+		// A track has no cover of its own; the album's is the cover.
+		e.Thumb = e.ParentThumb
+	case e.GrandparentThumb != "":
+		e.Thumb = e.GrandparentThumb
 	}
 	if it.ArtKey != "" {
 		e.Art = keyFor(it.ID) + "/art"
@@ -687,6 +872,24 @@ func (s *Server) renderItem(
 
 	if len(it.Parts) > 0 {
 		m := media{ID: it.ID, Duration: it.Duration.Milliseconds(), Container: it.Parts[0].Container}
+		if it.Kind == domain.KindPhoto {
+			width, height := displaySize(it.Parts[0])
+			m.Width, m.Height = width, height
+			if height > 0 {
+				m.AspectRatio = float64(width) / float64(height)
+			}
+		}
+		if it.Kind == domain.KindTrack {
+			// Derived from the container and the file's own size, because a
+			// track is listed in its thousands and a probe per row would make
+			// opening an album a minute of ffprobe. A client that needs the
+			// exact streams reads them from the file it is handed.
+			m.AudioCodec = audioCodecOf(it.Parts[0].Container)
+			m.AudioChannels = 2
+			if it.Duration > 0 {
+				m.Bitrate = int(float64(it.Parts[0].Size*8) / it.Duration.Seconds() / 1000)
+			}
+		}
 		for _, pt := range it.Parts {
 			m.Part = append(m.Part, part{
 				ID:        pt.ID,
@@ -701,6 +904,48 @@ func (s *Server) renderItem(
 		e.Media = append(e.Media, m)
 	}
 	return e
+}
+
+// displaySize is a photograph's dimensions as they are meant to be seen,
+// which is its stored dimensions with a quarter turn applied where its EXIF
+// asks for one. A client that was told 4032x3024 for a picture it then
+// receives rotated lays the page out wrong.
+func displaySize(p domain.Part) (width, height int) {
+	if p.Orientation >= 5 && p.Orientation <= 8 {
+		return p.Height, p.Width
+	}
+	return p.Width, p.Height
+}
+
+// audioCodecOf is what is in a file of this kind, by its extension.
+//
+// A mapping rather than a probe: the extension and the codec are the same
+// thing for every format here except the two noted, and this is read for
+// every row of every album.
+func audioCodecOf(container string) string {
+	switch strings.ToLower(container) {
+	case "mp3":
+		return "mp3"
+	case "flac":
+		return "flac"
+	case "m4a", "m4b", "aac", "alac":
+		// An M4A is AAC unless it is ALAC, which the extension does not say.
+		return "aac"
+	case "ogg", "oga":
+		return "vorbis"
+	case "opus":
+		return "opus"
+	case "wav", "aiff", "aif":
+		return "pcm"
+	case "wma":
+		return "wmav2"
+	case "ape":
+		return "ape"
+	case "wv":
+		return "wavpack"
+	default:
+		return strings.ToLower(container)
+	}
 }
 
 // subtitleStream hands over the text of one subtitle.

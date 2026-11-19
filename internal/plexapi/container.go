@@ -90,10 +90,23 @@ type entry struct {
 	Art                  string `xml:"art,attr,omitempty" json:"art,omitempty"`
 	ParentTitle          string `xml:"parentTitle,attr,omitempty" json:"parentTitle,omitempty"`
 	GrandparentTitle     string `xml:"grandparentTitle,attr,omitempty" json:"grandparentTitle,omitempty"`
-	LibrarySectionID     int64  `xml:"librarySectionID,attr,omitempty" json:"librarySectionID,omitempty"`
-	LibrarySectionTitle  string `xml:"librarySectionTitle,attr,omitempty" json:"librarySectionTitle,omitempty"`
-	LeafCount            int    `xml:"leafCount,attr,omitempty" json:"leafCount,omitempty"`
-	ChildCount           int    `xml:"childCount,attr,omitempty" json:"childCount,omitempty"`
+	ParentKey            string `xml:"parentKey,attr,omitempty" json:"parentKey,omitempty"`
+	ParentThumb          string `xml:"parentThumb,attr,omitempty" json:"parentThumb,omitempty"`
+	GrandparentThumb     string `xml:"grandparentThumb,attr,omitempty" json:"grandparentThumb,omitempty"`
+
+	// OriginalTitle is who performs this track when that is not the album's
+	// artist, which is the useful half of a row on a compilation. Plex puts
+	// the performer here and the clients read it from here.
+	OriginalTitle string `xml:"originalTitle,attr,omitempty" json:"originalTitle,omitempty"`
+
+	// OriginallyAvailableAt is the date a thing came out — and, for a
+	// photograph, the day it was taken, which is what a client groups a
+	// camera roll by.
+	OriginallyAvailableAt string `xml:"originallyAvailableAt,attr,omitempty" json:"originallyAvailableAt,omitempty"`
+	LibrarySectionID      int64  `xml:"librarySectionID,attr,omitempty" json:"librarySectionID,omitempty"`
+	LibrarySectionTitle   string `xml:"librarySectionTitle,attr,omitempty" json:"librarySectionTitle,omitempty"`
+	LeafCount             int    `xml:"leafCount,attr,omitempty" json:"leafCount,omitempty"`
+	ChildCount            int    `xml:"childCount,attr,omitempty" json:"childCount,omitempty"`
 
 	Media    []media    `xml:"Media,omitempty" json:"Media,omitempty"`
 	Location []location `xml:"Location,omitempty" json:"Location,omitempty"`
@@ -130,7 +143,22 @@ type media struct {
 	Duration        int64  `xml:"duration,attr,omitempty" json:"duration,omitempty"`
 	Container       string `xml:"container,attr,omitempty" json:"container,omitempty"`
 	VideoResolution string `xml:"videoResolution,attr,omitempty" json:"videoResolution,omitempty"`
-	Part            []part `xml:"Part" json:"Part"`
+
+	// Width, Height and AspectRatio describe a photograph, which is the one
+	// kind of item whose dimensions are its content rather than a detail of
+	// how it was encoded.
+	Width       int     `xml:"width,attr,omitempty" json:"width,omitempty"`
+	Height      int     `xml:"height,attr,omitempty" json:"height,omitempty"`
+	AspectRatio float64 `xml:"aspectRatio,attr,omitempty" json:"aspectRatio,omitempty"`
+
+	// AudioCodec and AudioChannels are what a music client puts beside a
+	// track — "FLAC · 2.0" — and what it uses to decide whether it can play
+	// one without asking the server for anything.
+	AudioCodec    string `xml:"audioCodec,attr,omitempty" json:"audioCodec,omitempty"`
+	AudioChannels int    `xml:"audioChannels,attr,omitempty" json:"audioChannels,omitempty"`
+	Bitrate       int    `xml:"bitrate,attr,omitempty" json:"bitrate,omitempty"`
+
+	Part []part `xml:"Part" json:"Part"`
 }
 
 type part struct {
@@ -305,17 +333,28 @@ func containerAttrs(c container) []xml.Attr {
 	return attrs
 }
 
-// elementFor is the XML element name a kind is served as. Shows and seasons
-// are containers a client descends into, so they are Directory; movies and
-// episodes are playable, so they are Video.
+// elementFor is the XML element name a kind is served as.
+//
+// Plex names the element after what the thing is, and the clients switch on
+// it: anything a client descends into is a Directory, a film or an episode is
+// a Video, and music and photographs have elements of their own — a client
+// that is handed a <Video> for a track will try to show a picture for it.
 func elementFor(kind domain.Kind) string {
 	switch kind {
-	case domain.KindShow, domain.KindSeason:
+	case domain.KindShow, domain.KindSeason, domain.KindArtist, domain.KindAlbum, domain.KindPhotoAlbum:
 		return "Directory"
+	case domain.KindTrack:
+		return "Track"
+	case domain.KindPhoto:
+		return "Photo"
 	default:
 		return "Video"
 	}
 }
+
+// container reports whether a kind gathers other things rather than being a
+// file, which is what decides whether its key points at its children.
+func isContainer(kind domain.Kind) bool { return elementFor(kind) == "Directory" }
 
 // plexType is the type string a client switches on.
 func plexType(kind domain.Kind) string { return string(kind) }

@@ -106,22 +106,22 @@ func (d *DB) MarkSectionScanned(ctx context.Context, id int64, at time.Time) err
 	return nil
 }
 
-const itemColumns = `id, section_id, kind, parent_id, title, sort_title, year, idx, summary, duration_ms, added_at, updated_at, provider_id, poster_key, art_key, metadata_at`
+const itemColumns = `id, section_id, kind, parent_id, title, sort_title, year, idx, disc, summary, duration_ms, added_at, updated_at, provider_id, poster_key, art_key, metadata_at, taken_at, performer`
 
 func scanItem(rows interface{ Scan(...any) error }) (domain.Item, error) {
 	var (
-		it                             domain.Item
-		kind                           string
-		parent                         sql.NullInt64
-		durationMS                     int64
-		addedAt, updatedAt, metadataAt int64
+		it                                      domain.Item
+		kind                                    string
+		parent                                  sql.NullInt64
+		durationMS                              int64
+		addedAt, updatedAt, metadataAt, takenAt int64
 	)
 	if err := rows.Scan(&it.ID, &it.SectionID, &kind, &parent, &it.Title, &it.SortTitle,
-		&it.Year, &it.Index, &it.Summary, &durationMS, &addedAt, &updatedAt,
-		&it.ProviderID, &it.PosterKey, &it.ArtKey, &metadataAt); err != nil {
+		&it.Year, &it.Index, &it.Disc, &it.Summary, &durationMS, &addedAt, &updatedAt,
+		&it.ProviderID, &it.PosterKey, &it.ArtKey, &metadataAt, &takenAt, &it.Performer); err != nil {
 		return domain.Item{}, err
 	}
-	it.MetadataAt = fromMillis(metadataAt)
+	it.MetadataAt, it.TakenAt = fromMillis(metadataAt), fromMillis(takenAt)
 	it.Kind = domain.Kind(kind)
 	if parent.Valid {
 		id := parent.Int64
@@ -132,20 +132,27 @@ func scanItem(rows interface{ Scan(...any) error }) (domain.Item, error) {
 	return it, nil
 }
 
-// SectionItems lists a section's top level: its movies, or its shows.
+// SectionItems lists a section's top level: its films, shows, artists or
+// albums of photographs.
+//
+// Only the rows with nothing above them, which matters for photographs: every
+// level of a folder tree is an album, and a library's top level is the
+// outermost ones. Without that a library of a hundred nested folders opens on
+// a hundred albums with no shape to them.
 //
 // Returns the page and the total, because a client that is paging needs to
 // know how far it can page and Plex's MediaContainer carries both.
 func (d *DB) SectionItems(ctx context.Context, sectionID int64, kind domain.Kind, page Page) ([]domain.Item, int, error) {
 	var total int
 	if err := d.sql.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM items WHERE section_id = ? AND kind = ?`, sectionID, string(kind)).Scan(&total); err != nil {
+		`SELECT COUNT(*) FROM items WHERE section_id = ? AND kind = ? AND parent_id IS NULL`,
+		sectionID, string(kind)).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count section items: %w", err)
 	}
 
 	offset, limit := page.Window(500)
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT `+itemColumns+` FROM items WHERE section_id = ? AND kind = ?
+		`SELECT `+itemColumns+` FROM items WHERE section_id = ? AND kind = ? AND parent_id IS NULL
 		 ORDER BY sort_title, year LIMIT ? OFFSET ?`,
 		sectionID, string(kind), limit, offset)
 	if err != nil {
@@ -160,8 +167,16 @@ func (d *DB) SectionItems(ctx context.Context, sectionID int64, kind domain.Kind
 	return items, total, nil
 }
 
-// Children lists a parent's children in order: a show's seasons, a season's
-// episodes.
+// Children lists a parent's children in the order the thing above them puts
+// them in: a show's seasons and a season's episodes by number, an artist's
+// albums by year, an album's tracks by disc and then track number, and a
+// photo album's contents by when the photographs were taken.
+//
+// One ORDER BY for all of them, because every level sets exactly the columns
+// that order it and leaves the rest at zero: a season has an index and no
+// disc, a track has both, a photograph has neither and a time instead. The
+// alternative is a query per kind, which is five queries that have to be kept
+// agreeing with each other.
 func (d *DB) Children(ctx context.Context, parentID int64, page Page) ([]domain.Item, int, error) {
 	var total int
 	if err := d.sql.QueryRowContext(ctx,
@@ -171,7 +186,8 @@ func (d *DB) Children(ctx context.Context, parentID int64, page Page) ([]domain.
 
 	offset, limit := page.Window(500)
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT `+itemColumns+` FROM items WHERE parent_id = ? ORDER BY idx, sort_title LIMIT ? OFFSET ?`,
+		`SELECT `+itemColumns+` FROM items WHERE parent_id = ?
+		 ORDER BY disc, idx, taken_at, year, sort_title LIMIT ? OFFSET ?`,
 		parentID, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list children: %w", err)
@@ -215,15 +231,18 @@ func (d *DB) Search(ctx context.Context, query string, page Page) ([]domain.Item
 	pattern := "%" + strings.ToLower(query) + "%"
 	var total int
 	if err := d.sql.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM items WHERE kind IN ('movie','show','episode') AND LOWER(title) LIKE ?`,
+		`SELECT COUNT(*) FROM items WHERE kind IN `+searchableKinds+` AND LOWER(title) LIKE ?`,
 		pattern).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count search: %w", err)
 	}
 
 	offset, limit := page.Window(100)
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT `+itemColumns+` FROM items WHERE kind IN ('movie','show','episode') AND LOWER(title) LIKE ?
-		 ORDER BY CASE kind WHEN 'movie' THEN 0 WHEN 'show' THEN 1 ELSE 2 END, sort_title LIMIT ? OFFSET ?`,
+		`SELECT `+itemColumns+` FROM items WHERE kind IN `+searchableKinds+` AND LOWER(title) LIKE ?
+		 ORDER BY CASE kind
+		     WHEN 'movie' THEN 0 WHEN 'show' THEN 1 WHEN 'artist' THEN 2
+		     WHEN 'album' THEN 3 WHEN 'photoalbum' THEN 4 WHEN 'episode' THEN 5 ELSE 6
+		   END, sort_title LIMIT ? OFFSET ?`,
 		pattern, limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("search: %w", err)
@@ -236,6 +255,13 @@ func (d *DB) Search(ctx context.Context, query string, page Page) ([]domain.Item
 	}
 	return items, total, nil
 }
+
+// searchableKinds is what a search bar looks through.
+//
+// Individual photographs are left out on purpose: their titles are camera
+// filenames, so a library of them would answer every query with a thousand
+// IMG_0042s and bury the album somebody was looking for.
+const searchableKinds = `('movie','show','episode','artist','album','track','photoalbum')`
 
 // collect drains a rows iterator into items, attaching parts to the playable
 // ones in a single follow-up query rather than one per item.
@@ -273,6 +299,8 @@ func (d *DB) collect(ctx context.Context, rows *sql.Rows) ([]domain.Item, error)
 	return items, nil
 }
 
+const partColumns = `id, item_id, path, size, container, modified_at, width, height, orientation`
+
 // Parts lists the files behind one item.
 func (d *DB) Parts(ctx context.Context, itemID int64) ([]domain.Part, error) {
 	byItem, err := d.partsFor(ctx, []int64{itemID})
@@ -289,8 +317,9 @@ func (d *DB) Part(ctx context.Context, id int64) (*domain.Part, error) {
 		modifiedAt int64
 	)
 	err := d.sql.QueryRowContext(ctx,
-		`SELECT id, item_id, path, size, container, modified_at FROM parts WHERE id = ?`, id).
-		Scan(&p.ID, &p.ItemID, &p.Path, &p.Size, &p.Container, &modifiedAt)
+		`SELECT `+partColumns+` FROM parts WHERE id = ?`, id).
+		Scan(&p.ID, &p.ItemID, &p.Path, &p.Size, &p.Container, &modifiedAt,
+			&p.Width, &p.Height, &p.Orientation)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -312,7 +341,7 @@ func (d *DB) partsFor(ctx context.Context, itemIDs []int64) (map[int64][]domain.
 	}
 
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT id, item_id, path, size, container, modified_at FROM parts WHERE item_id IN (`+placeholders+`) ORDER BY id`,
+		`SELECT `+partColumns+` FROM parts WHERE item_id IN (`+placeholders+`) ORDER BY id`,
 		args...)
 	if err != nil {
 		return nil, fmt.Errorf("list parts: %w", err)
@@ -325,11 +354,135 @@ func (d *DB) partsFor(ctx context.Context, itemIDs []int64) (map[int64][]domain.
 			p          domain.Part
 			modifiedAt int64
 		)
-		if err := rows.Scan(&p.ID, &p.ItemID, &p.Path, &p.Size, &p.Container, &modifiedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.ItemID, &p.Path, &p.Size, &p.Container, &modifiedAt,
+			&p.Width, &p.Height, &p.Orientation); err != nil {
 			return nil, fmt.Errorf("scan part: %w", err)
 		}
 		p.ModifiedAt = fromMillis(modifiedAt)
 		out[p.ItemID] = append(out[p.ItemID], p)
 	}
 	return out, rows.Err()
+}
+
+// ItemsByIDs reads a set of items in one query, for a presenter that needs the
+// containers above a page of rows.
+//
+// A client listing an album's tracks wants the artist and the album on every
+// row, and a client listing episodes wants the show and the season: one query
+// for the page's parents beats a point read per row, which on a sixty-track
+// album is sixty round trips to learn two names.
+func (d *DB) ItemsByIDs(ctx context.Context, ids []int64) (map[int64]domain.Item, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	// Deduplicated first: a page of tracks from one album asks for the same
+	// parent on every row.
+	wanted := make([]any, 0, len(ids))
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if _, already := seen[id]; already || id == 0 {
+			continue
+		}
+		seen[id] = struct{}{}
+		wanted = append(wanted, id)
+	}
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+
+	out := make(map[int64]domain.Item, len(wanted))
+	const chunk = 200
+	for start := 0; start < len(wanted); start += chunk {
+		end := min(start+chunk, len(wanted))
+		batch := wanted[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+		rows, err := d.sql.QueryContext(ctx,
+			`SELECT `+itemColumns+` FROM items WHERE id IN (`+placeholders+`)`, batch...)
+		if err != nil {
+			return nil, fmt.Errorf("read items: %w", err)
+		}
+		for rows.Next() {
+			it, err := scanItem(rows)
+			if err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan item: %w", err)
+			}
+			out[it.ID] = it
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// ChildCounts is how many things sit directly under each of these items, for
+// the "12 episodes" or "40 photographs" a client puts under a title.
+func (d *DB) ChildCounts(ctx context.Context, ids []int64) (map[int64]int, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT parent_id, COUNT(*) FROM items WHERE parent_id IN (`+placeholders+`) GROUP BY parent_id`,
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("count children: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[int64]int, len(ids))
+	for rows.Next() {
+		var (
+			parent int64
+			n      int
+		)
+		if err := rows.Scan(&parent, &n); err != nil {
+			return nil, fmt.Errorf("count children: %w", err)
+		}
+		out[parent] = n
+	}
+	return out, rows.Err()
+}
+
+// AlbumCover is the photograph that stands for a photo album: the earliest one
+// anywhere inside it, however many levels down.
+//
+// Resolved on request rather than stored, because a photo album has no poster
+// of its own — the cover is one of the files in it, and which file that is
+// changes as photographs are added. A recursive walk of the album tree in
+// SQLite, which is a handful of rows: the depth of a folder tree, not the size
+// of a library.
+func (d *DB) AlbumCover(ctx context.Context, itemID int64) (*domain.Part, error) {
+	var (
+		p          domain.Part
+		modifiedAt int64
+	)
+	err := d.sql.QueryRowContext(ctx,
+		`WITH RECURSIVE tree(id) AS (
+		     SELECT ?
+		     UNION
+		     SELECT items.id FROM items JOIN tree ON items.parent_id = tree.id
+		 )
+		 SELECT `+prefixed("parts", partColumns)+`
+		   FROM parts
+		   JOIN items ON items.id = parts.item_id
+		  WHERE items.kind = 'photo' AND items.id IN (SELECT id FROM tree)
+		  ORDER BY items.taken_at, items.id
+		  LIMIT 1`, itemID).
+		Scan(&p.ID, &p.ItemID, &p.Path, &p.Size, &p.Container, &modifiedAt,
+			&p.Width, &p.Height, &p.Orientation)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read album cover: %w", err)
+	}
+	p.ModifiedAt = fromMillis(modifiedAt)
+	return &p, nil
 }

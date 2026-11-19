@@ -55,3 +55,31 @@ func Image(w http.ResponseWriter, r *http.Request, cache *artwork.Cache, key str
 	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
 	return nil
 }
+
+// Photo sends a picture from the library at the size asked for.
+//
+// Different from [Image] in where the picture lives: a poster was fetched and
+// is in the cache, while a photograph is in the library and stays there —
+// only the thumbnail is cached. Asking for no size at all serves the original
+// file, which is what a client showing one picture full screen wants and what
+// costs this server nothing but a copy.
+func Photo(w http.ResponseWriter, r *http.Request, cache *artwork.Cache, path string, width, height, orientation int) error {
+	file, err := cache.OpenFrom(r.Context(), path, width, height, orientation)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	// A thumbnail's name carries the source file's size and mtime as well as
+	// the size asked for, so it can be kept as long as the original is
+	// unchanged. The original itself is served under its own name and gets
+	// the same treatment, because a photograph that changed is a different
+	// mtime and so a different URL.
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
+	return nil
+}

@@ -280,6 +280,13 @@ type Stats struct {
 	Seasons  int `json:"seasons"`
 	Episodes int `json:"episodes"`
 
+	Artists int `json:"artists"`
+	Albums  int `json:"albums"`
+	Tracks  int `json:"tracks"`
+
+	PhotoAlbums int `json:"photoAlbums"`
+	Photos      int `json:"photos"`
+
 	Files int   `json:"files"`
 	Bytes int64 `json:"bytes"`
 
@@ -303,6 +310,13 @@ func (d *DB) Stats(ctx context.Context) (Stats, error) {
 		domain.KindShow:    &s.Shows,
 		domain.KindSeason:  &s.Seasons,
 		domain.KindEpisode: &s.Episodes,
+
+		domain.KindArtist: &s.Artists,
+		domain.KindAlbum:  &s.Albums,
+		domain.KindTrack:  &s.Tracks,
+
+		domain.KindPhotoAlbum: &s.PhotoAlbums,
+		domain.KindPhoto:      &s.Photos,
 	}
 	rows, err := d.sql.QueryContext(ctx, `SELECT kind, COUNT(*) FROM items GROUP BY kind`)
 	if err != nil {
@@ -337,7 +351,7 @@ func (d *DB) Stats(ctx context.Context) (Stats, error) {
 		{`SELECT COUNT(*) FROM users`, &s.Users},
 		{`SELECT COUNT(*) FROM tokens`, &s.Tokens},
 		{`SELECT COUNT(*) FROM sessions`, &s.Sessions},
-		{`SELECT COUNT(*) FROM items WHERE poster_key = '' AND kind IN ('movie', 'show')`, &s.WithoutArt},
+		{`SELECT COUNT(*) FROM items WHERE poster_key = '' AND kind IN ('movie', 'show', 'album')`, &s.WithoutArt},
 		{`SELECT COUNT(*) FROM items WHERE metadata_at = 0 AND kind IN ('movie', 'show', 'episode')`, &s.NeedsMetadata},
 		{`SELECT COUNT(*) FROM items WHERE kind = 'season' AND markers_at = 0`, &s.NeedsMarkers},
 	}
@@ -354,8 +368,15 @@ func (d *DB) Stats(ctx context.Context) (Stats, error) {
 
 // SectionStats is one library's size, for the row that describes it.
 type SectionStats struct {
-	Items    int   `json:"items"` // movies, or shows
-	Episodes int   `json:"episodes"`
+	// Items is what the library's top level holds: films, shows, artists or
+	// albums of photographs.
+	Items int `json:"items"`
+
+	// Leaves is what is under it and playable: episodes, tracks or
+	// photographs. One field for all three because the row reads the same
+	// either way — "12 shows, 240 episodes", "40 artists, 900 tracks".
+	Leaves   int   `json:"leaves"`
+	Episodes int   `json:"episodes"` // kept for a client reading the older name
 	Files    int   `json:"files"`
 	Bytes    int64 `json:"bytes"`
 }
@@ -380,9 +401,16 @@ func (d *DB) SectionStats(ctx context.Context) (map[int64]SectionStats, error) {
 		}
 		stats := out[id]
 		switch domain.Kind(kind) {
-		case domain.KindMovie, domain.KindShow:
+		case domain.KindMovie, domain.KindShow, domain.KindArtist:
 			stats.Items += n
-		case domain.KindEpisode:
+		case domain.KindPhotoAlbum:
+			// Every level of a photo tree is an album, and the count a person
+			// wants is how many albums there are, not how deep they nest.
+			stats.Items += n
+		case domain.KindEpisode, domain.KindTrack, domain.KindPhoto:
+			stats.Leaves += n
+		}
+		if domain.Kind(kind) == domain.KindEpisode {
 			stats.Episodes += n
 		}
 		out[id] = stats

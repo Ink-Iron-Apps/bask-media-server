@@ -268,14 +268,19 @@ views.overview = async function (main) {
     const s = o.stats || {};
     const running = (o.jobs || []).filter((j) => j.state === 'running');
 
+    // Only what this server actually holds: a household with no photo
+    // library should not be told it has none, over and over.
     const tiles = [
       ['Movies', num(s.movies)],
       ['Shows', num(s.shows)],
       ['Episodes', num(s.episodes)],
+      s.tracks ? ['Tracks', num(s.tracks)] : null,
+      s.albums ? ['Albums', num(s.albums)] : null,
+      s.photos ? ['Photographs', num(s.photos)] : null,
       ['Files', num(s.files)],
       ['On disk', size(s.bytes)],
       ['Skip markers', num(s.markedItems)],
-    ].map(([k, v]) => el('div', { class: 'tile' }, el('div', { class: 'n', text: v }), el('div', { class: 'k', text: k })));
+    ].filter(Boolean).map(([k, v]) => el('div', { class: 'tile' }, el('div', { class: 'n', text: v }), el('div', { class: 'k', text: k })));
 
     const facts = [
       ['Version', o.version],
@@ -322,9 +327,7 @@ views.libraries = async function (main) {
   const sections = (await api('GET', '/sections')) || [];
 
   const rows = sections.map((sec) => {
-    const counts = sec.kind === 'shows'
-      ? count(sec.items, 'show') + ' · ' + count(sec.episodes, 'episode')
-      : count(sec.items, 'movie');
+    const counts = contents(sec);
     return el('tr', {},
       el('td', {},
         el('strong', { text: sec.title }),
@@ -373,16 +376,33 @@ views.libraries = async function (main) {
         el('thead', {}, el('tr', {}, ['Library', 'Holds', 'Contents', 'Last scanned', ''].map(
           (h, i) => el('th', { class: i === 4 ? 'right' : '', text: h })))),
         el('tbody', {}, rows)))
-      : el('div', { class: 'card' }, el('p', { class: 'muted', text: 'No libraries yet. Add the folder your films or shows are in.' })),
+      : el('div', { class: 'card' }, el('p', { class: 'muted', text: 'No libraries yet. Add the folder your films, shows, music or photographs are in.' })),
     addSectionCard(),
   );
 };
+
+// contents is the one line that says how big a library is, in the words of
+// whatever it holds.
+function contents(sec) {
+  switch (sec.kind) {
+    case 'shows':
+      return count(sec.items, 'show') + ' · ' + count(sec.leaves, 'episode');
+    case 'music':
+      return count(sec.items, 'artist') + ' · ' + count(sec.leaves, 'track');
+    case 'photos':
+      return count(sec.items, 'album') + ' · ' + count(sec.leaves, 'photograph');
+    default:
+      return count(sec.items, 'movie');
+  }
+}
 
 function addSectionCard() {
   const title = el('input', { id: 'new-title', placeholder: 'Films' });
   const kind = el('select', { id: 'new-kind' },
     el('option', { value: 'movies', text: 'Movies' }),
-    el('option', { value: 'shows', text: 'TV shows' }));
+    el('option', { value: 'shows', text: 'TV shows' }),
+    el('option', { value: 'music', text: 'Music' }),
+    el('option', { value: 'photos', text: 'Photos' }));
   const root = el('input', { id: 'new-root', placeholder: '/mnt/media/Movies', spellcheck: 'false' });
   const picker = el('div', {});
 

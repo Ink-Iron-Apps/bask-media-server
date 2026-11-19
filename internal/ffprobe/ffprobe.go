@@ -14,6 +14,7 @@ import (
 	"io"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/inknironapps/bask-media-server/internal/domain"
@@ -59,11 +60,36 @@ type Info struct {
 	// none.
 	Chapters []domain.Chapter
 
+	// Tags are the container's own metadata about the whole file, which is
+	// where a music file's artist, album and track number live. Empty for
+	// most video, which says what it is in its path instead.
+	Tags Tags
+
 	// Streams are what is inside the container. Read at playback time rather
 	// than stored, because what matters about them — can this client decode
 	// it — is a question about the client, and the answer changes with the
 	// client and not with the file.
 	Streams []Stream
+}
+
+// Tags is what a container says about itself.
+//
+// The handful of fields a music library is built from, named as the thing they
+// mean rather than as the twelve spellings the formats use between them:
+// ffprobe has already normalised ID3, Vorbis comments and MP4 atoms onto
+// these names, which is the one job worth letting a subprocess do here.
+type Tags struct {
+	Title       string
+	Artist      string
+	AlbumArtist string
+	Album       string
+	Date        string
+	Genre       string
+
+	// Track and Disc are numbers, read out of the "3/12" form the tags are
+	// routinely written in.
+	Track int
+	Disc  int
 }
 
 // Stream is one track in a file.
@@ -116,6 +142,16 @@ func (i Info) first(kind string) *Stream {
 type probeOutput struct {
 	Format struct {
 		Duration string `json:"duration"`
+		Tags     struct {
+			Title       string `json:"title"`
+			Artist      string `json:"artist"`
+			AlbumArtist string `json:"album_artist"`
+			Album       string `json:"album"`
+			Date        string `json:"date"`
+			Genre       string `json:"genre"`
+			Track       string `json:"track"`
+			Disc        string `json:"disc"`
+		} `json:"tags"`
 	} `json:"format"`
 	Streams []struct {
 		Index     int    `json:"index"`
@@ -173,7 +209,8 @@ func (p *Prober) Probe(ctx context.Context, path string) (Info, error) {
 	cmd := exec.CommandContext(ctx, p.Path,
 		"-v", "error",
 		"-show_entries",
-		"format=duration:stream=index,codec_type,codec_name,profile,width,height,channels,bit_rate:"+
+		"format=duration:format_tags=title,artist,album,album_artist,date,genre,track,disc:"+
+			"stream=index,codec_type,codec_name,profile,width,height,channels,bit_rate:"+
 			"stream_tags=language,title:stream_disposition=default,forced,hearing_impaired",
 		"-show_chapters",
 		"-of", "json",
@@ -199,7 +236,19 @@ func (p *Prober) Probe(ctx context.Context, path string) (Info, error) {
 		return Info{}, fmt.Errorf("probe %s: %w", path, err)
 	}
 
-	info := Info{Duration: time.Duration(seconds * float64(time.Second))}
+	info := Info{
+		Duration: time.Duration(seconds * float64(time.Second)),
+		Tags: Tags{
+			Title:       parsed.Format.Tags.Title,
+			Artist:      parsed.Format.Tags.Artist,
+			AlbumArtist: parsed.Format.Tags.AlbumArtist,
+			Album:       parsed.Format.Tags.Album,
+			Date:        parsed.Format.Tags.Date,
+			Genre:       parsed.Format.Tags.Genre,
+			Track:       leadingNumber(parsed.Format.Tags.Track),
+			Disc:        leadingNumber(parsed.Format.Tags.Disc),
+		},
+	}
 	for _, st := range parsed.Streams {
 		stream := Stream{
 			Index: st.Index, Type: st.CodecType, Codec: st.CodecName, Profile: st.Profile,
@@ -233,6 +282,22 @@ func (p *Prober) Probe(ctx context.Context, path string) (Info, error) {
 		})
 	}
 	return info, nil
+}
+
+// leadingNumber reads the number at the front of a tag that may carry a total
+// as well: "3", "3/12", "03". Anything else is no number rather than a wrong
+// one, because a track number is used to order an album and a guess would
+// reorder it.
+func leadingNumber(value string) int {
+	value = strings.TrimSpace(value)
+	if cut := strings.IndexAny(value, "/ "); cut > 0 {
+		value = value[:cut]
+	}
+	n, err := strconv.Atoi(strings.TrimLeft(value, "0"))
+	if err != nil || n < 0 || n > 10_000 {
+		return 0
+	}
+	return n
 }
 
 func parseSeconds(value string) (time.Duration, error) {

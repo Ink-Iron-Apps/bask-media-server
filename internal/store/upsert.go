@@ -28,6 +28,35 @@ type Found struct {
 	SeasonNum  int
 	EpisodeNum int
 
+	// Artist, Album, Disc and TrackNum place a track, and Performer is who
+	// plays on it when that differs from the album's artist — which is the
+	// useful half of a row on a compilation.
+	Artist    string
+	Performer string
+	Album     string
+	Disc      int
+	TrackNum  int
+
+	// AlbumPoster and ArtistPoster are artwork keys for the containers above
+	// a track: a folder image beside the album, or the cover that was inside
+	// the file. Applied only where the container has none, so one scan's
+	// answer is not overwritten by the next file in the same folder.
+	AlbumPoster  string
+	ArtistPoster string
+
+	// Albums places a photograph: the chain of album names from the library
+	// root down to the folder it is in, outermost first.
+	Albums []string
+
+	// TakenAt is when a photograph was taken, which is what orders an album.
+	TakenAt time.Time
+
+	// Width, Height and Orientation describe a photograph's pixels and the
+	// turn its EXIF asks for.
+	Width       int
+	Height      int
+	Orientation int
+
 	Title    string
 	Year     int
 	Duration time.Duration
@@ -99,30 +128,81 @@ func (w *Writer) Add(ctx context.Context, f Found) error {
 		return err
 	}
 
-	var parentID *int64
+	spec := itemSpec{
+		sectionID: f.SectionID,
+		kind:      f.Kind,
+		title:     f.Title,
+		year:      f.Year,
+		duration:  f.Duration,
+	}
 	switch f.Kind {
 	case domain.KindEpisode:
-		showID, err := w.ensureContainer(ctx, f.SectionID, domain.KindShow, nil, f.Show, f.ShowYear, 0)
+		showID, err := w.ensureContainer(ctx, itemSpec{
+			sectionID: f.SectionID, kind: domain.KindShow, title: f.Show, year: f.ShowYear,
+		})
 		if err != nil {
 			return err
 		}
-		seasonTitle := fmt.Sprintf("Season %d", f.SeasonNum)
-		seasonID, err := w.ensureContainer(ctx, f.SectionID, domain.KindSeason, &showID, seasonTitle, 0, f.SeasonNum)
+		seasonID, err := w.ensureContainer(ctx, itemSpec{
+			sectionID: f.SectionID, kind: domain.KindSeason, parentID: &showID,
+			title: fmt.Sprintf("Season %d", f.SeasonNum), index: f.SeasonNum,
+		})
 		if err != nil {
 			return err
 		}
-		parentID = &seasonID
+		spec.parentID, spec.index = &seasonID, f.EpisodeNum
+	case domain.KindTrack:
+		// An artist with no picture of their own shows one of their covers,
+		// which is what every music client does when an agent has no artist
+		// art: a library whose top level is a wall of blank squares is a
+		// worse answer than one that borrows from the album below it.
+		artistPoster := f.ArtistPoster
+		if artistPoster == "" {
+			artistPoster = f.AlbumPoster
+		}
+		artistID, err := w.ensureContainer(ctx, itemSpec{
+			sectionID: f.SectionID, kind: domain.KindArtist, title: f.Artist,
+			poster: artistPoster,
+		})
+		if err != nil {
+			return err
+		}
+		albumID, err := w.ensureContainer(ctx, itemSpec{
+			sectionID: f.SectionID, kind: domain.KindAlbum, parentID: &artistID,
+			title: f.Album, year: f.Year, poster: f.AlbumPoster,
+		})
+		if err != nil {
+			return err
+		}
+		// A track's own year is the album's; carrying it twice would make two
+		// rows of one track when a file disagrees with its neighbours.
+		spec.parentID, spec.index, spec.disc, spec.year = &albumID, f.TrackNum, f.Disc, 0
+		spec.performer = f.Performer
+	case domain.KindPhoto:
+		// The folder tree, one album per level, which is the hierarchy
+		// somebody already built by filing their photographs.
+		var parent *int64
+		for _, name := range f.Albums {
+			id, err := w.ensureContainer(ctx, itemSpec{
+				sectionID: f.SectionID, kind: domain.KindPhotoAlbum, parentID: parent, title: name,
+			})
+			if err != nil {
+				return err
+			}
+			parent = &id
+		}
+		spec.parentID, spec.takenAt = parent, f.TakenAt
 	case domain.KindMovie:
 		// No parent.
 	default:
 		return fmt.Errorf("scanner produced an unplayable kind: %s", f.Kind)
 	}
 
-	index := f.EpisodeNum
-	itemID, err := w.upsertItem(ctx, f.SectionID, f.Kind, parentID, f.Title, f.Year, index, f.Duration)
+	itemID, err := w.upsertItem(ctx, spec)
 	if err != nil {
 		return err
 	}
+	parentID := spec.parentID
 	partID, changed, err := w.upsertPart(ctx, itemID, f)
 	if err != nil {
 		return err
@@ -131,7 +211,7 @@ func (w *Writer) Add(ctx context.Context, f Found) error {
 	// and a newly added episode has no marker at all yet, so the audio pass
 	// has to look at this season again. Cleared here rather than in the pass
 	// because this is the only place that knows a file moved.
-	if changed && parentID != nil {
+	if changed && parentID != nil && f.Kind == domain.KindEpisode {
 		if _, err := w.tx.ExecContext(ctx, `UPDATE items SET markers_at = 0 WHERE id = ?`, *parentID); err != nil {
 			return fmt.Errorf("reopen season for detection: %w", err)
 		}
@@ -227,13 +307,44 @@ func (w *Writer) begin(ctx context.Context) error {
 	return nil
 }
 
-// ensureContainer finds or creates a show or season and returns its id.
-func (w *Writer) ensureContainer(ctx context.Context, sectionID int64, kind domain.Kind, parentID *int64, title string, year, index int) (int64, error) {
-	cacheKey := fmt.Sprintf("%d/%s/%v/%s/%d/%d", sectionID, kind, derefID(parentID), title, year, index)
+// itemSpec is one row as the scanner's discovery implies it.
+//
+// A struct rather than nine positional arguments: the kinds differ in which
+// of these they set — an episode has an index, a track an index and a disc, a
+// photograph a time and neither — and a call site that names its fields is
+// one that cannot quietly pass a disc number as a year.
+type itemSpec struct {
+	sectionID int64
+	kind      domain.Kind
+	parentID  *int64
+	title     string
+	year      int
+	index     int
+	disc      int
+	duration  time.Duration
+	takenAt   time.Time
+	performer string
+
+	// poster is artwork for a container the scan found rather than fetched —
+	// an album's cover. Applied only when the row has none, so the first file
+	// in a folder decides and the rest cost nothing.
+	poster string
+}
+
+// ensureContainer finds or creates a show, season, artist, album or photo
+// album and returns its id.
+func (w *Writer) ensureContainer(ctx context.Context, spec itemSpec) (int64, error) {
+	cacheKey := fmt.Sprintf("%d/%s/%v/%s/%d/%d/%d",
+		spec.sectionID, spec.kind, derefID(spec.parentID), spec.title, spec.year, spec.index, spec.disc)
 	if id, ok := w.parents[cacheKey]; ok {
+		if spec.poster != "" {
+			if err := w.applyPoster(ctx, id, spec.poster); err != nil {
+				return 0, err
+			}
+		}
 		return id, nil
 	}
-	id, err := w.upsertItem(ctx, sectionID, kind, parentID, title, year, index, 0)
+	id, err := w.upsertItem(ctx, spec)
 	if err != nil {
 		return 0, err
 	}
@@ -241,27 +352,57 @@ func (w *Writer) ensureContainer(ctx context.Context, sectionID int64, kind doma
 	return id, nil
 }
 
+// applyPoster gives a container artwork it does not already have.
+func (w *Writer) applyPoster(ctx context.Context, itemID int64, key string) error {
+	if key == "" {
+		return nil
+	}
+	if _, err := w.tx.ExecContext(ctx,
+		`UPDATE items SET poster_key = ?, updated_at = ? WHERE id = ? AND poster_key = ''`,
+		key, millis(w.now), itemID); err != nil {
+		return fmt.Errorf("set poster: %w", err)
+	}
+	return nil
+}
+
 // upsertItem is idempotent on the identity index, so a rescan of an unchanged
 // library produces no new rows and no churn in updated_at.
-func (w *Writer) upsertItem(ctx context.Context, sectionID int64, kind domain.Kind, parentID *int64, title string, year, index int, duration time.Duration) (int64, error) {
+func (w *Writer) upsertItem(ctx context.Context, spec itemSpec) (int64, error) {
 	var parent any
-	if parentID != nil {
-		parent = *parentID
+	if spec.parentID != nil {
+		parent = *spec.parentID
 	}
 
 	var id int64
 	err := w.tx.QueryRowContext(ctx,
 		`SELECT id FROM items WHERE section_id = ? AND kind = ? AND IFNULL(parent_id, 0) = IFNULL(?, 0)
-		   AND title = ? AND year = ? AND idx = ?`,
-		sectionID, string(kind), parent, title, year, index).Scan(&id)
+		   AND title = ? AND year = ? AND idx = ? AND disc = ?`,
+		spec.sectionID, string(spec.kind), parent, spec.title, spec.year, spec.index, spec.disc).Scan(&id)
 	switch {
 	case err == nil:
-		if duration > 0 {
+		if spec.duration > 0 {
 			if _, err := w.tx.ExecContext(ctx,
 				`UPDATE items SET duration_ms = ?, updated_at = ? WHERE id = ? AND duration_ms <> ?`,
-				duration.Milliseconds(), millis(w.now), id, duration.Milliseconds()); err != nil {
+				spec.duration.Milliseconds(), millis(w.now), id, spec.duration.Milliseconds()); err != nil {
 				return 0, fmt.Errorf("update duration: %w", err)
 			}
+		}
+		if !spec.takenAt.IsZero() {
+			if _, err := w.tx.ExecContext(ctx,
+				`UPDATE items SET taken_at = ? WHERE id = ? AND taken_at <> ?`,
+				millis(spec.takenAt), id, millis(spec.takenAt)); err != nil {
+				return 0, fmt.Errorf("update taken at: %w", err)
+			}
+		}
+		if spec.performer != "" {
+			if _, err := w.tx.ExecContext(ctx,
+				`UPDATE items SET performer = ? WHERE id = ? AND performer <> ?`,
+				spec.performer, id, spec.performer); err != nil {
+				return 0, fmt.Errorf("update performer: %w", err)
+			}
+		}
+		if err := w.applyPoster(ctx, id, spec.poster); err != nil {
+			return 0, err
 		}
 		return id, nil
 	case !errors.Is(err, sql.ErrNoRows):
@@ -269,10 +410,13 @@ func (w *Writer) upsertItem(ctx context.Context, sectionID int64, kind domain.Ki
 	}
 
 	res, err := w.tx.ExecContext(ctx,
-		`INSERT INTO items (section_id, kind, parent_id, title, sort_title, year, idx, duration_ms, added_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sectionID, string(kind), parent, title, SortTitle(title), year, index,
-		duration.Milliseconds(), millis(w.now), millis(w.now))
+		`INSERT INTO items (section_id, kind, parent_id, title, sort_title, year, idx, disc,
+		    duration_ms, added_at, updated_at, taken_at, poster_key, performer)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		spec.sectionID, string(spec.kind), parent, spec.title, SortTitle(spec.title),
+		spec.year, spec.index, spec.disc,
+		spec.duration.Milliseconds(), millis(w.now), millis(w.now), millis(spec.takenAt),
+		spec.poster, spec.performer)
 	if err != nil {
 		return 0, fmt.Errorf("insert item: %w", err)
 	}
@@ -290,14 +434,20 @@ func (w *Writer) upsertItem(ctx context.Context, sectionID int64, kind domain.Ki
 // is worth detecting markers for again.
 func (w *Writer) upsertPart(ctx context.Context, itemID int64, f Found) (int64, bool, error) {
 	res, err := w.tx.ExecContext(ctx,
-		`INSERT INTO parts (item_id, path, size, container, modified_at) VALUES (?, ?, ?, ?, ?)
+		`INSERT INTO parts (item_id, path, size, container, modified_at, width, height, orientation)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(path) DO UPDATE SET
 		   item_id = excluded.item_id,
 		   size = excluded.size,
 		   container = excluded.container,
-		   modified_at = excluded.modified_at
-		 WHERE parts.size <> excluded.size OR parts.modified_at <> excluded.modified_at OR parts.item_id <> excluded.item_id`,
-		itemID, f.Path, f.Size, f.Container, millis(f.ModifiedAt))
+		   modified_at = excluded.modified_at,
+		   width = excluded.width,
+		   height = excluded.height,
+		   orientation = excluded.orientation
+		 WHERE parts.size <> excluded.size OR parts.modified_at <> excluded.modified_at
+		    OR parts.item_id <> excluded.item_id OR parts.width <> excluded.width
+		    OR parts.height <> excluded.height OR parts.orientation <> excluded.orientation`,
+		itemID, f.Path, f.Size, f.Container, millis(f.ModifiedAt), f.Width, f.Height, f.Orientation)
 	if err != nil {
 		return 0, false, fmt.Errorf("upsert part: %w", err)
 	}
@@ -362,23 +512,35 @@ func (d *DB) PrunePaths(ctx context.Context, sectionID int64, keep map[string]st
 		}
 	}
 
-	// Episodes and movies with no files left, then seasons and shows with
-	// nothing underneath. Two passes, deepest first, so a show whose last
-	// episode just went also goes.
+	// Everything that is a file with no file left, then everything that
+	// gathers things with nothing left to gather. Deepest first, and repeated
+	// until a pass changes nothing: shows are two levels deep, music is two,
+	// and a tree of photo albums is as deep as somebody's folders go.
 	if _, err := d.sql.ExecContext(ctx,
-		`DELETE FROM items WHERE section_id = ? AND kind IN ('movie','episode')
+		`DELETE FROM items WHERE section_id = ? AND kind IN ('movie','episode','track','photo')
 		   AND NOT EXISTS (SELECT 1 FROM parts WHERE parts.item_id = items.id)`, sectionID); err != nil {
 		return 0, fmt.Errorf("prune leaves: %w", err)
 	}
-	for range 2 {
-		if _, err := d.sql.ExecContext(ctx,
-			`DELETE FROM items WHERE section_id = ? AND kind IN ('season','show')
-			   AND NOT EXISTS (SELECT 1 FROM items AS child WHERE child.parent_id = items.id)`, sectionID); err != nil {
+	// Bounded so a cycle in parent_id — which the schema should make
+	// impossible — cannot turn tidying up into a loop that never ends.
+	for range maxTreeDepth {
+		res, err := d.sql.ExecContext(ctx,
+			`DELETE FROM items WHERE section_id = ? AND kind IN ('season','show','album','artist','photoalbum')
+			   AND NOT EXISTS (SELECT 1 FROM items AS child WHERE child.parent_id = items.id)`, sectionID)
+		if err != nil {
 			return 0, fmt.Errorf("prune containers: %w", err)
+		}
+		if affected, err := res.RowsAffected(); err == nil && affected == 0 {
+			break
 		}
 	}
 	return len(stale), nil
 }
+
+// maxTreeDepth bounds how deep a library's own hierarchy is taken to go. Two
+// is television and music; the rest is headroom for a photo library filed by
+// year, month, day and event.
+const maxTreeDepth = 16
 
 // SortTitle is Title with a leading article dropped and case folded, so "The
 // Martian" files under M where a viewer looks for it.

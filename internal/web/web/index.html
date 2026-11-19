@@ -39,6 +39,44 @@
   <main id="main" class="main"></main>
 </div>
 
+<!-- Music plays on in its own bar while the library is browsed, which is the
+     whole difference between listening and watching: a film is the thing you
+     are doing, and an album is what is on while you do something else. -->
+<div id="audio-player" class="audio" hidden>
+  <a id="audio-art" class="art" href="#/">
+    <img id="audio-cover" alt="">
+  </a>
+  <div class="now">
+    <div id="audio-title" class="title"></div>
+    <div id="audio-sub" class="muted"></div>
+  </div>
+  <div class="row controls">
+    <button id="audio-prev" class="ghost" title="Previous track" aria-label="Previous track">‹‹</button>
+    <button id="audio-toggle" class="primary">Pause</button>
+    <button id="audio-next" class="ghost" title="Next track" aria-label="Next track">››</button>
+  </div>
+  <progress id="audio-progress" class="playbar" value="0" max="100" aria-label="how far through"></progress>
+  <span id="audio-time" class="muted mono"></span>
+  <span id="audio-mode" class="muted"></span>
+  <button id="audio-close" class="link" title="Stop">Stop</button>
+  <audio id="audio" preload="metadata"></audio>
+</div>
+
+<!-- One photograph, over everything else, with the album still behind it. -->
+<div id="lightbox" class="lightbox" hidden>
+  <img id="lightbox-img" alt="">
+  <div class="player-bar">
+    <button id="lightbox-back" class="ghost">‹ Back</button>
+    <span id="lightbox-title"></span>
+    <span id="lightbox-when" class="muted"></span>
+    <span class="grow"></span>
+    <button id="lightbox-prev" class="ghost" aria-label="Previous photograph">‹</button>
+    <span id="lightbox-count" class="muted mono"></span>
+    <button id="lightbox-next" class="ghost" aria-label="Next photograph">›</button>
+    <a id="lightbox-file" class="button" href="#" download>Download</a>
+  </div>
+</div>
+
 <!-- The player lives outside the view that opened it, so navigating back does
      not tear the video element down and start the file again. -->
 <div id="player" class="player" hidden>

@@ -258,7 +258,7 @@ func (r *Runner) prepare(ctx context.Context, kind Kind, sectionID int64) (func(
 }
 
 func (r *Runner) scan(ctx context.Context, rep report, sections []domain.Section) error {
-	scanner := &scan.Scanner{DB: r.DB, Prober: r.Prober, Log: r.logger()}
+	scanner := &scan.Scanner{DB: r.DB, Prober: r.Prober, Log: r.logger(), Artwork: r.Artwork}
 	var files int
 	for i, section := range sections {
 		// Each section's own count, added to what earlier sections found, so

@@ -8,11 +8,15 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/inknironapps/bask-media-server/internal/artwork"
+	"github.com/inknironapps/bask-media-server/internal/coverart"
 	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/ffprobe"
+	"github.com/inknironapps/bask-media-server/internal/photos"
 	"github.com/inknironapps/bask-media-server/internal/store"
 )
 
@@ -51,6 +55,14 @@ type Scanner struct {
 	Prober Prober
 	Log    *slog.Logger
 
+	// Artwork is where a cover found in the library is kept: a folder image
+	// beside an album, or the picture inside the music files themselves.
+	// Optional — without it a music library scans and plays, with no covers.
+	//
+	// Photographs never go in here. They are served from where they already
+	// are, and only their thumbnails are cached: see artwork.Cache.OpenFrom.
+	Artwork *artwork.Cache
+
 	// Workers probing files. Zero means half the CPUs, minimum two: probing is
 	// IO-bound enough that one per core wins nothing and costs memory.
 	Workers int
@@ -58,6 +70,12 @@ type Scanner struct {
 	// Batch is how many items a write transaction covers. Zero means the
 	// store's default.
 	Batch int
+
+	// mu guards covers, which is the per-scan memory of artwork already
+	// looked at. On the Scanner rather than passed through the pipeline
+	// because the probing workers share it.
+	mu     sync.Mutex
+	covers map[string]string
 
 	// Progress is told how many files this section has written so far.
 	//
@@ -69,9 +87,17 @@ type Scanner struct {
 }
 
 type found struct {
-	path  string
-	size  int64
-	mod   time.Time
+	path string
+	size int64
+	mod  time.Time
+
+	// kind is what this file is, decided by the library it was found in.
+	kind domain.Kind
+
+	// root is the library root this file was found under, which is what the
+	// parsers measure a path against.
+	root string
+
 	movie *Movie
 	ep    *Episode
 
@@ -80,6 +106,12 @@ type found struct {
 	// walking so that matching one to a film is a string comparison rather
 	// than a second pass over the tree.
 	siblings []string
+
+	// cover and artistCover are folder images found beside a music file and
+	// one level above it. Paths, not pictures: whether they are worth keeping
+	// is decided once per album rather than once per track.
+	cover       string
+	artistCover string
 }
 
 // Section scans one library and prunes anything that has vanished from disk.
@@ -173,6 +205,8 @@ func (s *Scanner) walk(ctx context.Context, section domain.Section, out chan<- f
 	// number of subtitle files in the library, which is the same order as the
 	// set of seen paths the prune already needs.
 	subtitles := map[string][]string{}
+	// The same for folder images, which is how an album's cover is found.
+	covers := map[string]string{}
 
 	for _, root := range section.Roots {
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -191,13 +225,23 @@ func (s *Scanner) walk(ctx context.Context, section domain.Section, out chan<- f
 				return ctx.Err()
 			}
 			if d.IsDir() {
-				// A folder's subtitle files are read once, when the folder is
-				// entered, and used by every media file in it. One extra
-				// listing per directory, against one per media file.
-				subtitles[path] = subtitlesIn(path)
+				if path != root && skipDir(d.Name()) {
+					return fs.SkipDir
+				}
+				// A folder's sidecars and its cover are read once, when the
+				// folder is entered, and used by every file in it: one extra
+				// listing per directory against one per media file. Only
+				// where they mean something — a photo library has no
+				// subtitles, and in one of those cover.jpg is a photograph.
+				switch section.Kind {
+				case domain.SectionMovies, domain.SectionShows:
+					subtitles[path] = subtitlesIn(path)
+				case domain.SectionMusic:
+					covers[path] = coverIn(path)
+				}
 				return nil
 			}
-			if !IsMedia(path) {
+			if !s.wanted(section.Kind, path) {
 				return nil
 			}
 			info, err := d.Info()
@@ -206,8 +250,7 @@ func (s *Scanner) walk(ctx context.Context, section domain.Section, out chan<- f
 			}
 
 			f := found{
-				path: path, size: info.Size(), mod: info.ModTime().UTC(),
-				siblings: subtitles[filepath.Dir(path)],
+				path: path, size: info.Size(), mod: info.ModTime().UTC(), root: root,
 			}
 			switch section.Kind {
 			case domain.SectionMovies:
@@ -215,13 +258,24 @@ func (s *Scanner) walk(ctx context.Context, section domain.Section, out chan<- f
 				if m.Title == "" {
 					return nil
 				}
-				f.movie = &m
+				f.kind, f.movie = domain.KindMovie, &m
+				f.siblings = subtitles[filepath.Dir(path)]
 			case domain.SectionShows:
 				ep, ok := ParseEpisode(root, path)
 				if !ok {
 					return nil
 				}
-				f.ep = &ep
+				f.kind, f.ep = domain.KindEpisode, &ep
+				f.siblings = subtitles[filepath.Dir(path)]
+			case domain.SectionMusic:
+				// The album's folder is the one above the file unless the file
+				// is in a per-disc folder, which is also where the cover is.
+				f.kind = domain.KindTrack
+				album := albumDirOf(filepath.Dir(path))
+				f.cover = covers[album]
+				f.artistCover = covers[filepath.Dir(album)]
+			case domain.SectionPhotos:
+				f.kind = domain.KindPhoto
 			default:
 				return nil
 			}
@@ -240,7 +294,50 @@ func (s *Scanner) walk(ctx context.Context, section domain.Section, out chan<- f
 	return nil
 }
 
+// wanted reports whether a file belongs in this kind of library.
+func (s *Scanner) wanted(kind domain.SectionKind, path string) bool {
+	switch kind {
+	case domain.SectionMovies, domain.SectionShows:
+		return IsMedia(path)
+	case domain.SectionMusic:
+		return IsAudio(path)
+	case domain.SectionPhotos:
+		return IsImage(path)
+	default:
+		return false
+	}
+}
+
+// skipDir names the directories that are never part of a library: the hidden
+// ones, and the thumbnail caches that network drives and photo tools scatter
+// through a tree. Without this a photo library gains a second copy of itself
+// at a quarter of the size.
+func skipDir(name string) bool {
+	switch strings.ToLower(name) {
+	case "@eadir", "#recycle", "$recycle.bin", "lost+found",
+		".thumbnails", ".picasaoriginals", "@__thumb":
+		return true
+	}
+	return strings.HasPrefix(name, ".")
+}
+
+// albumDirOf is the folder that names an album: the file's own, unless that
+// is a per-disc folder, in which case it is the one above.
+func albumDirOf(dir string) string {
+	if discDir.MatchString(filepath.Base(dir)) {
+		return filepath.Dir(dir)
+	}
+	return dir
+}
+
 func (s *Scanner) toFound(ctx context.Context, section domain.Section, f found) (store.Found, bool) {
+	switch f.kind {
+	case domain.KindTrack:
+		return s.trackFound(ctx, section, f)
+	case domain.KindPhoto:
+		return s.photoFound(section, f)
+	}
+
 	var (
 		duration  time.Duration
 		chapters  []domain.Chapter
@@ -295,6 +392,209 @@ func (s *Scanner) toFound(ctx context.Context, section domain.Section, f found) 
 		return store.Found{}, false
 	}
 	return out, true
+}
+
+// trackFound turns one music file into a row.
+//
+// The file's own tags come first and the path second, which is the opposite of
+// the rule for films: a music file carries metadata written by whoever
+// published it, and that beats any reading of "01 - track.mp3". The path is
+// what fills the gaps, and a file with neither is still filed rather than
+// dropped.
+func (s *Scanner) trackFound(ctx context.Context, section domain.Section, f found) (store.Found, bool) {
+	var (
+		duration time.Duration
+		tags     Tags
+	)
+	if s.Prober != nil {
+		if info, err := s.Prober.Probe(ctx, f.path); err == nil {
+			duration = info.Duration
+			tags = Tags{
+				Title:       info.Tags.Title,
+				Artist:      info.Tags.Artist,
+				AlbumArtist: info.Tags.AlbumArtist,
+				Album:       info.Tags.Album,
+				Date:        info.Tags.Date,
+				Genre:       info.Tags.Genre,
+				Track:       info.Tags.Track,
+				Disc:        info.Tags.Disc,
+			}
+		} else if s.Log != nil {
+			s.Log.Debug("could not probe", "path", f.path, "error", err)
+		}
+	}
+
+	track := ParseTrack(f.root, f.path, tags)
+	return store.Found{
+		SectionID:    section.ID,
+		Kind:         domain.KindTrack,
+		Path:         f.path,
+		Size:         f.size,
+		Container:    containerOf(f.path),
+		ModifiedAt:   f.mod,
+		Duration:     duration,
+		Title:        track.Title,
+		Year:         track.Year,
+		Artist:       track.Artist,
+		Performer:    track.Performer,
+		Album:        track.Album,
+		Disc:         track.Disc,
+		TrackNum:     track.Number,
+		AlbumPoster:  s.cover(f.cover, f.path),
+		ArtistPoster: s.adopt(f.artistCover),
+	}, true
+}
+
+// photoFound turns one picture into a row.
+//
+// The file is read, never decoded: the dimensions come out of the format's
+// header and the time and rotation out of its EXIF. A format this program
+// cannot read — a phone's HEIC — is still a row, with no dimensions and the
+// file's own mtime for when it was taken.
+func (s *Scanner) photoFound(section domain.Section, f found) (store.Found, bool) {
+	photo, ok := ParsePhoto(f.root, f.path)
+	if !ok {
+		return store.Found{}, false
+	}
+
+	taken := f.mod
+	info, err := photos.Read(f.path)
+	switch {
+	case err == nil, errors.Is(err, photos.ErrNoPixels):
+		if !info.TakenAt.IsZero() {
+			taken = info.TakenAt
+		}
+	default:
+		if s.Log != nil {
+			s.Log.Debug("could not read a picture", "path", f.path, "error", err)
+		}
+	}
+
+	return store.Found{
+		SectionID:   section.ID,
+		Kind:        domain.KindPhoto,
+		Path:        f.path,
+		Size:        f.size,
+		Container:   containerOf(f.path),
+		ModifiedAt:  f.mod,
+		Albums:      photo.Albums,
+		Title:       photo.Title,
+		TakenAt:     taken,
+		Width:       info.Width,
+		Height:      info.Height,
+		Orientation: info.Orientation,
+	}, true
+}
+
+// cover is an album's artwork: the folder image beside it where there is one,
+// and otherwise the picture inside the music file itself.
+//
+// Resolved once per album folder and remembered, because every track in a
+// folder would otherwise ask the same question — and in the embedded case
+// that question means reading the front of a file and hashing a few hundred
+// kilobytes.
+func (s *Scanner) cover(folderImage, trackPath string) string {
+	if s.Artwork == nil {
+		return ""
+	}
+	if key := s.adopt(folderImage); key != "" {
+		return key
+	}
+	return s.embedded(trackPath)
+}
+
+// adopt copies a folder image into the artwork cache and returns its key.
+func (s *Scanner) adopt(path string) string {
+	if s.Artwork == nil || path == "" {
+		return ""
+	}
+	if key, found := s.remembered(path); found {
+		return key
+	}
+	key, err := s.Artwork.Adopt(path)
+	if err != nil {
+		if s.Log != nil {
+			s.Log.Debug("could not keep a folder image", "path", path, "error", err)
+		}
+		key = ""
+	}
+	s.remember(path, key)
+	return key
+}
+
+// embedded pulls the cover out of a music file, once per folder.
+func (s *Scanner) embedded(trackPath string) string {
+	folder := albumDirOf(filepath.Dir(trackPath))
+	if key, found := s.remembered("embedded:" + folder); found {
+		return key
+	}
+
+	var key string
+	picture, err := coverart.Read(trackPath)
+	switch {
+	case err == nil:
+		if stored, err := s.Artwork.Store(picture.Data); err == nil {
+			key = stored
+			if s.Log != nil {
+				s.Log.Debug("kept a cover from inside a file",
+					"path", trackPath, "picture", picture.Describe())
+			}
+		} else if s.Log != nil {
+			s.Log.Debug("could not keep an embedded cover", "path", trackPath, "error", err)
+		}
+	case errors.Is(err, coverart.ErrNoPicture):
+		// The common case for a library with folder images, and not a fault.
+	default:
+		if s.Log != nil {
+			s.Log.Debug("could not read an embedded cover", "path", trackPath, "error", err)
+		}
+	}
+	s.remember("embedded:"+folder, key)
+	return key
+}
+
+// remembered and remember are the per-scan memory of artwork already dealt
+// with, keyed by what was looked at. Guarded because the probing workers run
+// in parallel, and bounded by the number of album folders in the library —
+// the same order as the shows in the writer's parent cache.
+func (s *Scanner) remembered(key string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value, found := s.covers[key]
+	return value, found
+}
+
+func (s *Scanner) remember(key, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.covers == nil {
+		s.covers = map[string]string{}
+	}
+	s.covers[key] = value
+}
+
+// coverIn finds the folder image in one directory: the cover of the album
+// whose tracks are in it, or the picture of the artist whose albums are.
+func coverIn(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var fallback string
+	for _, entry := range entries {
+		if entry.IsDir() || !IsImage(entry.Name()) {
+			continue
+		}
+		if IsArtwork(entry.Name()) {
+			return filepath.Join(dir, entry.Name())
+		}
+		if fallback == "" {
+			fallback = filepath.Join(dir, entry.Name())
+		}
+	}
+	// A folder with one picture in it and a name nobody standardised is still
+	// that album's cover: it is the only image in a folder of music.
+	return fallback
 }
 
 // subtitlesIn lists the subtitle files in one directory.

@@ -17,6 +17,10 @@ that can be enforced.
 | Watching in a browser | Same as any direct play | The page is embedded; the video is `http.ServeContent` over the same 32 KiB buffer |
 | One stream being converted | One ffmpeg, ~50 MB RSS, plus a core | Bounded by `-transcode-sessions` (3 by default); segments are files on disk, never buffers here |
 | Background passes remembered | < 10 KB | The job history is capped at twenty finished jobs and holds counters, not output |
+| Scanning 40k photographs | < 150 MB peak | The front of each file is read, never decoded: dimensions from the format's header, EXIF capped at 1 MiB |
+| Scanning a music library | < 150 MB peak | One ffprobe per worker for the tags, plus at most one cover read per album folder, capped at 8 MiB |
+| Making a photo thumbnail | < 170 MB per decode, bounded | One decoded bitmap at a time per resize slot (two by default), capped at 40 megapixels; the turn is applied to the thumbnail, not the original |
+| Listening in a browser | Same as any direct play | An audio file is `http.ServeContent` over the same 32 KiB buffer |
 
 Peak means peak: a scan that allocates 400 MB for a moment and settles back to
 60 MB has failed this budget, because the machine had to find 400 MB.
@@ -67,6 +71,23 @@ Peak means peak: a scan that allocates 400 MB for a moment and settles back to
 9. **Images are files, not objects.** Thumbnails are generated to disk on first
    request under a concurrency semaphore, then served as files. A decoded image
    is never held past the request that made it.
+10. **A photo library is read, never decoded, and never copied.** A scan takes
+    a photograph's dimensions from the format's header and its time and
+    rotation from EXIF, both from the first megabyte of the file — so forty
+    thousand photographs cost forty thousand short reads rather than forty
+    thousand decodes. The originals stay in the library: only thumbnails are
+    cached, which is both what keeps the artwork cache's cap meaningful and
+    what stops a photo library costing twice its size on disk. The one place a
+    photograph is decoded is making a thumbnail, which goes through the same
+    semaphore and the same 40-megapixel refusal as a poster, and applies the
+    EXIF turn to the finished thumbnail rather than to the original — fifty
+    megabytes saved per rotated picture, on the picture every phone takes.
+11. **A cover is read once per album, not once per track.** Both places a cover
+    can be — a folder image, or the picture inside the files — are resolved per
+    album folder and remembered for the length of the scan, so a sixty-track
+    box set reads one picture. The parsers are bounded: at most 8 MiB of
+    picture, and a length field claiming more is a corrupt file rather than an
+    allocation to make.
 
 ## Proving it
 
