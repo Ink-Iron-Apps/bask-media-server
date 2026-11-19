@@ -31,6 +31,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/enrich"
 	"github.com/inknironapps/bask-media-server/internal/ffprobe"
 	"github.com/inknironapps/bask-media-server/internal/fingerprint"
+	"github.com/inknironapps/bask-media-server/internal/jellyfin"
 	"github.com/inknironapps/bask-media-server/internal/jobs"
 	"github.com/inknironapps/bask-media-server/internal/plexapi"
 	"github.com/inknironapps/bask-media-server/internal/scan"
@@ -60,23 +61,24 @@ func (s *sectionFlag) Set(value string) error {
 
 func main() {
 	var (
-		dbPath     = flag.String("db", "bms.db", "path to the library database")
-		addr       = flag.String("addr", "127.0.0.1:32500", "address to listen on")
-		name       = flag.String("name", "Bask Media Server", "name clients show for this server")
-		memLimit   = flag.Int64("mem-limit", 256, "soft memory ceiling in MiB; the collector works harder near it")
-		scanNow    = flag.Bool("scan", false, "scan every section before serving")
-		probe      = flag.Bool("probe", true, "measure durations with ffprobe during a scan")
-		enrichNow  = flag.Bool("enrich", false, "ask the metadata provider about anything it has not seen")
-		detectNow  = flag.Bool("detect-markers", false, "find intro and credits markers by comparing each season's audio")
-		ffmpegPath = flag.String("ffmpeg", "", "path to ffmpeg, used for marker detection (default: found on PATH)")
-		detectJobs = flag.Int("detect-workers", 0, "how many files to fingerprint at once (default: half the CPUs)")
-		adminUI    = flag.Bool("admin", true, "serve the admin web interface at /admin")
-		webUI      = flag.Bool("web", true, "serve the viewing web interface at /web")
-		transcodes = flag.Int("transcode-sessions", 3, "how many files may be converted at once for clients that cannot play them; 0 turns conversion off")
-		artworkDir = flag.String("artwork", "", "where to cache posters and backdrops (default: beside the database)")
-		artworkMB  = flag.Int64("artwork-cache-mb", 512, "cap on the artwork cache in MiB")
-		tmdbKey    = flag.String("tmdb-key", "", "TMDB API key or v4 read token; falls back to BMS_TMDB_API_KEY")
-		sections   sectionFlag
+		dbPath      = flag.String("db", "bms.db", "path to the library database")
+		addr        = flag.String("addr", "127.0.0.1:32500", "address to listen on")
+		name        = flag.String("name", "Bask Media Server", "name clients show for this server")
+		memLimit    = flag.Int64("mem-limit", 256, "soft memory ceiling in MiB; the collector works harder near it")
+		scanNow     = flag.Bool("scan", false, "scan every section before serving")
+		probe       = flag.Bool("probe", true, "measure durations with ffprobe during a scan")
+		enrichNow   = flag.Bool("enrich", false, "ask the metadata provider about anything it has not seen")
+		detectNow   = flag.Bool("detect-markers", false, "find intro and credits markers by comparing each season's audio")
+		ffmpegPath  = flag.String("ffmpeg", "", "path to ffmpeg, used for marker detection (default: found on PATH)")
+		detectJobs  = flag.Int("detect-workers", 0, "how many files to fingerprint at once (default: half the CPUs)")
+		adminUI     = flag.Bool("admin", true, "serve the admin web interface at /admin")
+		webUI       = flag.Bool("web", true, "serve the viewing web interface at /web")
+		jellyfinAPI = flag.Bool("jellyfin", true, "answer the Jellyfin API, so clients can be pointed straight at this server")
+		transcodes  = flag.Int("transcode-sessions", 3, "how many files may be converted at once for clients that cannot play them; 0 turns conversion off")
+		artworkDir  = flag.String("artwork", "", "where to cache posters and backdrops (default: beside the database)")
+		artworkMB   = flag.Int64("artwork-cache-mb", 512, "cap on the artwork cache in MiB")
+		tmdbKey     = flag.String("tmdb-key", "", "TMDB API key or v4 read token; falls back to BMS_TMDB_API_KEY")
+		sections    sectionFlag
 	)
 	flag.Var(&sections, "section", `add a library on first run, as "Title:movies|shows|music|photos:/path" (repeatable)`)
 	flag.Parse()
@@ -106,6 +108,7 @@ func main() {
 		detectNow:  *detectNow,
 		adminUI:    *adminUI,
 		webUI:      *webUI,
+		jellyfin:   *jellyfinAPI,
 		transcodes: *transcodes,
 		ffmpegPath: *ffmpegPath,
 		detectJobs: *detectJobs,
@@ -129,6 +132,7 @@ type runConfig struct {
 	detectNow  bool
 	adminUI    bool
 	webUI      bool
+	jellyfin   bool
 	transcodes int
 	ffmpegPath string
 	detectJobs int
@@ -297,8 +301,31 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	// under /admin and /web, where Go's mux redirects the bare path to the
 	// directory form for a browser by itself.
 	handler := http.Handler(api.Handler())
-	if cfg.adminUI || cfg.webUI {
+	if cfg.adminUI || cfg.webUI || cfg.jellyfin {
 		root := http.NewServeMux()
+		if cfg.jellyfin {
+			// A second presenter over the same library, for the clients that
+			// are told an address rather than an account — which is every
+			// client a server like this one can actually be reached by.
+			emby := &jellyfin.Server{
+				DB: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version,
+				Artwork: images, Subtitles: converter,
+			}
+			if transcoder != nil {
+				emby.Transcoder = transcoder
+			}
+			handler := emby.Handler()
+			for _, prefix := range jellyfin.Prefixes() {
+				root.Handle(prefix, handler)
+				// Clients are not consistent about the case of the fixed
+				// segments, and the mux matches a path exactly: the lower-case
+				// spelling has to reach the same place, where the handler's own
+				// normaliser puts it right.
+				if lower := strings.ToLower(prefix); lower != prefix {
+					root.Handle(lower, handler)
+				}
+			}
+		}
 		if cfg.adminUI {
 			panel := &admin.Server{
 				DB:        db,

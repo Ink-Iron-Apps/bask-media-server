@@ -33,6 +33,8 @@ and the Plex vocabulary never reaches storage or scanning.
 - Photo libraries: the folder tree as albums, EXIF for when a photograph was
   taken and which way up it goes, and thumbnails made from the originals
   where they are
+- A Jellyfin-compatible API, so a client can be pointed straight at this
+  server by address — no account service in the middle
 
 ## Not yet
 
@@ -208,6 +210,46 @@ library is put in an album named after the library.
 Thumbnail caches are skipped by name (`@eaDir`, `.thumbnails` and the hidden
 folders), or a library would gain a second copy of itself at a quarter of the
 size.
+
+## Two APIs, one library
+
+BMS answers in two vocabularies over the same rows.
+
+The **Plex-compatible API** is at the root, and it is what Bask's existing
+client speaks. Its weakness is not the protocol: it is that a Plex client
+finds servers through plex.tv, which a server belonging to the person running
+it is never going to be on.
+
+The **Jellyfin-compatible API** is the way in that does not need anybody's
+account service. A client is told an address and a user, which is the shape a
+self-hosted server actually has — so this is what makes BMS reachable from
+Bask, from Findroid, from a browser, from anything that speaks it.
+
+```
+http://<server>:32500          the address a client is given
+Username                       the account's name
+Password                       the token issued for that device
+```
+
+The password field carries the token, which is deliberate: BMS already has a
+credential per device that can be revoked on its own, and inventing a second
+secret for the same account would make one of them a lie. Everything else is
+Jellyfin's own shape — `/System/Info/Public` to find the server,
+`/Users/AuthenticateByName` to sign in, `/Users/{id}/Views` for the
+libraries, `BaseItemDto` rows with `RunTimeTicks` and `UserData` — so a
+client that has never heard of BMS needs no special case.
+
+What it carries: films, shows, seasons and episodes; artists, albums and
+tracks; photo albums and photographs with their dimensions and dates;
+posters, covers and thumbnails; subtitles as external streams in the format
+asked for; the file itself with range requests; and progress, resume, next up
+and recently added, per account.
+
+What it does not: Jellyfin's own library management, its plugins, its user
+administration, and Live TV. This is the read path a client needs to browse
+and play, which is what a server has to offer.
+
+`-jellyfin=false` turns it off.
 
 ## Direct play first, and conversion when there is no other way
 

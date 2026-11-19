@@ -486,3 +486,85 @@ func (d *DB) AlbumCover(ctx context.Context, itemID int64) (*domain.Part, error)
 	p.ModifiedAt = fromMillis(modifiedAt)
 	return &p, nil
 }
+
+// SectionItemsOfKind lists everything of one kind in a library, however deep
+// it sits: a show library's episodes, a music library's tracks.
+//
+// A client's "all episodes" row asks for exactly this, and walking the tree
+// to build it would be a query per show and a query per season.
+func (d *DB) SectionItemsOfKind(ctx context.Context, sectionID int64, kind domain.Kind, limit int) ([]domain.Item, error) {
+	if limit <= 0 || limit > 2000 {
+		limit = 1000
+	}
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT `+itemColumns+` FROM items WHERE section_id = ? AND kind = ?
+		 ORDER BY sort_title, disc, idx, taken_at LIMIT ?`,
+		sectionID, string(kind), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list %s: %w", kind, err)
+	}
+	defer rows.Close()
+	return d.collect(ctx, rows)
+}
+
+// RecentlyAdded is what arrived last, newest first, for the row every client
+// puts at the top of a home screen.
+//
+// Only the things that are watched or listened to, never the containers: a
+// show whose season folder was created today is not news, and the episode in
+// it is.
+func (d *DB) RecentlyAdded(ctx context.Context, limit int) ([]domain.Item, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT `+itemColumns+` FROM items
+		  WHERE kind IN ('movie','episode','album','photo')
+		  ORDER BY added_at DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("recently added: %w", err)
+	}
+	defer rows.Close()
+	return d.collect(ctx, rows)
+}
+
+// NextUp is the next unwatched episode of each show this viewer has started.
+//
+// The question a television asks on its home screen, and the one BMS already
+// has the rows to answer: for every show with a watched episode, the lowest
+// season-and-episode that has not been watched. One query rather than a walk
+// per show, because a library of forty shows would otherwise be forty round
+// trips before anything is drawn.
+func (d *DB) NextUp(ctx context.Context, userID int64, limit int) ([]domain.Item, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := d.sql.QueryContext(ctx,
+		`WITH watched AS (
+		     SELECT season.parent_id AS show_id, MAX(p.updated_at) AS seen_at
+		       FROM progress p
+		       JOIN items episode ON episode.id = p.item_id AND episode.kind = 'episode'
+		       JOIN items season ON season.id = episode.parent_id
+		      WHERE p.user_id = ? AND (p.watched = 1 OR p.offset_ms > 0)
+		      GROUP BY season.parent_id
+		 ),
+		 candidates AS (
+		     SELECT `+prefixed("episode", itemColumns)+`, watched.seen_at AS seen_at,
+		            ROW_NUMBER() OVER (
+		              PARTITION BY season.parent_id ORDER BY season.idx, episode.idx
+		            ) AS rank
+		       FROM items episode
+		       JOIN items season ON season.id = episode.parent_id
+		       JOIN watched ON watched.show_id = season.parent_id
+		       LEFT JOIN progress p ON p.item_id = episode.id AND p.user_id = ?
+		      WHERE episode.kind = 'episode' AND IFNULL(p.watched, 0) = 0
+		 )
+		 SELECT `+itemColumns+` FROM candidates WHERE rank = 1
+		  ORDER BY seen_at DESC LIMIT ?`,
+		userID, userID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("next up: %w", err)
+	}
+	defer rows.Close()
+	return d.collect(ctx, rows)
+}
