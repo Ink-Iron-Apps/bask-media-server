@@ -41,6 +41,12 @@ type Found struct {
 	// facts and read again by marker detection, which is why a library with
 	// labelled chapters gets Skip Intro out of a plain scan.
 	Chapters []domain.Chapter
+
+	// Subtitles are the streams inside the file and the sidecar files beside
+	// it, as the scan found them. Nil means nothing was looked for — a scan
+	// with no probe — and an empty slice means nothing was found, which are
+	// different answers: the first must not delete what is already known.
+	Subtitles []domain.Subtitle
 }
 
 // Writer applies scan results in batches inside one transaction.
@@ -117,7 +123,7 @@ func (w *Writer) Add(ctx context.Context, f Found) error {
 	if err != nil {
 		return err
 	}
-	changed, err := w.upsertPart(ctx, itemID, f)
+	partID, changed, err := w.upsertPart(ctx, itemID, f)
 	if err != nil {
 		return err
 	}
@@ -131,6 +137,9 @@ func (w *Writer) Add(ctx context.Context, f Found) error {
 		}
 	}
 	if err := w.applyChapters(ctx, itemID, f); err != nil {
+		return err
+	}
+	if err := w.applySubtitles(ctx, itemID, partID, f); err != nil {
 		return err
 	}
 
@@ -161,6 +170,23 @@ func (w *Writer) applyChapters(ctx context.Context, itemID int64, f Found) error
 		return err
 	}
 	return replaceMarkersTx(ctx, w.tx, itemID, domain.SourceChapter, markers.FromChapters(chapters))
+}
+
+// applySubtitles records what this file's subtitles are now.
+//
+// Skipped entirely when the scan looked for none — no probe, so no embedded
+// streams, and the walk did not list the folder — because an empty answer
+// from a scan that did not ask would delete sidecars that are still there.
+func (w *Writer) applySubtitles(ctx context.Context, itemID, partID int64, f Found) error {
+	if f.Subtitles == nil {
+		return nil
+	}
+	subs := make([]domain.Subtitle, len(f.Subtitles))
+	copy(subs, f.Subtitles)
+	for i := range subs {
+		subs[i].ItemID, subs[i].PartID = itemID, partID
+	}
+	return replaceSubtitlesTx(ctx, w.tx, itemID, partID, subs)
 }
 
 // Commit flushes the open batch, if any.
@@ -262,7 +288,7 @@ func (w *Writer) upsertItem(ctx context.Context, sectionID int64, kind domain.Ki
 //
 // Reports whether the row actually moved, which is how the scan knows a season
 // is worth detecting markers for again.
-func (w *Writer) upsertPart(ctx context.Context, itemID int64, f Found) (bool, error) {
+func (w *Writer) upsertPart(ctx context.Context, itemID int64, f Found) (int64, bool, error) {
 	res, err := w.tx.ExecContext(ctx,
 		`INSERT INTO parts (item_id, path, size, container, modified_at) VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(path) DO UPDATE SET
@@ -273,15 +299,19 @@ func (w *Writer) upsertPart(ctx context.Context, itemID int64, f Found) (bool, e
 		 WHERE parts.size <> excluded.size OR parts.modified_at <> excluded.modified_at OR parts.item_id <> excluded.item_id`,
 		itemID, f.Path, f.Size, f.Container, millis(f.ModifiedAt))
 	if err != nil {
-		return false, fmt.Errorf("upsert part: %w", err)
+		return 0, false, fmt.Errorf("upsert part: %w", err)
 	}
 	affected, err := res.RowsAffected()
-	if err != nil {
-		// A driver that cannot say assumes it changed: detecting again costs
-		// a pass, and not detecting costs a missing button.
-		return true, nil
+	changed := err != nil || affected > 0 // a driver that cannot say assumes it changed
+
+	// The id is read back rather than taken from the insert, because an
+	// unchanged row is not written at all and has no last insert id: the path
+	// is the identity here, which is what the unique index on it is for.
+	var partID int64
+	if err := w.tx.QueryRowContext(ctx, `SELECT id FROM parts WHERE path = ?`, f.Path).Scan(&partID); err != nil {
+		return 0, changed, fmt.Errorf("read part id: %w", err)
 	}
-	return affected > 0, nil
+	return partID, changed, nil
 }
 
 // PrunePaths removes parts whose files are no longer on disk, and then any

@@ -48,7 +48,10 @@ function el(tag, props, ...children) {
 }
 
 function fill(parent, ...nodes) {
-  parent.replaceChildren(...nodes.filter((node) => node != null && node !== false));
+  // Flattened like el()'s children, because replaceChildren turns an array
+  // into the string "[object HTMLButtonElement]" rather than appending what
+  // is in it — a list that silently renders as text instead of buttons.
+  parent.replaceChildren(...nodes.flat().filter((node) => node != null && node !== false));
 }
 
 let toastTimer = null;
@@ -361,6 +364,81 @@ function loadHls() {
   return hlsLoading;
 }
 
+/* ---------- subtitles ---------- */
+
+// subtitlesFor hangs the text tracks off the video element.
+//
+// A <track> is the browser's own subtitle machinery: it parses the WebVTT,
+// draws the cues, positions them over the video and keeps them in time with
+// the player, including through a seek. Nothing here has to re-implement any
+// of that — the server's job is to hand over WebVTT, and this one is to say
+// which ones exist.
+function subtitlesFor(detail) {
+  for (const track of [...video.querySelectorAll('track')]) track.remove();
+
+  const available = (detail.subtitles || []).filter((sub) => sub.text);
+  for (const sub of available) {
+    video.append(el('track', {
+      kind: sub.hearing ? 'captions' : 'subtitles',
+      label: sub.label,
+      srclang: sub.language || 'und',
+      src: sub.url,
+    }));
+  }
+
+  const picked = available.findIndex((sub) => sub.default);
+  showSubtitle(picked);
+  renderSubtitleMenu(detail, available, picked);
+}
+
+// showSubtitle turns one on and the rest off. Index -1 is off.
+function showSubtitle(index) {
+  const tracks = video.textTracks;
+  for (let i = 0; i < tracks.length; i++) {
+    tracks[i].mode = i === index ? 'showing' : 'disabled';
+  }
+}
+
+function renderSubtitleMenu(detail, available, picked) {
+  const box = document.getElementById('player-subs');
+  const unavailable = (detail.subtitles || []).filter((sub) => !sub.text);
+  if (!available.length && !unavailable.length) {
+    box.replaceChildren();
+    return;
+  }
+
+  const menu = el('div', { class: 'menu', hidden: true });
+  const choose = (index, label) => el('button', {
+    text: label,
+    on: {
+      click: () => {
+        showSubtitle(index);
+        menu.hidden = true;
+        button.textContent = index < 0 ? 'Subtitles' : label;
+      },
+    },
+  });
+
+  const button = el('button', {
+    class: 'ghost',
+    text: picked < 0 ? 'Subtitles' : available[picked].label,
+    on: { click: () => { menu.hidden = !menu.hidden; } },
+  });
+
+  fill(menu,
+    choose(-1, 'Off'),
+    available.map((sub, index) => choose(index, sub.label)),
+    // Picture subtitles are listed and greyed: they exist, this page cannot
+    // draw them, and a viewer who can see that stops looking for them.
+    unavailable.map((sub) => el('button', {
+      disabled: true,
+      title: 'A picture subtitle, which a browser cannot draw. It plays in the Bask app.',
+      text: sub.label + ' (picture)',
+    })));
+
+  fill(box, button, menu);
+}
+
 /* ---------- the player ---------- */
 
 const video = document.getElementById('video');
@@ -417,6 +495,7 @@ async function play(detail, offsetMs) {
   }
 
   await attach(answer, startMs);
+  subtitlesFor(detail);
 
   clearInterval(reportTimer);
   // Every ten seconds, which is often enough that closing a laptop loses
@@ -547,6 +626,7 @@ function closePlayer() {
     }).catch(() => { /* the watchdog is the backstop */ });
   }
   detachHls();
+  fill(document.getElementById('player-subs'));
   video.pause();
   video.removeAttribute('src');
   video.load();

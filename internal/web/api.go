@@ -260,6 +260,16 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 	}
 	out["markers"] = list
 
+	// Subtitles as a menu: which ones exist, what to call them, and which of
+	// them this page can actually show — a picture subtitle has no text to
+	// hand over, and saying so is better than an empty track.
+	subs, err := s.DB.Subtitles(r.Context(), []int64{found.ID})
+	if err != nil {
+		s.fail(w, "read subtitles", err)
+		return
+	}
+	out["subtitles"] = subtitleViews(subs[found.ID])
+
 	// The season and show above an episode, so a player can say what is on
 	// without another round trip.
 	if found.ParentID != nil {

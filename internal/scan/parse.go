@@ -176,3 +176,166 @@ func cleanTitle(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
 	return strings.TrimSpace(s)
 }
+
+// SubtitleExtensions are the sidecar formats a scan will pick up.
+//
+// Text formats only, plus the two bitmap ones that are routinely found beside
+// a film: what can be done with each is decided later, and a row for a
+// subtitle nobody can render is still worth having, because a direct play on
+// a client with its own renderer can use it.
+var SubtitleExtensions = map[string]string{
+	".srt": "srt", ".vtt": "webvtt", ".ass": "ass", ".ssa": "ass",
+	".sub": "subrip", ".sup": "pgs", ".idx": "vobsub",
+}
+
+// IsSubtitle reports whether a path looks like a subtitle file.
+func IsSubtitle(path string) bool {
+	_, found := SubtitleExtensions[strings.ToLower(filepath.Ext(path))]
+	return found
+}
+
+// Sidecar is a subtitle file found beside a media file.
+type Sidecar struct {
+	Path     string
+	Codec    string
+	Language string // as written in the name: "en", "eng", "english", or empty
+	Title    string
+	Forced   bool
+	Hearing  bool // marked SDH, HI or CC
+}
+
+// forcedWords and hearingWords are the tags the renamers in use actually
+// write. Matched as whole words in the part of the name after the title, so a
+// film called "Forced Entry" does not acquire a flag from its own title.
+var (
+	forcedWords  = map[string]bool{"forced": true, "foreign": true}
+	hearingWords = map[string]bool{"sdh": true, "hi": true, "cc": true, "hearing": true}
+)
+
+// ParseSidecar decides whether a subtitle file belongs to a media file, and
+// reads what its name says about it.
+//
+// The convention every tool in this space writes is the media file's name,
+// then dot-separated tags: "Film (2002).en.forced.srt", "Film (2002).eng.sdh.srt",
+// or just "Film (2002).srt". Anything that does not start with the media
+// file's name belongs to another file in the same folder.
+func ParseSidecar(mediaPath, subtitlePath string) (Sidecar, bool) {
+	codec, known := SubtitleExtensions[strings.ToLower(filepath.Ext(subtitlePath))]
+	if !known {
+		return Sidecar{}, false
+	}
+	media := strings.TrimSuffix(filepath.Base(mediaPath), filepath.Ext(mediaPath))
+	name := strings.TrimSuffix(filepath.Base(subtitlePath), filepath.Ext(subtitlePath))
+
+	out := Sidecar{Path: subtitlePath, Codec: codec}
+	if strings.EqualFold(name, media) {
+		// "Film (2002).srt": the film's subtitle, saying nothing else.
+		return out, true
+	}
+	if !strings.HasPrefix(strings.ToLower(name), strings.ToLower(media)) {
+		return Sidecar{}, false
+	}
+
+	rest := name[len(media):]
+	separator := rest[0]
+	if !strings.ContainsRune(".-_ ", rune(separator)) {
+		// "Film 2.srt" is not a subtitle for "Film": what follows the name
+		// has to be separated from it.
+		return Sidecar{}, false
+	}
+
+	tags := strings.FieldsFunc(rest, func(r rune) bool {
+		return r == '.' || r == '-' || r == '_' || r == ' '
+	})
+	var titleParts []string
+	for _, tag := range tags {
+		lower := strings.ToLower(tag)
+		switch {
+		case forcedWords[lower]:
+			out.Forced = true
+		case hearingWords[lower]:
+			out.Hearing = true
+		case out.Language == "" && looksLikeLanguage(lower):
+			out.Language = lower
+		default:
+			titleParts = append(titleParts, tag)
+		}
+	}
+
+	// A dot is the convention and carries anything: "Film.Director commentary.srt"
+	// is this film's. Any other separator has to be followed by tags that are
+	// recognisably about a subtitle, because "Film (2002) extras.mkv" is a
+	// different film and "Film (2002) extras.srt" is its subtitle, not this
+	// one's.
+	if separator != '.' && len(titleParts) > 0 {
+		return Sidecar{}, false
+	}
+	out.Title = strings.Join(titleParts, " ")
+	return out, true
+}
+
+// looksLikeLanguage accepts the two- and three-letter codes and the handful of
+// full names that turn up in filenames. Deliberately not a complete table:
+// what is not recognised becomes part of the title, which is visible and
+// correctable, rather than a wrong language nobody can see.
+func looksLikeLanguage(tag string) bool {
+	if len(tag) == 2 || len(tag) == 3 {
+		for _, r := range tag {
+			if r < 'a' || r > 'z' {
+				return false
+			}
+		}
+		return true
+	}
+	return languageNames[tag] != ""
+}
+
+// languageNames maps the spelled-out names to their three-letter codes.
+var languageNames = map[string]string{
+	"english": "eng", "spanish": "spa", "french": "fre", "german": "ger",
+	"italian": "ita", "portuguese": "por", "dutch": "dut", "swedish": "swe",
+	"norwegian": "nor", "danish": "dan", "finnish": "fin", "polish": "pol",
+	"russian": "rus", "japanese": "jpn", "korean": "kor", "chinese": "chi",
+	"arabic": "ara", "hebrew": "heb", "hindi": "hin", "turkish": "tur",
+	"czech": "cze", "greek": "gre", "hungarian": "hun", "romanian": "rum",
+	"thai": "tha", "ukrainian": "ukr", "vietnamese": "vie",
+}
+
+// LanguageCode normalises what a filename or a container says into the
+// three-letter code clients expect, leaving anything unrecognised as it is.
+func LanguageCode(language string) string {
+	lower := strings.ToLower(strings.TrimSpace(language))
+	if code, found := languageNames[lower]; found {
+		return code
+	}
+	if code, found := twoLetterCodes[lower]; found {
+		return code
+	}
+	return lower
+}
+
+// twoLetterCodes covers the ISO 639-1 codes that turn up in filenames, mapped
+// to the 639-2 codes containers and clients use.
+var twoLetterCodes = map[string]string{
+	"en": "eng", "es": "spa", "fr": "fre", "de": "ger", "it": "ita",
+	"pt": "por", "nl": "dut", "sv": "swe", "no": "nor", "da": "dan",
+	"fi": "fin", "pl": "pol", "ru": "rus", "ja": "jpn", "ko": "kor",
+	"zh": "chi", "ar": "ara", "he": "heb", "hi": "hin", "tr": "tur",
+	"cs": "cze", "el": "gre", "hu": "hun", "ro": "rum", "th": "tha",
+	"uk": "ukr", "vi": "vie",
+}
+
+// LanguageName is what to show a person for a code, falling back to the code
+// itself so an unknown language is still labelled with something.
+func LanguageName(code string) string {
+	code = strings.ToLower(strings.TrimSpace(code))
+	for name, mapped := range languageNames {
+		if mapped == code {
+			return strings.ToUpper(name[:1]) + name[1:]
+		}
+	}
+	if code == "" || code == "und" {
+		return "Unknown"
+	}
+	return strings.ToUpper(code)
+}

@@ -140,6 +140,41 @@ type part struct {
 	Size      int64  `xml:"size,attr,omitempty" json:"size,omitempty"`
 	Container string `xml:"container,attr,omitempty" json:"container,omitempty"`
 	Duration  int64  `xml:"duration,attr,omitempty" json:"duration,omitempty"`
+
+	// Stream describes the tracks inside the file, and the sidecars beside
+	// it. Only subtitles for now: a client reads the video and audio it is
+	// playing from the file itself, and what it cannot know without being
+	// told is that there is a .srt in the folder.
+	Stream []stream `xml:"Stream,omitempty" json:"Stream,omitempty"`
+}
+
+// streamType values as Plex numbers them. Clients switch on these integers,
+// so they are the wire, not an internal choice.
+const (
+	streamVideo    = 1
+	streamAudio    = 2
+	streamSubtitle = 3
+)
+
+type stream struct {
+	ID         int64  `xml:"id,attr" json:"id"`
+	StreamType int    `xml:"streamType,attr" json:"streamType"`
+	Index      int    `xml:"index,attr,omitempty" json:"index,omitempty"`
+	Codec      string `xml:"codec,attr,omitempty" json:"codec,omitempty"`
+	Language   string `xml:"language,attr,omitempty" json:"language,omitempty"`
+	// LanguageCode is the three-letter code; language is what to show.
+	LanguageCode    string `xml:"languageCode,attr,omitempty" json:"languageCode,omitempty"`
+	Title           string `xml:"title,attr,omitempty" json:"title,omitempty"`
+	DisplayTitle    string `xml:"displayTitle,attr,omitempty" json:"displayTitle,omitempty"`
+	ExtendedTitle   string `xml:"extendedDisplayTitle,attr,omitempty" json:"extendedDisplayTitle,omitempty"`
+	Selected        bool   `xml:"selected,attr,omitempty" json:"selected,omitempty"`
+	Default         bool   `xml:"default,attr,omitempty" json:"default,omitempty"`
+	Forced          bool   `xml:"forced,attr,omitempty" json:"forced,omitempty"`
+	HearingImpaired bool   `xml:"hearingImpaired,attr,omitempty" json:"hearingImpaired,omitempty"`
+	// Key is present only for a subtitle that is a file of its own, which is
+	// how a Plex client tells a sidecar from a stream in the container, and
+	// where it fetches the text from.
+	Key string `xml:"key,attr,omitempty" json:"key,omitempty"`
 }
 
 type location struct {

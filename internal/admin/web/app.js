@@ -37,7 +37,10 @@ async function api(method, path, body) {
 // replaceChildren turns a null into the text "null" on the page, which is
 // exactly what a conditional section that is not showing evaluates to.
 function fill(parent, ...nodes) {
-  parent.replaceChildren(...nodes.filter((node) => node != null && node !== false));
+  // Flattened like el()'s children, because replaceChildren turns an array
+  // into the string "[object HTMLButtonElement]" rather than appending what
+  // is in it — a list that silently renders as text instead of buttons.
+  parent.replaceChildren(...nodes.flat().filter((node) => node != null && node !== false));
 }
 
 // count renders a number with its noun, singular where it should be.

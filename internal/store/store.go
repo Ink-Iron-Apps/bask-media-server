@@ -262,6 +262,29 @@ var migrations = []string{
 		last_seen_at INTEGER NOT NULL DEFAULT 0
 	)`,
 	`CREATE INDEX sessions_expiry ON sessions(expires_at)`,
+
+	// Subtitles, whether they are streams in the container or files beside
+	// it. One table for both because every client-facing question — what can
+	// I show, in what language, is it forced — is the same question either
+	// way, and only this server cares where the text comes from.
+	`CREATE TABLE subtitles (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		item_id      INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+		part_id      INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+		external     INTEGER NOT NULL DEFAULT 0,
+		stream_index INTEGER NOT NULL DEFAULT -1,
+		path         TEXT NOT NULL DEFAULT '',
+		codec        TEXT NOT NULL DEFAULT '',
+		language     TEXT NOT NULL DEFAULT '',
+		title        TEXT NOT NULL DEFAULT '',
+		forced       INTEGER NOT NULL DEFAULT 0,
+		is_default   INTEGER NOT NULL DEFAULT 0,
+		hearing      INTEGER NOT NULL DEFAULT 0
+	)`,
+	`CREATE INDEX subtitles_item ON subtitles(item_id)`,
+	// A scan rewrites a file's subtitles wholesale, and this is what makes
+	// that idempotent: the same stream or the same sidecar is the same row.
+	`CREATE UNIQUE INDEX subtitles_identity ON subtitles(part_id, external, stream_index, path)`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

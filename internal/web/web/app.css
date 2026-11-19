@@ -192,6 +192,27 @@ h2.tight { margin: 0 0 .4rem; }
    have always used: direct play, direct stream, transcoding. */
 #player-mode { font-size: .85rem; }
 #player-mode.converting { color: var(--accent); }
+/* The subtitle menu: a button in the player bar with a list under it. */
+#player-subs { position: relative; }
+#player-subs .menu {
+  position: absolute;
+  top: 2.2rem; left: 0;
+  min-width: 190px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: .25rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .55);
+  display: flex; flex-direction: column;
+  max-height: 60vh; overflow: auto;
+}
+#player-subs .menu button {
+  background: none; border: 0; border-radius: 6px;
+  text-align: left; padding: .4rem .55rem;
+}
+#player-subs .menu button:hover:not(:disabled) { background: var(--panel-2); }
+#player-subs .menu button:disabled { color: var(--muted); }
+
 .player-error {
   position: absolute; inset: auto 1rem 5rem 1rem;
   background: var(--panel);

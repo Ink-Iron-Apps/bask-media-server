@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -34,6 +35,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/plexapi"
 	"github.com/inknironapps/bask-media-server/internal/scan"
 	"github.com/inknironapps/bask-media-server/internal/store"
+	"github.com/inknironapps/bask-media-server/internal/subtitles"
 	"github.com/inknironapps/bask-media-server/internal/transcode"
 	"github.com/inknironapps/bask-media-server/internal/web"
 )
@@ -281,7 +283,14 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 		}
 	}
 
-	api := &plexapi.Server{DB: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version, Artwork: images}
+	// One converter, shared: it holds a path and a timeout, and the work it
+	// does is per request.
+	converter := &subtitles.Converter{FFmpeg: ffmpegPath(cfg.ffmpegPath)}
+
+	api := &plexapi.Server{
+		DB: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version,
+		Artwork: images, Subtitles: converter,
+	}
 
 	// One listener for every surface. The Plex-compatible API owns the root,
 	// because that is where clients look for it; the interfaces are mounted
@@ -319,6 +328,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 			if transcoder != nil {
 				viewing.Transcoder = transcoder
 			}
+			viewing.Subtitles = converter
 			root.Handle("/web/", viewing.Handler())
 		}
 		root.Handle("/", api.Handler())
@@ -357,6 +367,20 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
 	}
+}
+
+// ffmpegPath resolves the converter's binary: what was asked for, or
+// whatever is on PATH, or nothing — in which case the conversions that need
+// no ffmpeg still work and the rest report that they cannot.
+func ffmpegPath(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	found, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return ""
+	}
+	return found
 }
 
 // machineIdentity returns this server's permanent id, creating it once.

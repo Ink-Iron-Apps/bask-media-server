@@ -25,10 +25,11 @@ and the Plex vocabulary never reaches storage or scanning.
   Watching, and a player with Skip Intro
 - Conversion on the fly for a client that cannot play a file as it is, and
   direct play — the file itself, untouched — for every client that can
+- Subtitles: the sidecar files beside the media and the streams inside it,
+  with language, forced and SDH read from where they are written
 
 ## Not yet
 
-- Subtitles
 - Music and photos
 
 ## Running it
@@ -104,6 +105,32 @@ token issued for that device, and gets a session of its own.
   the end of an episode offers the next one.
 
 `-web=false` leaves this interface off.
+
+## Subtitles
+
+Both kinds, found by scanning rather than by being told:
+
+- **Beside the file.** `Film (2002).en.srt`, `Film (2002).eng.forced.srt`,
+  `Film (2002) - English.srt` — the conventions the renamers in use actually
+  write. The language, "forced" and SDH are read out of the name; anything
+  else after the title becomes the track's own label, so a commentary track
+  is labelled rather than mislabelled.
+- **Inside the file.** Every subtitle stream the container declares, with the
+  language and the dispositions it carries, read by the same probe that
+  measures the file during a scan.
+
+A client is told about both in the shape Plex clients expect: a `Stream` on
+the `Part`, with the sidecars carrying a key and the embedded ones not, which
+is how a client tells them apart. The text is served from that key in the
+format asked for — `.srt` for Bask, `.vtt` for a browser — and an embedded
+stream is pulled out of the container on request, which Plex itself refuses
+to do.
+
+In the browser they are `<track>` elements, so the browser parses, positions
+and times the cues, and the player has a menu to choose one or turn them off.
+PGS and VobSub are pictures of words rather than text: they are listed, marked
+as pictures, and left to a player that can draw them, which is what a direct
+play in Bask does.
 
 ## Direct play first, and conversion when there is no other way
 

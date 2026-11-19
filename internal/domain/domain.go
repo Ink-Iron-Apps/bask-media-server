@@ -205,5 +205,61 @@ type Chapter struct {
 	End    time.Duration
 }
 
+// Subtitle is one set of captions for one file.
+//
+// Either a stream inside the container or a file beside it, because both are
+// routine and a client cannot tell the difference once it is playing: the
+// distinction only decides how this server gets at the text.
+type Subtitle struct {
+	ID     int64
+	ItemID int64
+	PartID int64
+
+	// External distinguishes a file beside the media from a stream inside it.
+	External bool
+
+	// StreamIndex is the stream's index within the container, for an embedded
+	// one. Meaningless when External.
+	StreamIndex int
+
+	// Path is the file the text is in: the sidecar for an external subtitle,
+	// and the media file itself for an embedded one. Always the file to open,
+	// so nothing downstream has to look up a part to read a subtitle.
+	Path string
+
+	// Codec is what the text is written as: srt, ass, webvtt, mov_text, or
+	// one of the bitmap formats (pgs, vobsub) that are pictures rather than
+	// text and cannot be converted without reading them.
+	Codec string
+
+	// Language is a three-letter code where one could be worked out, and
+	// empty where it could not: an unlabelled subtitle is better offered
+	// without a language than labelled with a guess.
+	Language string
+
+	Title   string
+	Forced  bool
+	Default bool
+
+	// Hearing marks a track written for viewers who cannot hear the audio —
+	// SDH — which carries sound effects and speaker names as well as speech.
+	Hearing bool
+}
+
+// TextSubtitle reports whether a codec is text, and so can be converted and
+// shown by anything. The others are pictures, and need either the player's
+// own renderer or burning into the video.
+func TextSubtitle(codec string) bool {
+	switch codec {
+	case "srt", "subrip", "ass", "ssa", "webvtt", "vtt", "mov_text", "text", "eia_608", "subviewer":
+		return true
+	default:
+		return false
+	}
+}
+
+// Text reports whether this subtitle is text rather than a picture.
+func (s Subtitle) Text() bool { return TextSubtitle(s.Codec) }
+
 // Duration is how long a marker runs for.
 func (m Marker) Duration() time.Duration { return m.End - m.Start }

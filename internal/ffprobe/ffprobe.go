@@ -77,6 +77,14 @@ type Stream struct {
 	Channels int
 	BitRate  int64
 	Language string
+	Title    string
+
+	// Default, Forced and Hearing are the container's dispositions, which are
+	// how a file says which track to show without being asked and which one
+	// carries only the translated foreign dialogue.
+	Default bool
+	Forced  bool
+	Hearing bool
 }
 
 // Video returns the first video stream, or nil for a file with none.
@@ -84,6 +92,17 @@ func (i Info) Video() *Stream { return i.first("video") }
 
 // Audio returns the first audio stream, or nil.
 func (i Info) Audio() *Stream { return i.first("audio") }
+
+// Subtitles returns every subtitle stream in the file.
+func (i Info) Subtitles() []Stream {
+	var out []Stream
+	for _, stream := range i.Streams {
+		if stream.Type == "subtitle" {
+			out = append(out, stream)
+		}
+	}
+	return out
+}
 
 func (i Info) first(kind string) *Stream {
 	for idx := range i.Streams {
@@ -109,7 +128,13 @@ type probeOutput struct {
 		BitRate   string `json:"bit_rate"`
 		Tags      struct {
 			Language string `json:"language"`
+			Title    string `json:"title"`
 		} `json:"tags"`
+		Disposition struct {
+			Default         int `json:"default"`
+			Forced          int `json:"forced"`
+			HearingImpaired int `json:"hearing_impaired"`
+		} `json:"disposition"`
 	} `json:"streams"`
 	Chapters []struct {
 		StartTime string `json:"start_time"`
@@ -148,7 +173,8 @@ func (p *Prober) Probe(ctx context.Context, path string) (Info, error) {
 	cmd := exec.CommandContext(ctx, p.Path,
 		"-v", "error",
 		"-show_entries",
-		"format=duration:stream=index,codec_type,codec_name,profile,width,height,channels,bit_rate:stream_tags=language",
+		"format=duration:stream=index,codec_type,codec_name,profile,width,height,channels,bit_rate:"+
+			"stream_tags=language,title:stream_disposition=default,forced,hearing_impaired",
 		"-show_chapters",
 		"-of", "json",
 		path)
@@ -177,7 +203,11 @@ func (p *Prober) Probe(ctx context.Context, path string) (Info, error) {
 	for _, st := range parsed.Streams {
 		stream := Stream{
 			Index: st.Index, Type: st.CodecType, Codec: st.CodecName, Profile: st.Profile,
-			Width: st.Width, Height: st.Height, Channels: st.Channels, Language: st.Tags.Language,
+			Width: st.Width, Height: st.Height, Channels: st.Channels,
+			Language: st.Tags.Language, Title: st.Tags.Title,
+			Default: st.Disposition.Default == 1,
+			Forced:  st.Disposition.Forced == 1,
+			Hearing: st.Disposition.HearingImpaired == 1,
 		}
 		if st.BitRate != "" {
 			if rate, err := strconv.ParseInt(st.BitRate, 10, 64); err == nil {

@@ -13,8 +13,10 @@ import (
 
 	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/scan"
 	"github.com/inknironapps/bask-media-server/internal/serve"
 	"github.com/inknironapps/bask-media-server/internal/store"
+	"github.com/inknironapps/bask-media-server/internal/subtitles"
 )
 
 // Server serves the Plex-compatible surface.
@@ -32,6 +34,10 @@ type Server struct {
 	// Artwork is optional: with no cache the library serves no images, which
 	// is a poster-less client rather than a broken one.
 	Artwork *artwork.Cache
+
+	// Subtitles converts subtitle text on the way out. Optional: without one
+	// this server still serves a sidecar as it is and SubRip as WebVTT.
+	Subtitles *subtitles.Converter
 }
 
 type userKey struct{}
@@ -54,6 +60,10 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /library/metadata/{key}", s.metadata)
 	authed("GET /library/metadata/{key}/children", s.children)
 	authed("GET /library/parts/{id}", s.streamPart)
+	// Sidecar subtitles, which a client fetches by the key on the stream. The
+	// extension is part of the name a Plex client builds, and it is also how
+	// it says which format it wants.
+	authed("GET /library/streams/{key}", s.subtitleStream)
 	authed("GET /library/metadata/{key}/thumb", s.thumb)
 	authed("GET /library/metadata/{key}/art", s.art)
 	// Plex clients ask for a resized image through one endpoint, passing the
@@ -562,8 +572,9 @@ func (s *Server) appendItems(ctx context.Context, out *container, section *domai
 	// the client said it wants them: a poster wall has no use for markers, and
 	// a season of episodes would otherwise be fifty round trips to find out.
 	var (
-		markersByItem  map[int64][]domain.Marker
-		chaptersByItem map[int64][]domain.Chapter
+		markersByItem   map[int64][]domain.Marker
+		chaptersByItem  map[int64][]domain.Chapter
+		subtitlesByItem map[int64][]domain.Subtitle
 	)
 	if want.markers {
 		if m, err := s.DB.Markers(ctx, ids); err == nil {
@@ -580,8 +591,17 @@ func (s *Server) appendItems(ctx context.Context, out *container, section *domai
 		}
 	}
 
+	if want.streams {
+		if subs, err := s.DB.Subtitles(ctx, ids); err == nil {
+			subtitlesByItem = subs
+		} else {
+			s.logger().Warn("could not read subtitles", "error", err)
+		}
+	}
+
 	for _, it := range items {
-		e := s.renderItem(it, section, progress[it.ID], markersByItem[it.ID], chaptersByItem[it.ID])
+		e := s.renderItem(it, section, progress[it.ID],
+			markersByItem[it.ID], chaptersByItem[it.ID], subtitlesByItem[it.ID])
 		if e.Elem == "Directory" {
 			out.Directory = append(out.Directory, e)
 		} else {
@@ -600,6 +620,7 @@ func (s *Server) renderItem(
 	p domain.Progress,
 	itemMarkers []domain.Marker,
 	itemChapters []domain.Chapter,
+	itemSubtitles []domain.Subtitle,
 ) entry {
 	e := entry{
 		Elem:      elementFor(it.Kind),
@@ -674,11 +695,134 @@ func (s *Server) renderItem(
 				Size:      pt.Size,
 				Container: pt.Container,
 				Duration:  it.Duration.Milliseconds(),
+				Stream:    subtitleStreams(itemSubtitles, pt.ID),
 			})
 		}
 		e.Media = append(e.Media, m)
 	}
 	return e
+}
+
+// subtitleStream hands over the text of one subtitle.
+//
+// Plex answers this only for sidecar files and returns 501 for a stream
+// inside the container; BMS serves both, because pulling one stream out of a
+// file with ffmpeg is the same work as converting a sidecar and a client that
+// cannot demux is a client that would otherwise show nothing.
+func (s *Server) subtitleStream(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	id, want := splitStreamKey(key)
+	if id <= 0 {
+		http.Error(w, "bad stream", http.StatusBadRequest)
+		return
+	}
+	sub, err := s.DB.Subtitle(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "no such stream", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.fail(w, "read subtitle", err)
+		return
+	}
+
+	body, format, err := s.subtitles().Text(r.Context(), *sub, want)
+	switch {
+	case errors.Is(err, subtitles.ErrNotText):
+		// A picture of words. The client's own renderer can draw it from the
+		// file during a direct play; there is nothing to hand over here.
+		http.Error(w, "that subtitle is a picture, not text", http.StatusNotImplemented)
+		return
+	case errors.Is(err, subtitles.ErrNoConverter):
+		http.Error(w, "this server has no ffmpeg to convert that subtitle", http.StatusNotImplemented)
+		return
+	case err != nil:
+		s.fail(w, "convert subtitle", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", format.ContentType())
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	_, _ = w.Write(body)
+}
+
+// splitStreamKey reads "12" and "12.srt" alike: the number is the stream and
+// the extension, when there is one, is the format being asked for.
+func splitStreamKey(key string) (int64, subtitles.Format) {
+	name, ext, found := strings.Cut(key, ".")
+	id, err := strconv.ParseInt(name, 10, 64)
+	if err != nil {
+		return 0, subtitles.Auto
+	}
+	if !found {
+		return id, subtitles.Auto
+	}
+	return id, subtitles.FormatOf(ext)
+}
+
+func (s *Server) subtitles() *subtitles.Converter {
+	if s.Subtitles != nil {
+		return s.Subtitles
+	}
+	// Without one configured, the two conversions that need no ffmpeg still
+	// work: a sidecar in the format asked for, and SubRip as WebVTT.
+	return &subtitles.Converter{}
+}
+
+// subtitleStreams renders one file's subtitles as Plex Stream elements.
+//
+// A sidecar carries a key — the URL its text is at — and a stream inside the
+// container does not, which is exactly how a Plex client tells the two apart
+// and decides whether to fetch anything at all.
+func subtitleStreams(subs []domain.Subtitle, partID int64) []stream {
+	var out []stream
+	for _, sub := range subs {
+		if sub.PartID != partID {
+			continue
+		}
+		language := scan.LanguageName(sub.Language)
+		entry := stream{
+			ID:              sub.ID,
+			StreamType:      streamSubtitle,
+			Index:           sub.StreamIndex,
+			Codec:           sub.Codec,
+			Language:        language,
+			LanguageCode:    sub.Language,
+			Title:           sub.Title,
+			DisplayTitle:    subtitleTitle(sub, language),
+			ExtendedTitle:   subtitleTitle(sub, language),
+			Default:         sub.Default,
+			Forced:          sub.Forced,
+			HearingImpaired: sub.Hearing,
+		}
+		if sub.External {
+			entry.Index = 0
+			entry.Key = "/library/streams/" + strconv.FormatInt(sub.ID, 10)
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// subtitleTitle is what a person picks from a menu: the language first,
+// because that is what they are looking for, then what makes this track
+// different from the others in the same language.
+func subtitleTitle(sub domain.Subtitle, language string) string {
+	parts := []string{language}
+	if sub.Title != "" && !strings.EqualFold(sub.Title, language) {
+		parts = append(parts, sub.Title)
+	}
+	if sub.Forced {
+		parts = append(parts, "Forced")
+	}
+	if sub.Hearing {
+		parts = append(parts, "SDH")
+	}
+	if sub.External {
+		parts = append(parts, "External")
+	}
+	return strings.Join(parts, " · ")
 }
 
 // extras is what a client asked to be told beyond the item itself.
@@ -690,16 +834,26 @@ func (s *Server) renderItem(
 type extras struct {
 	markers  bool
 	chapters bool
+
+	// streams are the tracks inside a file and the sidecars beside it. Sent
+	// on the single-item call always, because that is what a client reads
+	// before playback, and on a listing only when asked: a poster wall has no
+	// use for them and they would be a query per page for nothing.
+	streams bool
 }
 
 // allExtras is what the single-item metadata call serves regardless of what
 // was asked for: it is one row, the extra cost is two indexed lookups, and a
 // client that forgot the parameter still gets a Skip Intro button.
-var allExtras = extras{markers: true, chapters: true}
+var allExtras = extras{markers: true, chapters: true, streams: true}
 
 func extrasFrom(r *http.Request) extras {
 	q := r.URL.Query()
-	return extras{markers: truthy(q.Get("includeMarkers")), chapters: truthy(q.Get("includeChapters"))}
+	return extras{
+		markers:  truthy(q.Get("includeMarkers")),
+		chapters: truthy(q.Get("includeChapters")),
+		streams:  truthy(q.Get("includeStreams")) || truthy(q.Get("includeSubtitles")),
+	}
 }
 
 // truthy accepts what the clients actually send: 1, true, yes.

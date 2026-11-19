@@ -26,6 +26,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/store"
+	"github.com/inknironapps/bask-media-server/internal/subtitles"
 )
 
 // cookieName holds the viewer's session, scoped to /web so it is not sent
@@ -59,6 +60,10 @@ type Server struct {
 	// Transcoder converts what a client cannot play. Nil means a file this
 	// browser cannot decode is reported as such rather than converted.
 	Transcoder Transcoder
+
+	// Subtitles turns stored subtitles into the WebVTT a browser can show.
+	// Nil still serves a sidecar .srt, which is most of them.
+	Subtitles *subtitles.Converter
 
 	// SessionTTL overrides how long a sign-in lasts. Zero means the store's
 	// default.
@@ -98,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	watcher("GET /web/image/{id}", s.image)
 	watcher("GET /web/stream/{id}", s.stream)
 	watcher("GET /web/hls/{session}/{name}", s.hls)
+	watcher("GET /web/subtitles/{key}", s.subtitle)
 
 	// The one vendored file, served like the rest of the page.
 	mux.HandleFunc("GET /web/vendor/{name}", s.vendor)

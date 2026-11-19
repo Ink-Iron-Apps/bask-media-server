@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -73,6 +74,12 @@ type found struct {
 	mod   time.Time
 	movie *Movie
 	ep    *Episode
+
+	// siblings are the subtitle files in the same folder, which is where
+	// every tool in this space puts them. Collected per directory while
+	// walking so that matching one to a film is a string comparison rather
+	// than a second pass over the tree.
+	siblings []string
 }
 
 // Section scans one library and prunes anything that has vanished from disk.
@@ -162,6 +169,11 @@ func (s *Scanner) Section(ctx context.Context, section domain.Section) (Result, 
 }
 
 func (s *Scanner) walk(ctx context.Context, section domain.Section, out chan<- found) error {
+	// Keyed by directory and held for the length of the walk. Bounded by the
+	// number of subtitle files in the library, which is the same order as the
+	// set of seen paths the prune already needs.
+	subtitles := map[string][]string{}
+
 	for _, root := range section.Roots {
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -179,6 +191,10 @@ func (s *Scanner) walk(ctx context.Context, section domain.Section, out chan<- f
 				return ctx.Err()
 			}
 			if d.IsDir() {
+				// A folder's subtitle files are read once, when the folder is
+				// entered, and used by every media file in it. One extra
+				// listing per directory, against one per media file.
+				subtitles[path] = subtitlesIn(path)
 				return nil
 			}
 			if !IsMedia(path) {
@@ -189,7 +205,10 @@ func (s *Scanner) walk(ctx context.Context, section domain.Section, out chan<- f
 				return nil
 			}
 
-			f := found{path: path, size: info.Size(), mod: info.ModTime().UTC()}
+			f := found{
+				path: path, size: info.Size(), mod: info.ModTime().UTC(),
+				siblings: subtitles[filepath.Dir(path)],
+			}
 			switch section.Kind {
 			case domain.SectionMovies:
 				m := ParseMovie(path)
@@ -223,15 +242,34 @@ func (s *Scanner) walk(ctx context.Context, section domain.Section, out chan<- f
 
 func (s *Scanner) toFound(ctx context.Context, section domain.Section, f found) (store.Found, bool) {
 	var (
-		duration time.Duration
-		chapters []domain.Chapter
+		duration  time.Duration
+		chapters  []domain.Chapter
+		subtitles []domain.Subtitle
+		probed    bool
 	)
 	if s.Prober != nil {
 		if info, err := s.Prober.Probe(ctx, f.path); err == nil {
-			duration, chapters = info.Duration, info.Chapters
+			duration, chapters, probed = info.Duration, info.Chapters, true
+			subtitles = embeddedSubtitles(info)
 		} else if s.Log != nil {
 			s.Log.Debug("could not probe", "path", f.path, "error", err)
 		}
+	}
+	// Sidecars are found by looking, not by probing, so they are collected
+	// whether or not there is an ffprobe on this machine.
+	sidecars := sidecarSubtitles(f.path, f.siblings)
+	for i := range subtitles {
+		// An embedded subtitle's text is in the media file, which is what
+		// reading it later needs to open.
+		subtitles[i].Path = f.path
+	}
+	if len(sidecars) > 0 || probed {
+		// nil means "nothing was looked for" and must not delete what is
+		// already known; an empty slice means "looked, found none".
+		if subtitles == nil {
+			subtitles = []domain.Subtitle{}
+		}
+		subtitles = append(subtitles, sidecars...)
 	}
 
 	out := store.Found{
@@ -242,6 +280,7 @@ func (s *Scanner) toFound(ctx context.Context, section domain.Section, f found) 
 		ModifiedAt: f.mod,
 		Duration:   duration,
 		Chapters:   chapters,
+		Subtitles:  subtitles,
 	}
 	switch {
 	case f.movie != nil:
@@ -256,6 +295,62 @@ func (s *Scanner) toFound(ctx context.Context, section domain.Section, f found) 
 		return store.Found{}, false
 	}
 	return out, true
+}
+
+// subtitlesIn lists the subtitle files in one directory.
+func subtitlesIn(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, entry := range entries {
+		if entry.IsDir() || !IsSubtitle(entry.Name()) {
+			continue
+		}
+		out = append(out, filepath.Join(dir, entry.Name()))
+	}
+	return out
+}
+
+// sidecarSubtitles picks the files in a folder that belong to this one.
+func sidecarSubtitles(mediaPath string, siblings []string) []domain.Subtitle {
+	var out []domain.Subtitle
+	for _, path := range siblings {
+		sidecar, ok := ParseSidecar(mediaPath, path)
+		if !ok {
+			continue
+		}
+		out = append(out, domain.Subtitle{
+			External:    true,
+			StreamIndex: -1,
+			Path:        sidecar.Path,
+			Codec:       sidecar.Codec,
+			Language:    LanguageCode(sidecar.Language),
+			Title:       sidecar.Title,
+			Forced:      sidecar.Forced,
+			Hearing:     sidecar.Hearing,
+		})
+	}
+	return out
+}
+
+// embeddedSubtitles turns the container's own subtitle streams into rows.
+func embeddedSubtitles(info ffprobe.Info) []domain.Subtitle {
+	streams := info.Subtitles()
+	out := make([]domain.Subtitle, 0, len(streams))
+	for _, stream := range streams {
+		out = append(out, domain.Subtitle{
+			StreamIndex: stream.Index,
+			Codec:       stream.Codec,
+			Language:    LanguageCode(stream.Language),
+			Title:       stream.Title,
+			Forced:      stream.Forced,
+			Default:     stream.Default,
+			Hearing:     stream.Hearing,
+		})
+	}
+	return out
 }
 
 func containerOf(path string) string {
