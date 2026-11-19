@@ -45,6 +45,9 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 		"canEnrich": s.Jobs.Can(r.Context(), jobs.KindEnrich) == nil,
 		"canDetect": s.Jobs.Printer != nil,
 	}
+	if s.Transcoding != nil {
+		out["transcoding"] = s.Transcoding()
+	}
 	if s.Artwork != nil {
 		if bytes, files, err := s.Artwork.Usage(); err == nil {
 			out["artworkMB"] = bytes >> 20

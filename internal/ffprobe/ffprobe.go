@@ -58,12 +58,59 @@ type Info struct {
 	// in and ItemID left for the store. Empty for the many files that declare
 	// none.
 	Chapters []domain.Chapter
+
+	// Streams are what is inside the container. Read at playback time rather
+	// than stored, because what matters about them — can this client decode
+	// it — is a question about the client, and the answer changes with the
+	// client and not with the file.
+	Streams []Stream
+}
+
+// Stream is one track in a file.
+type Stream struct {
+	Index    int
+	Type     string // video, audio, subtitle
+	Codec    string
+	Profile  string
+	Width    int
+	Height   int
+	Channels int
+	BitRate  int64
+	Language string
+}
+
+// Video returns the first video stream, or nil for a file with none.
+func (i Info) Video() *Stream { return i.first("video") }
+
+// Audio returns the first audio stream, or nil.
+func (i Info) Audio() *Stream { return i.first("audio") }
+
+func (i Info) first(kind string) *Stream {
+	for idx := range i.Streams {
+		if i.Streams[idx].Type == kind {
+			return &i.Streams[idx]
+		}
+	}
+	return nil
 }
 
 type probeOutput struct {
 	Format struct {
 		Duration string `json:"duration"`
 	} `json:"format"`
+	Streams []struct {
+		Index     int    `json:"index"`
+		CodecType string `json:"codec_type"`
+		CodecName string `json:"codec_name"`
+		Profile   string `json:"profile"`
+		Width     int    `json:"width"`
+		Height    int    `json:"height"`
+		Channels  int    `json:"channels"`
+		BitRate   string `json:"bit_rate"`
+		Tags      struct {
+			Language string `json:"language"`
+		} `json:"tags"`
+	} `json:"streams"`
 	Chapters []struct {
 		StartTime string `json:"start_time"`
 		EndTime   string `json:"end_time"`
@@ -95,9 +142,13 @@ func (p *Prober) Probe(ctx context.Context, path string) (Info, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// One invocation for all three questions — how long, what chapters, what
+	// is inside — because the expensive part is opening the file and reading
+	// its header, and asking three times would pay that three times.
 	cmd := exec.CommandContext(ctx, p.Path,
 		"-v", "error",
-		"-show_entries", "format=duration",
+		"-show_entries",
+		"format=duration:stream=index,codec_type,codec_name,profile,width,height,channels,bit_rate:stream_tags=language",
 		"-show_chapters",
 		"-of", "json",
 		path)
@@ -123,6 +174,18 @@ func (p *Prober) Probe(ctx context.Context, path string) (Info, error) {
 	}
 
 	info := Info{Duration: time.Duration(seconds * float64(time.Second))}
+	for _, st := range parsed.Streams {
+		stream := Stream{
+			Index: st.Index, Type: st.CodecType, Codec: st.CodecName, Profile: st.Profile,
+			Width: st.Width, Height: st.Height, Channels: st.Channels, Language: st.Tags.Language,
+		}
+		if st.BitRate != "" {
+			if rate, err := strconv.ParseInt(st.BitRate, 10, 64); err == nil {
+				stream.BitRate = rate
+			}
+		}
+		info.Streams = append(info.Streams, stream)
+	}
 	for i, ch := range parsed.Chapters {
 		start, startErr := parseSeconds(ch.StartTime)
 		end, endErr := parseSeconds(ch.EndTime)

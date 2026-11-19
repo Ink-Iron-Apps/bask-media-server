@@ -10,7 +10,7 @@ import (
 
 // web holds the viewing interface: one page, one stylesheet, one script.
 //
-//go:embed web/index.html web/app.css web/app.js
+//go:embed web/index.html web/app.css web/app.js web/vendor/hls.light.min.js
 var assets embed.FS
 
 var buildTime = time.Now()
@@ -27,7 +27,8 @@ func (s *Server) page(w http.ResponseWriter, r *http.Request) {
 	// from this server and nowhere else.
 	w.Header().Set("Content-Security-Policy",
 		"default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "+
-			"media-src 'self' blob:; connect-src 'self'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'")
+			"media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; "+
+			"form-action 'none'; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))

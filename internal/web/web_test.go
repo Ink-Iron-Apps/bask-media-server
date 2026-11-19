@@ -47,7 +47,11 @@ type harness struct {
 
 // library builds one of each shape the interface has to draw: a film, and a
 // show with a season and two episodes, with a marker on the first one.
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T) *harness { return newHarnessWith(t, nil) }
+
+// newHarnessWith builds the same library and lets a test fit the server with
+// the pieces that decide how a file is played.
+func newHarnessWith(t *testing.T, fit func(*web.Server)) *harness {
 	t.Helper()
 	ctx := context.Background()
 
@@ -139,7 +143,11 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 
-	server := httptest.NewServer((&web.Server{DB: db, Name: "Bask Media Server"}).Handler())
+	viewing := &web.Server{DB: db, Name: "Bask Media Server"}
+	if fit != nil {
+		fit(viewing)
+	}
+	server := httptest.NewServer(viewing.Handler())
 	t.Cleanup(server.Close)
 	jar, err := cookiejar.New(nil)
 	if err != nil {

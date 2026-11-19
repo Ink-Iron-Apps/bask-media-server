@@ -68,6 +68,11 @@ type Server struct {
 	// rather than failing.
 	Artwork *artwork.Cache
 
+	// Transcoding reports how many files are being converted right now, for
+	// the status page. Nil means this server cannot convert anything, which
+	// is what no ffmpeg looks like.
+	Transcoding func() int
+
 	// Started is when the process came up, for the uptime on the status page.
 	// Zero means the first request sets it.
 	Started time.Time

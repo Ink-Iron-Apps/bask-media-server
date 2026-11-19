@@ -301,6 +301,66 @@ async function itemView(id) {
     el('span', { class: 'muted', text: episode.watched ? 'watched' : (episode.offsetMs ? clock(episode.offsetMs) : runtime(episode.durationMs)) })))) : null);
 }
 
+/* ---------- what this browser can actually play ---------- */
+
+// capabilities asks the browser rather than telling it.
+//
+// A list of formats written on the server is a guess about software that
+// updates every six weeks, and both ways of being wrong cost something: claim
+// too much and the viewer gets a black screen, claim too little and the
+// server re-encodes a file that would have played untouched. canPlayType is
+// the browser's own answer, so direct play happens wherever it is possible.
+function capabilities() {
+  const probe = document.createElement('video');
+  const can = (type) => {
+    const answer = probe.canPlayType(type);
+    return answer === 'probably' || answer === 'maybe';
+  };
+
+  const containers = [];
+  if (can('video/mp4')) containers.push('mp4', 'm4v', 'mov');
+  if (can('video/webm')) containers.push('webm');
+  if (can('video/x-matroska; codecs="avc1.640029"')) containers.push('mkv', 'webm');
+
+  const video = [];
+  if (can('video/mp4; codecs="avc1.640029"')) video.push('h264');
+  if (can('video/mp4; codecs="hev1.1.6.L93.B0"') || can('video/mp4; codecs="hvc1.1.6.L93.B0"')) video.push('hevc');
+  if (can('video/webm; codecs="vp8"')) video.push('vp8');
+  if (can('video/webm; codecs="vp9"') || can('video/mp4; codecs="vp09.00.10.08"')) video.push('vp9');
+  if (can('video/mp4; codecs="av01.0.05M.08"')) video.push('av1');
+
+  const audio = [];
+  if (can('audio/mp4; codecs="mp4a.40.2"')) audio.push('aac');
+  if (can('audio/mpeg')) audio.push('mp3');
+  if (can('audio/mp4; codecs="ac-3"')) audio.push('ac3');
+  if (can('audio/mp4; codecs="ec-3"')) audio.push('eac3');
+  if (can('audio/webm; codecs="opus"') || can('audio/ogg; codecs="opus"')) audio.push('opus');
+  if (can('audio/webm; codecs="vorbis"') || can('audio/ogg; codecs="vorbis"')) audio.push('vorbis');
+  if (can('audio/flac') || can('audio/x-flac')) audio.push('flac');
+
+  return { containers, video, audio };
+}
+
+// loadHls fetches the one vendored script, and only when a stream actually
+// needs it: most playback is direct and pays nothing for this.
+let hlsLoading = null;
+function loadHls() {
+  if (window.Hls) return Promise.resolve(window.Hls);
+  if (!hlsLoading) {
+    hlsLoading = new Promise((resolve, reject) => {
+      const tag = document.createElement('script');
+      tag.src = '/web/vendor/hls.light.min.js';
+      tag.addEventListener('load', () => resolve(window.Hls));
+      tag.addEventListener('error', () => {
+        hlsLoading = null;
+        reject(new Error('could not load the streaming player'));
+      });
+      document.head.append(tag);
+    });
+  }
+  return hlsLoading;
+}
+
 /* ---------- the player ---------- */
 
 const video = document.getElementById('video');
@@ -314,22 +374,49 @@ async function play(detail, offsetMs) {
     toast('There is no file for this one.', true);
     return;
   }
-  playing = { detail, part, markers: detail.markers || [], next: null };
+  const startMs = Math.max(0, Math.round(offsetMs || 0));
 
   document.getElementById('player-title').textContent =
     (detail.item.subtitle ? detail.item.subtitle + ' · ' : '') + detail.item.title;
   document.getElementById('player-error').hidden = true;
   document.getElementById('player-skip').replaceChildren();
+  document.getElementById('player-mode').textContent = '';
   playerBox.hidden = false;
 
-  video.src = '/web/stream/' + part.id;
-  video.currentTime = 0;
-  const startAt = (offsetMs || 0) / 1000;
-  video.addEventListener('loadedmetadata', function once() {
-    video.removeEventListener('loadedmetadata', once);
-    if (startAt > 0 && startAt < video.duration - 5) video.currentTime = startAt;
-    video.play().catch(() => { /* a browser that wants a click first is fine */ });
-  });
+  let answer;
+  try {
+    // The server decides: it knows what is in the file, this page knows what
+    // the browser can decode, and the answer is a URL either way.
+    answer = await api('POST', '/play', {
+      itemId: detail.item.id,
+      partId: part.id,
+      startMs,
+      capabilities: capabilities(),
+    });
+  } catch (err) {
+    failed(err);
+    closePlayer();
+    return;
+  }
+
+  playing = {
+    detail, part, startMs,
+    markers: detail.markers || [],
+    next: null,
+    session: answer.session || null,
+    mode: answer.mode,
+  };
+
+  const mode = document.getElementById('player-mode');
+  mode.textContent = answer.mode === 'direct' ? answer.label : answer.label + ' · ' + answer.why;
+  mode.className = answer.mode === 'direct' ? 'muted' : 'converting';
+
+  if (answer.mode === 'unsupported') {
+    cannotPlay(answer.why);
+    return;
+  }
+
+  await attach(answer, startMs);
 
   clearInterval(reportTimer);
   // Every ten seconds, which is often enough that closing a laptop loses
@@ -345,6 +432,82 @@ async function play(detail, offsetMs) {
       if (at >= 0 && at + 1 < list.length) playing.next = list[at + 1];
     } catch (err) { /* no next episode is not an error */ }
   }
+}
+
+// attach points the video element at whatever the server offered: the file
+// itself, or a stream being made while it plays.
+async function attach(answer, startMs) {
+  detachHls();
+  const resumeAt = startMs / 1000;
+
+  const seekOnce = () => {
+    video.addEventListener('loadedmetadata', function once() {
+      video.removeEventListener('loadedmetadata', once);
+      if (resumeAt > 0 && (!video.duration || resumeAt < video.duration - 5)) {
+        try { video.currentTime = resumeAt; } catch (err) { /* a stream that starts there already */ }
+      }
+      video.play().catch(() => { /* a browser that wants a click first is fine */ });
+    });
+  };
+
+  if (!answer.hls) {
+    seekOnce();
+    video.src = answer.url;
+    return;
+  }
+
+  // Safari plays HLS itself; everything else needs the vendored player.
+  if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    seekOnce();
+    video.src = answer.url;
+    return;
+  }
+  try {
+    const Hls = await loadHls();
+    if (!Hls || !Hls.isSupported()) throw new Error('this browser cannot play a converted stream');
+    const hls = new Hls({ maxBufferLength: 30, enableWorker: true });
+    playing.hls = hls;
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      if (resumeAt > 0) {
+        try { video.currentTime = resumeAt; } catch (err) { /* already there */ }
+      }
+      video.play().catch(() => { /* a click will start it */ });
+    });
+    hls.on(Hls.Events.ERROR, (event, data) => {
+      if (!data || !data.fatal) return;
+      // A segment that is still being made answers "ask again", and hls.js
+      // retries by itself; anything fatal has already exhausted that.
+      cannotPlay('the converted stream stopped: ' + (data.details || 'unknown error'));
+    });
+    hls.loadSource(answer.url);
+    hls.attachMedia(video);
+  } catch (err) {
+    cannotPlay(err.message);
+  }
+}
+
+function detachHls() {
+  if (playing && playing.hls) {
+    try { playing.hls.destroy(); } catch (err) { /* already gone */ }
+    playing.hls = null;
+  }
+}
+
+// cannotPlay is the honest end of the road: this browser cannot show this
+// file and the server cannot convert it, so say which and offer the file.
+function cannotPlay(why) {
+  const box = document.getElementById('player-error');
+  const container = playing && playing.part ? (playing.part.container || 'this file').toUpperCase() : 'this file';
+  fill(box,
+    el('h2', { class: 'tight', text: 'This browser cannot play it' }),
+    el('p', { text: why ? why.charAt(0).toUpperCase() + why.slice(1) + '.' : 'The file is ' + container + '.' }),
+    el('p', { class: 'muted', text: 'The Bask app plays it directly, and so does anything else that can decode it.' }),
+    el('div', { class: 'row' },
+      el('button', { text: 'Back', on: { click: () => { closePlayer(); render(); } } }),
+      playing && playing.part
+        ? el('a', { class: 'button', href: '/web/stream/' + playing.part.id, download: '', text: 'Download the file' })
+        : null));
+  box.hidden = false;
 }
 
 function report() {
@@ -372,6 +535,18 @@ function closePlayer() {
   report();
   clearInterval(reportTimer);
   reportTimer = null;
+
+  // Tell the server it can stop converting. The watchdog would notice
+  // eventually; saying so frees a core now.
+  if (playing.session) {
+    fetch(API + '/play/' + playing.session + '/stop', {
+      method: 'POST',
+      headers: { 'X-BMS-Web': '1' },
+      credentials: 'same-origin',
+      keepalive: true,
+    }).catch(() => { /* the watchdog is the backstop */ });
+  }
+  detachHls();
   video.pause();
   video.removeAttribute('src');
   video.load();
@@ -433,22 +608,13 @@ async function playNext() {
   } catch (err) { failed(err); }
 }
 
-// The browser decodes, this server does not transcode, and a file the browser
-// cannot read has to say so rather than spin.
+// A file the browser cannot read has to say so rather than spin. With a
+// converted stream this fires only when the conversion itself failed, which
+// cannotPlay reports in the same place.
 video.addEventListener('error', () => {
   if (!playing) return;
-  const box = document.getElementById('player-error');
   const container = (playing.part.container || 'this file').toUpperCase();
-  fill(box,
-    el('h2', { class: 'tight', text: 'This browser cannot play it' }),
-    el('p', {
-      text: 'The file is ' + container + ' and nothing is being converted: this server sends the file as it is. '
-        + 'A player that can decode it plays it directly — the Bask app, or anything else on this machine.',
-    }),
-    el('div', { class: 'row' },
-      el('button', { text: 'Back', on: { click: () => { closePlayer(); render(); } } }),
-      el('a', { class: 'button', href: '/web/stream/' + playing.part.id, download: '', text: 'Download the file' })));
-  box.hidden = false;
+  cannotPlay('the file is ' + container + ' and this browser could not decode it');
 });
 
 document.addEventListener('keydown', (event) => {

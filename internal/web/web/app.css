@@ -188,6 +188,10 @@ h2.tight { margin: 0 0 .4rem; }
 .player-bar > * { pointer-events: auto; }
 .player-bar span { text-shadow: 0 1px 4px rgba(0, 0, 0, .9); }
 #player-skip { margin-left: auto; }
+/* What the server had to do to play this, in the vocabulary these systems
+   have always used: direct play, direct stream, transcoding. */
+#player-mode { font-size: .85rem; }
+#player-mode.converting { color: var(--accent); }
 .player-error {
   position: absolute; inset: auto 1rem 5rem 1rem;
   background: var(--panel);

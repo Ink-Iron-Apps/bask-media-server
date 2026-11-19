@@ -281,6 +281,7 @@ views.overview = async function (main) {
       ['Goroutines', num(o.goroutines)],
       ['Database', o.databaseMB + ' MB'],
       ['Artwork', o.artworkMB == null ? 'not cached' : size(o.artworkMB * 1048576) + ' of ' + size(o.artworkCapMB * 1048576)],
+      ['Converting now', o.transcoding == null ? 'no ffmpeg' : num(o.transcoding) + ' stream' + (o.transcoding === 1 ? '' : 's')],
       ['Machine id', o.machineId],
     ];
 

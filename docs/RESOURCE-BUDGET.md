@@ -15,6 +15,7 @@ that can be enforced.
 | Detecting markers in a season | < 100 MB peak | One ffmpeg per worker, plus ~19 KiB of fingerprint per end of per episode |
 | Admin web UI open | +0 MB server side | Static assets served from `go:embed`, no render process |
 | Watching in a browser | Same as any direct play | The page is embedded; the video is `http.ServeContent` over the same 32 KiB buffer |
+| One stream being converted | One ffmpeg, ~50 MB RSS, plus a core | Bounded by `-transcode-sessions` (3 by default); segments are files on disk, never buffers here |
 | Background passes remembered | < 10 KB | The job history is capped at twenty finished jobs and holds counters, not output |
 
 Peak means peak: a scan that allocates 400 MB for a moment and settles back to
@@ -40,9 +41,13 @@ Peak means peak: a scan that allocates 400 MB for a moment and settles back to
 5. **Every subprocess dies with its request.** An abandoned ffmpeg is the
    biggest real-world resource leak in this class of software: the client walks
    away, the transcode keeps burning a core and filling a disk. Transcodes run
-   in their own process group, are killed on context cancellation, and are
-   reaped by an idle watchdog as well, because a killed parent is not a
-   guarantee on Windows.
+   in their own process group and are killed as a group — so a child of ffmpeg
+   dies too — on three separate triggers: the client saying it has stopped, an
+   idle watchdog that needs no cooperation from anybody, and the server
+   shutting down. The watchdog is the one that matters, because a client that
+   closes a laptop sends nothing at all, and because a killed parent is not a
+   guarantee on Windows. `internal/transcode`'s tests assert all three by
+   starting a process that spawns a child and checking both are gone.
 6. **A soft memory ceiling, not a crash.** `GOMEMLIMIT` is set from
    `--mem-limit` (default 256 MiB). Go's collector then works harder as the
    process approaches it instead of the kernel's OOM killer deciding how the

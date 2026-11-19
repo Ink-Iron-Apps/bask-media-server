@@ -51,6 +51,15 @@ type Server struct {
 	// library you can still browse and play.
 	Artwork *artwork.Cache
 
+	// Prober measures a file before playing it, so the server can tell
+	// whether this client needs anything converted. Nil means everything is
+	// sent as it is, which is what a server with no ffprobe does.
+	Prober Prober
+
+	// Transcoder converts what a client cannot play. Nil means a file this
+	// browser cannot decode is reported as such rather than converted.
+	Transcoder Transcoder
+
 	// SessionTTL overrides how long a sign-in lasts. Zero means the store's
 	// default.
 	SessionTTL time.Duration
@@ -80,12 +89,18 @@ func (s *Server) Handler() http.Handler {
 	watcher("GET /web/api/items/{id}", s.item)
 	watcher("GET /web/api/search", s.search)
 	watcher("POST /web/api/progress", s.saveProgress)
+	watcher("POST /web/api/play", s.play)
+	watcher("POST /web/api/play/{session}/stop", s.stopPlayback)
 
 	// Images and media are ordinary GETs so a browser can put them in an
 	// <img> or a <video>, where no header can be set and the cookie is all
 	// there is.
 	watcher("GET /web/image/{id}", s.image)
 	watcher("GET /web/stream/{id}", s.stream)
+	watcher("GET /web/hls/{session}/{name}", s.hls)
+
+	// The one vendored file, served like the rest of the page.
+	mux.HandleFunc("GET /web/vendor/{name}", s.vendor)
 
 	return mux
 }

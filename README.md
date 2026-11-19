@@ -22,11 +22,13 @@ and the Plex vocabulary never reaches storage or scanning.
 - An admin web interface at `/admin`: libraries, scan and detection progress,
   accounts and tokens, served from the binary with nothing to install
 - A web interface for watching at `/web`: libraries, search, Continue
-  Watching, and a player with Skip Intro for anything the browser can decode
+  Watching, and a player with Skip Intro
+- Conversion on the fly for a client that cannot play a file as it is, and
+  direct play — the file itself, untouched — for every client that can
 
 ## Not yet
 
-- Transcoding (direct play only)
+- Subtitles
 - Music and photos
 
 ## Running it
@@ -101,11 +103,41 @@ token issued for that device, and gets a session of its own.
 - Skip Intro and Skip Credits come from the markers the detector found, and
   the end of an episode offers the next one.
 
-**It plays what the browser can decode.** BMS does not transcode, so an MP4 of
-H.264 and AAC plays anywhere, and an MKV of H.265 or DTS usually will not — in
-a browser. The page says so in a sentence and offers the file rather than
-spinning, and the same file plays directly in Bask. `-web=false` leaves this
-interface off.
+`-web=false` leaves this interface off.
+
+## Direct play first, and conversion when there is no other way
+
+The file itself is always the first answer. A direct play costs this server
+nothing, keeps every frame and every channel the file has, and is what should
+happen almost all of the time — so nothing is converted because of a guess.
+
+How that is decided:
+
+- **Clients say what they can play.** The web page asks the browser itself
+  (`canPlayType`), so an MKV of H.264 and AAC is a direct play in a browser
+  that opens Matroska, and is converted only where one does not. A client
+  that says nothing — which is every Plex-protocol client today, Bask
+  included — is taken at its word and gets the file.
+- **Only what has to be converted is.** Dolby Digital inside an H.264 file
+  costs the audio and leaves every frame of the picture untouched. A
+  container that a client cannot open, with streams it can decode, is a
+  *direct stream*: the packets are copied, nothing is re-encoded.
+- **Conversion is bounded.** Three at a time by default
+  (`-transcode-sessions`, and `0` turns it off), each one an ffmpeg in its own
+  process group with an idle deadline: a viewer who closes a laptop stops
+  costing a core within the minute, and stopping the server kills every one of
+  them. See [docs/RESOURCE-BUDGET.md](docs/RESOURCE-BUDGET.md), rule 5.
+- **Seeking does not wait.** A converted stream is handed out as HLS over a
+  playlist written for the whole runtime, so the scrub bar is right from the
+  first second, and seeking ahead moves the encoder to that point rather than
+  encoding everything in between.
+
+The player says which of the three happened — *Direct play*, *Direct stream*
+or *Transcoding*, with the reason — because a server that is quietly
+re-encoding everything is the thing people most want to be able to see.
+
+With no ffmpeg, nothing is converted and a file the browser cannot decode is
+reported as exactly that, with the file offered for download.
 
 ## Resource use
 

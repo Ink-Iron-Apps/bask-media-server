@@ -34,6 +34,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/plexapi"
 	"github.com/inknironapps/bask-media-server/internal/scan"
 	"github.com/inknironapps/bask-media-server/internal/store"
+	"github.com/inknironapps/bask-media-server/internal/transcode"
 	"github.com/inknironapps/bask-media-server/internal/web"
 )
 
@@ -69,6 +70,7 @@ func main() {
 		detectJobs = flag.Int("detect-workers", 0, "how many files to fingerprint at once (default: half the CPUs)")
 		adminUI    = flag.Bool("admin", true, "serve the admin web interface at /admin")
 		webUI      = flag.Bool("web", true, "serve the viewing web interface at /web")
+		transcodes = flag.Int("transcode-sessions", 3, "how many files may be converted at once for clients that cannot play them; 0 turns conversion off")
 		artworkDir = flag.String("artwork", "", "where to cache posters and backdrops (default: beside the database)")
 		artworkMB  = flag.Int64("artwork-cache-mb", 512, "cap on the artwork cache in MiB")
 		tmdbKey    = flag.String("tmdb-key", "", "TMDB API key or v4 read token; falls back to BMS_TMDB_API_KEY")
@@ -102,6 +104,7 @@ func main() {
 		detectNow:  *detectNow,
 		adminUI:    *adminUI,
 		webUI:      *webUI,
+		transcodes: *transcodes,
 		ffmpegPath: *ffmpegPath,
 		detectJobs: *detectJobs,
 		artworkDir: *artworkDir,
@@ -124,6 +127,7 @@ type runConfig struct {
 	detectNow  bool
 	adminUI    bool
 	webUI      bool
+	transcodes int
 	ffmpegPath string
 	detectJobs int
 	artworkDir string
@@ -201,6 +205,25 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 		printer = found
 	}
 
+	// Conversion for clients that cannot play a file as it is. Optional in
+	// every direction: no ffmpeg, or -transcode-sessions 0, and every client
+	// gets the file itself — which is what almost all of them want anyway.
+	var transcoder *transcode.Manager
+	if cfg.transcodes > 0 {
+		made, err := transcode.New(transcode.Options{
+			FFmpeg:      cfg.ffmpegPath,
+			Root:        filepath.Join(filepath.Dir(cfg.dbPath), "transcodes"),
+			MaxSessions: cfg.transcodes,
+			Log:         log,
+		})
+		if err != nil {
+			log.Warn("no ffmpeg, so nothing can be converted for a client that cannot play it", "error", err)
+		} else {
+			transcoder = made
+			defer transcoder.Shutdown()
+		}
+	}
+
 	runner := &jobs.Runner{
 		DB:       db,
 		Log:      log,
@@ -268,7 +291,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	if cfg.adminUI || cfg.webUI {
 		root := http.NewServeMux()
 		if cfg.adminUI {
-			root.Handle("/admin/", (&admin.Server{
+			panel := &admin.Server{
 				DB:        db,
 				Jobs:      runner,
 				Log:       log,
@@ -277,15 +300,26 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 				Version:   version,
 				Artwork:   images,
 				Started:   time.Now(),
-			}).Handler())
+			}
+			if transcoder != nil {
+				panel.Transcoding = transcoder.Sessions
+			}
+			root.Handle("/admin/", panel.Handler())
 		}
 		if cfg.webUI {
-			root.Handle("/web/", (&web.Server{
+			viewing := &web.Server{
 				DB:      db,
 				Log:     log,
 				Name:    cfg.name,
 				Artwork: images,
-			}).Handler())
+			}
+			if prober != nil {
+				viewing.Prober = prober
+			}
+			if transcoder != nil {
+				viewing.Transcoder = transcoder
+			}
+			root.Handle("/web/", viewing.Handler())
 		}
 		root.Handle("/", api.Handler())
 		handler = root
