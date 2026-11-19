@@ -301,7 +301,14 @@ func (m *Manager) reapIdleLocked() {
 		if session.req.Key != "" && m.byKey[session.req.Key] == session {
 			delete(m.byKey, session.req.Key)
 		}
+		// Closed off the lock, because killing a process group and removing
+		// its files takes long enough that holding the lock would stall
+		// every other request — and counted on the WaitGroup, because
+		// Shutdown removes the root directory and must not do that while a
+		// reaper is still killing something inside it.
+		m.wg.Add(1)
 		go func(s *Session) {
+			defer m.wg.Done()
 			s.close()
 			m.logger().Info("reaped an idle transcode", "session", s.ID)
 		}(session)

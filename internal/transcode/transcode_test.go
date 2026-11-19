@@ -146,9 +146,24 @@ func TestAnIdleSessionIsKilledWithEverythingItStarted(t *testing.T) {
 	if m.Sessions() != 0 {
 		t.Errorf("%d sessions are still listed", m.Sessions())
 	}
-	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the session's files are still on disk: %v", err)
+	// Polled rather than read once: the kill and the removal are two steps,
+	// and the process dying is the earlier of them.
+	if !removed(t, dir) {
+		t.Error("the session's files are still on disk")
 	}
+}
+
+// removed waits for a path to go, the way gone waits for a process.
+func removed(t *testing.T, path string) bool {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
 }
 
 // Stopping the server must not leave an encoder behind: a process nobody owns
