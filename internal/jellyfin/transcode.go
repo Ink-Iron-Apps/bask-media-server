@@ -404,6 +404,9 @@ func (s *Server) transcodeVariant(w http.ResponseWriter, r *http.Request) {
 		s.transcodeError(w, "playlist", err)
 		return
 	}
+	// A stream asked for from the middle starts there: the client was given
+	// this URL to resume with, and it plays what it is handed from the top.
+	body = trimPlaylist(body, startFrom(r))
 	base := "/Videos/" + r.PathValue("item") + "/hls/" + session.ID + "/"
 	token := ""
 	if value := tokenFrom(r); value != "" {
@@ -448,10 +451,6 @@ func (s *Server) sessionFor(w http.ResponseWriter, r *http.Request) (*transcode.
 		}
 	}
 
-	var startAt time.Duration
-	if ticks := int64(intQuery(r, "StartTimeTicks")); ticks > 0 {
-		startAt = time.Duration(ticks) * 100 * time.Nanosecond
-	}
 	session, err := s.Transcoder.Start(transcode.Request{
 		// The client's own play session id, so the second request for this
 		// playlist gets the ffmpeg the first one started rather than another,
@@ -460,7 +459,7 @@ func (s *Server) sessionFor(w http.ResponseWriter, r *http.Request) (*transcode.
 		Path:     part.Path,
 		Plan:     wirePlan(r),
 		Duration: found.Duration,
-		StartAt:  startAt,
+		StartAt:  startFrom(r),
 	})
 	if errors.Is(err, transcode.ErrBusy) {
 		w.Header().Set("Retry-After", "10")
@@ -472,6 +471,14 @@ func (s *Server) sessionFor(w http.ResponseWriter, r *http.Request) (*transcode.
 		return nil, false
 	}
 	return session, true
+}
+
+// startFrom is where in the file this stream begins.
+func startFrom(r *http.Request) time.Duration {
+	if ticks := int64(intQuery(r, "StartTimeTicks")); ticks > 0 {
+		return time.Duration(ticks) * 100 * time.Nanosecond
+	}
+	return 0
 }
 
 func sessionKey(playSession string, partID int64) string {
@@ -614,6 +621,85 @@ func rewritePlaylist(body []byte, base, query string) []byte {
 		}
 	}
 	return []byte(strings.Join(lines, "\n"))
+}
+
+// trimPlaylist drops the segments before where this stream starts.
+//
+// The transcoder's playlist covers the whole runtime, numbered from the
+// beginning of the file, which is right for a client that seeks inside a
+// stream it opened at the start. A Jellyfin client resuming does something
+// else: it asks for a stream that *begins* at the resume point and plays it
+// from the top, adding the offset back itself. Handing that client the whole
+// playlist has it ask for the first segment of the film, which is not what
+// the encoder was started on, and the player sits on a spinner while the
+// encoder is dragged back to the beginning.
+//
+// Entries are dropped by the index in their own name rather than by counting,
+// so a playlist that already starts where it should — which is what ffmpeg
+// writes for a copy — is left exactly as it is.
+func trimPlaylist(body []byte, startAt time.Duration) []byte {
+	if startAt <= 0 {
+		return body
+	}
+	lines := strings.Split(string(body), "\n")
+
+	// The segment length is whatever this playlist says its segments are.
+	segment := 0.0
+	for _, line := range lines {
+		if after, found := strings.CutPrefix(strings.TrimSpace(line), "#EXTINF:"); found {
+			value := strings.TrimSuffix(strings.TrimSpace(after), ",")
+			if seconds, err := strconv.ParseFloat(value, 64); err == nil && seconds > 0 {
+				segment = seconds
+				break
+			}
+		}
+	}
+	if segment <= 0 {
+		return body
+	}
+	first := int(startAt.Seconds() / segment)
+	if first <= 0 {
+		return body
+	}
+
+	out := make([]string, 0, len(lines))
+	pending := []string{}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "#EXTINF:"):
+			// Held until its URI is seen, because the two are one entry.
+			pending = append(pending, line)
+		case trimmed == "" || strings.HasPrefix(trimmed, "#"):
+			out = append(out, line)
+		default:
+			index, ok := segmentIndex(trimmed)
+			if ok && index < first {
+				pending = nil
+				continue
+			}
+			out = append(out, pending...)
+			out = append(out, line)
+			pending = nil
+		}
+	}
+	return []byte(strings.Join(out, "\n"))
+}
+
+// segmentIndex reads the number out of a segment's name: seg00014.m4s.
+func segmentIndex(name string) (int, bool) {
+	digits := strings.TrimLeft(name, "abcdefghijklmnopqrstuvwxyz")
+	if cut := strings.IndexByte(digits, '.'); cut >= 0 {
+		digits = digits[:cut]
+	}
+	if digits == "" {
+		return 0, false
+	}
+	index, err := strconv.Atoi(digits)
+	if err != nil {
+		return 0, false
+	}
+	return index, true
 }
 
 func rewriteAttribute(line, base, query string) string {

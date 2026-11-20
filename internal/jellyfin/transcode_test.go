@@ -352,3 +352,31 @@ func resolve(base, uri string) string {
 	}
 	return path + uri
 }
+
+// A client resuming asks for a stream that begins where it left off, and
+// plays it from the top. So the playlist it gets has to begin there too: hand
+// it the whole film and it asks for the first segment, which is not what the
+// encoder was started on, and it waits on a spinner while the encoder is
+// dragged back to the beginning.
+func TestAStreamAskedForFromTheMiddleBeginsThere(t *testing.T) {
+	server, token := converting(t)
+	c := call{t: t, server: server, token: token}
+
+	source := c.negotiated(c.film(), profile("mp4", "vp9", "aac", 0))
+	// Two minutes in, in Jellyfin's hundred-nanosecond ticks.
+	master := source["TranscodingUrl"].(string) + "&StartTimeTicks=1200000000&api_key=" + token
+
+	_, body := c.do(http.MethodGet, master, nil)
+	res, body := c.do(http.MethodGet, resolve(master, nextURI(t, string(body))), nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("variant playlist: %d %s", res.StatusCode, body)
+	}
+	first := nextURI(t, string(body))
+	if strings.Contains(first, "seg00000") {
+		t.Errorf("the playlist starts at the beginning of the film, not at the resume point: %q", first)
+	}
+	if !strings.Contains(first, "seg00030") {
+		// Two minutes of four-second segments.
+		t.Errorf("first segment = %q", first)
+	}
+}
