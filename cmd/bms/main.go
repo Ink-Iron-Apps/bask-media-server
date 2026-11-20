@@ -314,6 +314,11 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 			if transcoder != nil {
 				emby.Transcoder = transcoder
 			}
+			if prober != nil {
+				// Together these are what lets a client ask for a smaller
+				// version of a file: one to measure it, one to convert it.
+				emby.Prober = prober
+			}
 			handler := emby.Handler()
 			for _, prefix := range jellyfin.Prefixes() {
 				root.Handle(prefix, handler)

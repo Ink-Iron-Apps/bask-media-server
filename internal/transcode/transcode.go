@@ -115,6 +115,18 @@ func New(opts Options) (*Manager, error) {
 	if root == "" {
 		root = filepath.Join(os.TempDir(), "bms-transcode")
 	}
+	// Absolute, always. Every session runs ffmpeg with the session directory
+	// as its working directory, so a relative root — which is what a server
+	// started with a relative database path hands over — would be resolved
+	// against that directory instead of against where the server was started,
+	// and ffmpeg writes its segments into a path that does not exist. The
+	// failure is one line of ffmpeg stderr about an init segment, nowhere
+	// near the cause.
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("transcode directory: %w", err)
+	}
+	root = absolute
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("transcode directory: %w", err)
 	}
@@ -234,6 +246,24 @@ func (m *Manager) Stop(id string) {
 }
 
 // Sessions reports how many are running, for the status page.
+// StopKey ends the session started for this key, if there is one.
+//
+// A client that says it has stopped names what it was playing rather than the
+// session: a Jellyfin client reports its own play session id, and that is
+// what started this one. Freeing the core now beats waiting for the idle
+// deadline to notice.
+func (m *Manager) StopKey(key string) {
+	if key == "" {
+		return
+	}
+	m.mu.Lock()
+	session, found := m.byKey[key]
+	m.mu.Unlock()
+	if found {
+		m.Stop(session.ID)
+	}
+}
+
 func (m *Manager) Sessions() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

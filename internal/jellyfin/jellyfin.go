@@ -32,7 +32,6 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/store"
 	"github.com/inknironapps/bask-media-server/internal/subtitles"
-	"github.com/inknironapps/bask-media-server/internal/transcode"
 )
 
 // Server answers the Jellyfin API over BMS's library.
@@ -57,7 +56,12 @@ type Server struct {
 	// Transcoder is used when a client says it cannot play a file. Nil means
 	// this server only direct plays, which is what it did before there was
 	// one.
-	Transcoder *transcode.Manager
+	Transcoder Transcoder
+
+	// Prober measures a file before playing it, so a device profile can be
+	// answered with more than a guess. Nil means direct play: see
+	// [Server.negotiate].
+	Prober Prober
 }
 
 // route is one pattern this presenter answers.
@@ -105,6 +109,13 @@ func (s *Server) routes() []route {
 		// `stream.mkv`, `stream.mp3` — and a pattern cannot carry a wildcard
 		// inside a segment, so the name arrives whole and the handler reads
 		// it.
+		// The converted stream: the playlist a client is pointed at, the one
+		// it names next, and the segments under it.
+		{"GET /Videos/{item}/master.m3u8", s.transcodeMaster, false},
+		{"GET /Videos/{item}/main.m3u8", s.transcodeVariant, false},
+		{"GET /Videos/{item}/hls/{session}/{file}", s.transcodeSegment, false},
+		{"DELETE /Videos/ActiveEncodings", s.stopEncoding, false},
+
 		{"GET /Videos/{item}/{file}", s.streamNamed, false},
 		{"GET /Audio/{item}/{file}", s.streamNamed, false},
 		// Jellyfin spells a subtitle request `…/Subtitles/{index}/Stream.vtt`,
@@ -208,7 +219,7 @@ func normalisePath(next http.Handler) http.Handler {
 		"NextUp", "Artists", "AlbumArtists", "Videos", "Audio", "Subtitles",
 		"Sessions", "Capabilities", "Full", "Playing", "Progress", "Stopped", "Me",
 		"QuickConnect", "Enabled", "UserData", "PlayedItems", "UserItems",
-		"UserPlayedItems", "UserFavoriteItems", "DisplayPreferences",
+		"UserPlayedItems", "UserFavoriteItems", "DisplayPreferences", "ActiveEncodings",
 		"LocalTrailers", "SpecialFeatures", "Similar",
 	} {
 		known[strings.ToLower(segment)] = segment

@@ -55,6 +55,12 @@ func New(path string) (*Prober, error) {
 type Info struct {
 	Duration time.Duration
 
+	// BitRate is the whole file's, in bits per second, as the container
+	// declares it. Zero for a container that does not say — Matroska often
+	// does not — in which case size over duration is the only answer, and
+	// that is the caller's to compute because only the caller knows the size.
+	BitRate int64
+
 	// Chapters are the file's own chapters, in file order, with Index filled
 	// in and ItemID left for the store. Empty for the many files that declare
 	// none.
@@ -142,6 +148,7 @@ func (i Info) first(kind string) *Stream {
 type probeOutput struct {
 	Format struct {
 		Duration string `json:"duration"`
+		BitRate  string `json:"bit_rate"`
 		Tags     struct {
 			Title       string `json:"title"`
 			Artist      string `json:"artist"`
@@ -209,7 +216,7 @@ func (p *Prober) Probe(ctx context.Context, path string) (Info, error) {
 	cmd := exec.CommandContext(ctx, p.Path,
 		"-v", "error",
 		"-show_entries",
-		"format=duration:format_tags=title,artist,album,album_artist,date,genre,track,disc:"+
+		"format=duration,bit_rate:format_tags=title,artist,album,album_artist,date,genre,track,disc:"+
 			"stream=index,codec_type,codec_name,profile,width,height,channels,bit_rate:"+
 			"stream_tags=language,title:stream_disposition=default,forced,hearing_impaired",
 		"-show_chapters",
@@ -238,6 +245,7 @@ func (p *Prober) Probe(ctx context.Context, path string) (Info, error) {
 
 	info := Info{
 		Duration: time.Duration(seconds * float64(time.Second)),
+		BitRate:  bitRate(parsed.Format.BitRate),
 		Tags: Tags{
 			Title:       parsed.Format.Tags.Title,
 			Artist:      parsed.Format.Tags.Artist,
@@ -288,6 +296,16 @@ func (p *Prober) Probe(ctx context.Context, path string) (Info, error) {
 // as well: "3", "3/12", "03". Anything else is no number rather than a wrong
 // one, because a track number is used to order an album and a guess would
 // reorder it.
+// bitRate reads a declared bit rate. Unparseable or negative is zero, which
+// means "not declared" everywhere this is read.
+func bitRate(value string) int64 {
+	rate, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || rate <= 0 {
+		return 0
+	}
+	return rate
+}
+
 func leadingNumber(value string) int {
 	value = strings.TrimSpace(value)
 	if cut := strings.IndexAny(value, "/ "); cut > 0 {

@@ -89,6 +89,20 @@ Peak means peak: a scan that allocates 400 MB for a moment and settles back to
     picture, and a length field claiming more is a corrupt file rather than an
     allocation to make.
 
+12. **A negotiation probes one file, and only when the answer depends on it.**
+    A client that sent no device profile and no bit rate ceiling is told about
+    the file without ffprobe being run at all, and a request naming one media
+    source has the others described from the database rather than measured. So
+    a home screen full of items costs no subprocesses, and opening something
+    costs one short probe of one file's header — not one per version, and not
+    one per row on a shelf.
+13. **A converted stream is addressable without the server remembering it.**
+    What to encode travels in the query string of the playlist URL, clamped
+    where it is read back, so there is no per-negotiation state to hold or
+    expire. The only state is the ffmpeg itself, which is bounded by rule 5:
+    capped in number, in its own process group, with an idle deadline, killed
+    as a group, and freed early when a client says it has stopped.
+
 ## Proving it
 
 - `go test ./...` runs `goleak` per package: goroutine leaks fail the build.

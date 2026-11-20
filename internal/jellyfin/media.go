@@ -34,6 +34,7 @@ type mediaSource struct {
 	DirectStreamURL        string        `json:"DirectStreamUrl,omitempty"`
 	TranscodingURL         string        `json:"TranscodingUrl,omitempty"`
 	TranscodingSubProtocol string        `json:"TranscodingSubProtocol,omitempty"`
+	TranscodeReasons       []string      `json:"TranscodeReasons,omitempty"`
 	ETag                   string        `json:"ETag,omitempty"`
 }
 
@@ -79,11 +80,10 @@ func (s *Server) mediaSource(it domain.Item, part domain.Part) mediaSource {
 		DirectStreamURL:      streamPath(it, part),
 		ETag:                 itemID(part.ID),
 	}
-	if s.Transcoder != nil && mediaTypeOf(it.Kind) == "Video" {
-		source.TranscodingURL = fmt.Sprintf("/Videos/%s/master.m3u8?MediaSourceId=%s&api_key=",
-			itemID(it.ID), itemID(part.ID))
-		source.TranscodingSubProtocol = "hls"
-	}
+	// No transcoding URL here: what a conversion would have to do depends on
+	// the client, and a list of items is rendered without one having asked.
+	// The URL is written in [Server.negotiatedSource], where the device
+	// profile is.
 	return source
 }
 
@@ -334,10 +334,14 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 
 // playbackInfo is where a client asks how it may play something.
 //
-// The answer is always "here is the file": BMS direct plays by default, and a
-// client that cannot decode what it is given asks for a transcode by URL
-// rather than being told in advance what it can manage. That keeps the
-// decision where the knowledge is.
+// The client sends a device profile — the containers and codecs it can
+// decode, and how much bandwidth it will take — and the answer is either the
+// file itself or a URL for a converted stream. Direct play is the answer
+// wherever it fits: it costs this server nothing and keeps every frame the
+// file had.
+//
+// A client that sends no profile is told about the file, which is what every
+// client was told before this server could convert anything.
 func (s *Server) playbackInfo(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r.Context())
 	id, _, err := parseID(r.PathValue("item"))
@@ -355,17 +359,31 @@ func (s *Server) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	want := wishFrom(r)
+	play := newPlaySession(found.ID)
 	streams := s.streamsOf(r.Context(), *found)
 	sources := make([]mediaSource, 0, len(found.Parts))
 	for _, part := range found.Parts {
-		source := s.mediaSource(*found, part)
+		// Only the file the client named is negotiated: deciding for the
+		// others would probe files nobody is about to play.
+		if want.sourceID != "" && itemID(part.ID) != want.sourceID {
+			source := s.mediaSource(*found, part)
+			source.MediaStreams = streams
+			sources = append(sources, source)
+			continue
+		}
+		source := s.negotiatedSource(r.Context(), *found, part, want, play)
 		source.MediaStreams = streams
 		sources = append(sources, source)
+	}
+	if user != nil {
+		s.logger().Debug("negotiated playback", "item", found.ID, "user", user.ID,
+			"sources", len(sources), "playSession", play)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"MediaSources":  sources,
-		"PlaySessionId": fmt.Sprintf("%s-%d", itemID(found.ID), user.ID),
+		"PlaySessionId": play,
 	})
 }
 

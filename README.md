@@ -242,8 +242,9 @@ client that has never heard of BMS needs no special case.
 What it carries: films, shows, seasons and episodes; artists, albums and
 tracks; photo albums and photographs with their dimensions and dates;
 posters, covers and thumbnails; subtitles as external streams in the format
-asked for; the file itself with range requests; and progress, resume, next up
-and recently added, per account.
+asked for; the file itself with range requests; a converted stream for a
+client that cannot take the file; and progress, resume, next up and recently
+added, per account.
 
 What it does not: Jellyfin's own library management, its plugins, its user
 administration, and Live TV. This is the read path a client needs to browse
@@ -261,9 +262,17 @@ How that is decided:
 
 - **Clients say what they can play.** The web page asks the browser itself
   (`canPlayType`), so an MKV of H.264 and AAC is a direct play in a browser
-  that opens Matroska, and is converted only where one does not. A client
-  that says nothing — which is every Plex-protocol client today, Bask
-  included — is taken at its word and gets the file.
+  that opens Matroska, and is converted only where one does not. A Jellyfin
+  client sends a device profile — its containers, its codecs, and a ceiling
+  on the bit rate — to `/Items/{id}/PlaybackInfo`, and is answered with the
+  file or with a stream. A client that says nothing — which is every
+  Plex-protocol client today — is taken at its word and gets the file.
+- **A bit rate ceiling is a request too.** A quality preset is how most
+  clients ask for a conversion: nothing is wrong with the codecs, the link is
+  just smaller than the file. The picture comes down to the size that ceiling
+  pays for rather than spending the whole budget on a 1080p frame, and the
+  client is told why in the names the protocol uses
+  (`ContainerBitrateExceedsLimit`, `VideoCodecNotSupported`).
 - **Only what has to be converted is.** Dolby Digital inside an H.264 file
   costs the audio and leaves every frame of the picture untouched. A
   container that a client cannot open, with streams it can decode, is a
@@ -277,6 +286,12 @@ How that is decided:
   playlist written for the whole runtime, so the scrub bar is right from the
   first second, and seeking ahead moves the encoder to that point rather than
   encoding everything in between.
+- **The plan travels in the URL.** What to encode and how is in the query
+  string of the playlist a client is given, so there is nothing to expire
+  between the negotiation and the first segment, and the values are clamped
+  where they are read back. A client that says it has stopped
+  (`DELETE /Videos/ActiveEncodings`) frees the core then rather than at the
+  idle deadline.
 
 The player says which of the three happened — *Direct play*, *Direct stream*
 or *Transcoding*, with the reason — because a server that is quietly

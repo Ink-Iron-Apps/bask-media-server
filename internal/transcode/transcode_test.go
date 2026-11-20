@@ -357,3 +357,24 @@ func sampleVideo(t *testing.T, ffmpeg string, seconds int) string {
 	}
 	return path
 }
+
+// A relative root has to be resolved before ffmpeg is started, because every
+// session runs it with the session directory as its working directory: a
+// relative path would be read against that, and the encoder would write its
+// segments into a directory that does not exist. Which is what a server
+// started with a relative database path used to do.
+func TestARelativeRootIsResolvedBeforeTheEncoderSeesIt(t *testing.T) {
+	t.Chdir(t.TempDir())
+	m := manager(t, fakeFFmpeg(t), func(o *transcode.Options) { o.Root = "transcodes" })
+
+	if !filepath.IsAbs(m.Root()) {
+		t.Fatalf("root = %q, which ffmpeg would read against its own working directory", m.Root())
+	}
+	session, err := m.Start(request("/some/film.mkv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Playlist(context.Background()); err != nil {
+		t.Fatalf("playlist: %v", err)
+	}
+}

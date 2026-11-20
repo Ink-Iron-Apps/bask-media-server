@@ -50,7 +50,35 @@ type Capabilities struct {
 	// it, and a laptop's two speakers get the centre channel mixed away. Zero
 	// means no limit.
 	MaxChannels int
+
+	// MaxBitRate caps the stream, in bits per second. This is how a client
+	// asks for a smaller version of a file it could otherwise play — a
+	// quality preset over a slow link — so it forces a re-encode on its own,
+	// with nothing wrong with the codecs or the container.
+	MaxBitRate int64
+
+	// BitRate is what the file actually runs at, for the cases where the
+	// container does not declare one: the caller knows the file size and the
+	// duration, which is the only other way to answer it. Zero means "use
+	// what the probe found".
+	BitRate int64
 }
+
+// Cause is one machine-readable reason a plan is not a direct play.
+//
+// Plan.Why is for a person. These are for a protocol: both Jellyfin and Plex
+// report why a stream is being converted as a list of stable names, and a
+// presenter cannot derive them from prose.
+type Cause string
+
+const (
+	CauseContainer  Cause = "container"
+	CauseVideoCodec Cause = "video-codec"
+	CauseAudioCodec Cause = "audio-codec"
+	CauseResolution Cause = "resolution"
+	CauseChannels   Cause = "channels"
+	CauseBitRate    Cause = "bit-rate"
+)
 
 // Browser is the fallback for a browser that has not said what it can play.
 //
@@ -85,6 +113,10 @@ type Plan struct {
 
 	// VideoBitRate is the ceiling for a re-encode, in bits per second.
 	VideoBitRate int64
+
+	// Causes are what made this more than a direct play, in the order they
+	// were found.
+	Causes []Cause
 }
 
 // Transcoding reports whether this plan needs ffmpeg at all.
@@ -109,11 +141,13 @@ func Decide(info ffprobe.Info, container string, caps Capabilities) Plan {
 	case !supported(caps.Video, video.Codec):
 		plan.Mode = ModeTranscode
 		plan.VideoCodec = "h264"
+		plan.Causes = append(plan.Causes, CauseVideoCodec)
 		reasons = append(reasons, fmt.Sprintf("%s video is not supported here", display(video.Codec)))
 	case caps.MaxHeight > 0 && video.Height > caps.MaxHeight:
 		plan.Mode = ModeTranscode
 		plan.VideoCodec = "h264"
 		plan.Height = caps.MaxHeight
+		plan.Causes = append(plan.Causes, CauseResolution)
 		reasons = append(reasons, fmt.Sprintf("%dp is larger than this client asked for", video.Height))
 	}
 
@@ -123,11 +157,13 @@ func Decide(info ffprobe.Info, container string, caps Capabilities) Plan {
 	case !supported(caps.Audio, audio.Codec):
 		plan.Mode = ModeTranscode
 		plan.AudioCodec = "aac"
+		plan.Causes = append(plan.Causes, CauseAudioCodec)
 		reasons = append(reasons, fmt.Sprintf("%s audio is not supported here", display(audio.Codec)))
 	case caps.MaxChannels > 0 && audio.Channels > caps.MaxChannels:
 		plan.Mode = ModeTranscode
 		plan.AudioCodec = "aac"
 		plan.Channels = caps.MaxChannels
+		plan.Causes = append(plan.Causes, CauseChannels)
 		reasons = append(reasons, fmt.Sprintf("%d channels have to be mixed to %d", audio.Channels, caps.MaxChannels))
 	}
 
@@ -135,6 +171,7 @@ func Decide(info ffprobe.Info, container string, caps Capabilities) Plan {
 	// re-encode: a transcode writes its own container anyway.
 	if plan.Mode == ModeDirect && !supported(caps.Containers, container) {
 		plan.Mode = ModeRemux
+		plan.Causes = append(plan.Causes, CauseContainer)
 		reasons = append(reasons, fmt.Sprintf("%s is not a container this client plays", strings.ToUpper(container)))
 
 		// A remux has to put the packets somewhere, and the somewhere is
@@ -145,19 +182,78 @@ func Decide(info ffprobe.Info, container string, caps Capabilities) Plan {
 		if video == nil && audio != nil && !fitsInMP4(audio.Codec) {
 			plan.Mode = ModeTranscode
 			plan.AudioCodec = "aac"
+			plan.Causes = append(plan.Causes, CauseAudioCodec)
 			reasons = append(reasons,
 				fmt.Sprintf("%s cannot be rewrapped without re-encoding", display(audio.Codec)))
 		}
 	}
 
+	// A bit rate ceiling, which is a request about the link rather than about
+	// the file: a client that can decode every stream in it still cannot pull
+	// 30 Mbit/s over mobile data. Checked last because a re-encode that is
+	// already happening carries the ceiling anyway.
+	if rate := rateOf(info, caps); caps.MaxBitRate > 0 && rate > caps.MaxBitRate && video != nil {
+		plan.Mode = ModeTranscode
+		plan.VideoCodec = "h264"
+		plan.Causes = append(plan.Causes, CauseBitRate)
+		reasons = append(reasons, fmt.Sprintf("%s is more than this client asked for",
+			megabits(rate)))
+		if height := heightForBitRate(caps.MaxBitRate); height > 0 && (video.Height == 0 || height < video.Height) {
+			plan.Height = height
+		}
+	}
+
 	if plan.Mode != ModeDirect && plan.VideoCodec == "h264" {
 		plan.VideoBitRate = bitRateFor(heightOf(video, plan.Height))
+		// The ceiling the client named wins over the one this server would
+		// have chosen for the picture size: it was asked for.
+		if caps.MaxBitRate > 0 && caps.MaxBitRate < plan.VideoBitRate {
+			plan.VideoBitRate = caps.MaxBitRate
+		}
 	}
 	plan.Why = strings.Join(reasons, "; ")
 	if plan.Mode == ModeDirect {
 		plan.Why = "the file plays as it is"
 	}
 	return plan
+}
+
+// rateOf is what the file runs at: what the caller measured, else what the
+// container declared, else the video stream's own.
+func rateOf(info ffprobe.Info, caps Capabilities) int64 {
+	if caps.BitRate > 0 {
+		return caps.BitRate
+	}
+	if info.BitRate > 0 {
+		return info.BitRate
+	}
+	if video := info.Video(); video != nil {
+		return video.BitRate
+	}
+	return 0
+}
+
+// heightForBitRate is the largest picture this ceiling pays for.
+//
+// A client asking for 2 Mbit/s of a 4K film is asking for something that
+// cannot look like 4K, and encoding it at full size spends the whole budget
+// on macroblocks. The ladder is the inverse of [bitRateFor], so the two
+// cannot disagree about what a size costs.
+func heightForBitRate(ceiling int64) int {
+	for _, height := range []int{2160, 1080, 720, 480, 360} {
+		if bitRateFor(height) <= ceiling {
+			return height
+		}
+	}
+	return 360
+}
+
+// megabits says a rate the way a person would.
+func megabits(rate int64) string {
+	if rate < 1_000_000 {
+		return fmt.Sprintf("%d kbps", rate/1000)
+	}
+	return fmt.Sprintf("%.1f Mbps", float64(rate)/1_000_000)
 }
 
 func heightOf(video *ffprobe.Stream, planned int) int {
