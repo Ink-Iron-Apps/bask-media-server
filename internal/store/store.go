@@ -417,6 +417,12 @@ var migrations = []string{
 		PRIMARY KEY (collection_id, item_id)
 	)`,
 	`CREATE INDEX collection_items_item ON collection_items(item_id)`,
+
+	// Which cut of a film this file is: the Director's Cut, the Theatrical,
+	// the Extended. On the part rather than the item because that is what it
+	// describes — two editions are one film with two files, which is the
+	// whole point of reading it.
+	`ALTER TABLE parts ADD COLUMN edition TEXT NOT NULL DEFAULT ''`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

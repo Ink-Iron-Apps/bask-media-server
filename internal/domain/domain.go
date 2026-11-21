@@ -183,6 +183,10 @@ type Part struct {
 	// what makes a rescan of an unchanged library cost a stat per file and no
 	// writes at all.
 	ModifiedAt time.Time
+	// Edition is which cut of a film this file is — the Director's Cut, the
+	// Theatrical — read from the name. Empty for the ordinary case of one
+	// file, and for everything that is not a film.
+	Edition string
 }
 
 // User is an account on this server. BMS has no external identity provider by

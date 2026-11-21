@@ -38,7 +38,60 @@ var (
 
 	// "Season 01", "season 1", "S01" as a directory name.
 	seasonDir = regexp.MustCompile(`(?i)^(?:season[ ._-]*|s)(\d{1,3})$`)
+
+	// An edition: the two spellings the ecosystem settled on, Plex's
+	// "{edition-Director's Cut}" and the bracketed "[Director's Cut]" that
+	// everything else writes. Both are taken off the title before it is
+	// read, which is what makes two editions of a film one film.
+	editionBrace  = regexp.MustCompile(`(?i)\{edition-([^}]{1,64})\}`)
+	editionSquare = regexp.MustCompile(`\[([^\]]{1,64})\]`)
+
+	// What a bracket holds when it is not an edition. A release group's
+	// name, a quality tag and a source are all bracketed by the same tools
+	// that bracket an edition, and calling one of those an edition would put
+	// "x265" in front of a viewer as if it were a cut of the film.
+	notAnEdition = regexp.MustCompile(`(?i)^(?:\d{3,4}p|x?26[45]|h\.?26[45]|hevc|avc|aac\d*|ac3|eac3|dts(?:-hd)?|truehd|atmos|flac|mp3|web-?dl|web-?rip|bluray|blu-ray|bdrip|brrip|dvdrip|hdtv|remux|hdr\d*|dv|sdr|10bit|8bit|[0-9.]+ ?(?:gb|mb)|rarbg|yts(?:\.mx)?|yify|proper|repack|internal|multi|dual|subs?|eng?|ita|fre?|ger|spa)$`)
 )
+
+// Edition reads the cut of a film out of its path, or "".
+//
+// Two spellings, because the ecosystem has two: Plex writes
+// "Blade Runner (1982) {edition-Final Cut}.mkv" and almost everything else
+// writes "Blade Runner (1982) [Final Cut].mkv". The brace form is
+// unambiguous; the square one is shared with release junk, so a bracket
+// holding something that is plainly a codec or a resolution is not treated
+// as a cut of the film.
+//
+// The point of reading it at all is that two editions are one film. The
+// title parser already drops both forms, so the rows collide into one item
+// with two files, and this is what lets a client say which is which rather
+// than offering two identical-looking choices.
+func Edition(path string) string {
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if m := editionBrace.FindStringSubmatch(base); len(m) == 2 {
+		return cleanEdition(m[1])
+	}
+	for _, m := range editionSquare.FindAllStringSubmatch(base, -1) {
+		if len(m) != 2 {
+			continue
+		}
+		candidate := cleanEdition(m[1])
+		if candidate == "" || notAnEdition.MatchString(candidate) {
+			continue
+		}
+		return candidate
+	}
+	return ""
+}
+
+func cleanEdition(value string) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "_", " "))
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) > 64 {
+		value = value[:64]
+	}
+	return value
+}
 
 // Movie is what a movie file's path says about it.
 type Movie struct {
@@ -54,14 +107,33 @@ type Movie struct {
 // library with no per-movie folders.
 func ParseMovie(path string) Movie {
 	dir := filepath.Base(filepath.Dir(path))
-	if m, ok := movieFrom(dir); ok {
+	if m, ok := movieFrom(withoutEdition(dir)); ok {
 		return m
 	}
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	if m, ok := movieFrom(base); ok {
+	if m, ok := movieFrom(withoutEdition(base)); ok {
 		return m
 	}
-	return Movie{Title: cleanTitle(base)}
+	return Movie{Title: cleanTitle(withoutEdition(base))}
+}
+
+// withoutEdition takes the cut off a name before the title is read.
+//
+// This is what makes two editions one film rather than two: the rows collide
+// on the same title and year, so they become one item with two files, and
+// the cut is kept on the file instead. Only an edition is removed — a
+// bracket holding a codec is left where it is, because cleanTitle already
+// deals with release junk and widening this would start eating titles.
+func withoutEdition(name string) string {
+	name = editionBrace.ReplaceAllString(name, " ")
+	name = editionSquare.ReplaceAllStringFunc(name, func(match string) string {
+		inner := cleanEdition(strings.Trim(match, "[]"))
+		if inner == "" || notAnEdition.MatchString(inner) {
+			return match
+		}
+		return " "
+	})
+	return name
 }
 
 func movieFrom(name string) (Movie, bool) {

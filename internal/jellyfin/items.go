@@ -359,13 +359,22 @@ func (s *Server) render(it domain.Item, rel related, progress domain.Progress) i
 	}
 
 	if len(it.Parts) > 0 {
+		// Every file, not only the first. A film with a Theatrical and a
+		// Director's Cut is one item with two files, and offering one of
+		// them is the same as not having the other: a client's version
+		// picker is built from this list, and a list of one has nothing to
+		// pick. The first is still what the top-level fields describe,
+		// because that is what a client plays when it does not choose.
 		part := it.Parts[0]
 		out.Container = part.Container
 		out.Path = part.Path
 		if it.Kind == domain.KindPhoto {
 			out.Width, out.Height = displaySize(part)
 		}
-		out.MediaSources = []mediaSource{s.mediaSource(it, part)}
+		out.MediaSources = make([]mediaSource, 0, len(it.Parts))
+		for _, each := range it.Parts {
+			out.MediaSources = append(out.MediaSources, s.mediaSource(it, each))
+		}
 	}
 
 	// User data on anything that can carry an opinion, not only on the things

@@ -383,6 +383,10 @@ func (s *Scanner) toFound(ctx context.Context, section domain.Section, f found) 
 	case f.movie != nil:
 		out.Kind = domain.KindMovie
 		out.Title, out.Year = f.movie.Title, f.movie.Year
+		// Read from the path rather than carried on Movie, because it
+		// describes this file and not the film: the title parser has
+		// already dropped it so two cuts collide into one item.
+		out.Edition = Edition(f.path)
 	case f.ep != nil:
 		out.Kind = domain.KindEpisode
 		out.Show, out.ShowYear = f.ep.Show, f.ep.ShowYear

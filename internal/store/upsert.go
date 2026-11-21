@@ -66,6 +66,11 @@ type Found struct {
 	Container  string
 	ModifiedAt time.Time
 
+	// Edition is which cut of a film this file is, where the name says so.
+	// Two editions are one item with two files, so this is what lets a
+	// client offer the choice rather than showing two identical rows.
+	Edition string
+
 	// Chapters the file declares, if ffprobe found any. Written as scanned
 	// facts and read again by marker detection, which is why a library with
 	// labelled chapters gets Skip Intro out of a plain scan.
@@ -434,8 +439,8 @@ func (w *Writer) upsertItem(ctx context.Context, spec itemSpec) (int64, error) {
 // is worth detecting markers for again.
 func (w *Writer) upsertPart(ctx context.Context, itemID int64, f Found) (int64, bool, error) {
 	res, err := w.tx.ExecContext(ctx,
-		`INSERT INTO parts (item_id, path, size, container, modified_at, width, height, orientation)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO parts (item_id, path, size, container, modified_at, width, height, orientation, edition)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(path) DO UPDATE SET
 		   item_id = excluded.item_id,
 		   size = excluded.size,
@@ -443,11 +448,13 @@ func (w *Writer) upsertPart(ctx context.Context, itemID int64, f Found) (int64, 
 		   modified_at = excluded.modified_at,
 		   width = excluded.width,
 		   height = excluded.height,
-		   orientation = excluded.orientation
+		   orientation = excluded.orientation,
+		   edition = excluded.edition
 		 WHERE parts.size <> excluded.size OR parts.modified_at <> excluded.modified_at
 		    OR parts.item_id <> excluded.item_id OR parts.width <> excluded.width
-		    OR parts.height <> excluded.height OR parts.orientation <> excluded.orientation`,
-		itemID, f.Path, f.Size, f.Container, millis(f.ModifiedAt), f.Width, f.Height, f.Orientation)
+		    OR parts.height <> excluded.height OR parts.orientation <> excluded.orientation
+		    OR parts.edition <> excluded.edition`,
+		itemID, f.Path, f.Size, f.Container, millis(f.ModifiedAt), f.Width, f.Height, f.Orientation, f.Edition)
 	if err != nil {
 		return 0, false, fmt.Errorf("upsert part: %w", err)
 	}

@@ -72,7 +72,7 @@ func (s *Server) mediaSource(it domain.Item, part domain.Part) mediaSource {
 		Protocol:             "File",
 		Container:            part.Container,
 		Size:                 part.Size,
-		Name:                 it.Title,
+		Name:                 sourceName(it, part),
 		RunTimeTicks:         ticks(it.Duration),
 		SupportsDirectPlay:   true,
 		SupportsDirectStream: true,
@@ -85,6 +85,18 @@ func (s *Server) mediaSource(it domain.Item, part domain.Part) mediaSource {
 	// The URL is written in [Server.negotiatedSource], where the device
 	// profile is.
 	return source
+}
+
+// sourceName is what a client shows in its version picker.
+//
+// The edition where the file has one, because a film with a Theatrical and a
+// Director's Cut offers two rows and two rows reading "Blade Runner" is not
+// a choice. The title alone otherwise, which is every ordinary file.
+func sourceName(it domain.Item, part domain.Part) string {
+	if part.Edition != "" {
+		return it.Title + " — " + part.Edition
+	}
+	return it.Title
 }
 
 // streamPath is where the file itself is served from.

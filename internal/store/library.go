@@ -316,7 +316,7 @@ func (d *DB) collect(ctx context.Context, rows *sql.Rows) ([]domain.Item, error)
 	return items, nil
 }
 
-const partColumns = `id, item_id, path, size, container, modified_at, width, height, orientation`
+const partColumns = `id, item_id, path, size, container, modified_at, width, height, orientation, edition`
 
 // Parts lists the files behind one item.
 func (d *DB) Parts(ctx context.Context, itemID int64) ([]domain.Part, error) {
@@ -345,7 +345,7 @@ func (d *DB) Part(ctx context.Context, id int64) (*domain.Part, error) {
 		  WHERE parts.id = ?`+only,
 		append([]any{id}, scope...)...).
 		Scan(&p.ID, &p.ItemID, &p.Path, &p.Size, &p.Container, &modifiedAt,
-			&p.Width, &p.Height, &p.Orientation)
+			&p.Width, &p.Height, &p.Orientation, &p.Edition)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -367,7 +367,11 @@ func (d *DB) partsFor(ctx context.Context, itemIDs []int64) (map[int64][]domain.
 	}
 
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT `+partColumns+` FROM parts WHERE item_id IN (`+placeholders+`) ORDER BY id`,
+		// The plain file first, then the editions by name. A client plays
+		// the first without asking, and the cut somebody did not label is
+		// the one they meant by "the film".
+		`SELECT `+partColumns+` FROM parts WHERE item_id IN (`+placeholders+`)
+		  ORDER BY item_id, edition <> '' , edition, id`,
 		args...)
 	if err != nil {
 		return nil, fmt.Errorf("list parts: %w", err)
@@ -381,7 +385,7 @@ func (d *DB) partsFor(ctx context.Context, itemIDs []int64) (map[int64][]domain.
 			modifiedAt int64
 		)
 		if err := rows.Scan(&p.ID, &p.ItemID, &p.Path, &p.Size, &p.Container, &modifiedAt,
-			&p.Width, &p.Height, &p.Orientation); err != nil {
+			&p.Width, &p.Height, &p.Orientation, &p.Edition); err != nil {
 			return nil, fmt.Errorf("scan part: %w", err)
 		}
 		p.ModifiedAt = fromMillis(modifiedAt)
@@ -508,7 +512,7 @@ func (d *DB) AlbumCover(ctx context.Context, itemID int64) (*domain.Part, error)
 		  ORDER BY items.taken_at, items.id
 		  LIMIT 1`, append([]any{itemID}, scope...)...).
 		Scan(&p.ID, &p.ItemID, &p.Path, &p.Size, &p.Container, &modifiedAt,
-			&p.Width, &p.Height, &p.Orientation)
+			&p.Width, &p.Height, &p.Orientation, &p.Edition)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
