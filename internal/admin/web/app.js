@@ -532,8 +532,9 @@ views.jobs = async function (main) {
 
 views.users = async function (main) {
   const users = (await api('GET', '/users')) || [];
+  const libraries = (await api('GET', '/sections')) || [];
 
-  const rows = users.map((user) => el('tr', {},
+  const rows = users.flatMap((user) => [el('tr', {},
     el('td', {}, el('strong', { text: user.username }), user.self ? el('span', { class: 'muted', text: ' (you)' }) : null),
     el('td', {}, user.admin ? el('span', { class: 'badge done', text: 'administrator' }) : el('span', { class: 'badge', text: 'viewer' })),
     el('td', { class: 'muted', text: count(user.tokens, 'token') }),
@@ -564,7 +565,14 @@ views.users = async function (main) {
             } catch (err) { failed(err); }
           },
         },
-      })))));
+      })))),
+    // An administrator administers the server rather than browsing it, so
+    // narrowing one would be a setting with no effect and is not offered.
+    libraries.length && !user.admin
+      ? el('tr', {}, el('td', { colspan: '5' },
+          libraryPicker(user.sections, libraries, '/users/' + user.id, 'account', () => render())))
+      : null,
+  ]);
 
   const name = el('input', { id: 'new-user', placeholder: 'kitchen-tv' });
   const admin = el('select', { id: 'new-user-admin' },
@@ -573,7 +581,7 @@ views.users = async function (main) {
 
   fill(main,
     el('div', { class: 'head' }, el('div', {}, el('h1', { text: 'Users' }),
-      el('p', { class: 'muted', text: 'Accounts live on this server. There is no account service anywhere else.' }))),
+      el('p', { class: 'muted', text: 'Accounts live on this server. The libraries ticked under an account are the only ones it can reach, and a device can be narrowed further under Tokens but never past this.' }))),
     el('div', { class: 'card' }, el('table', {},
       el('thead', {}, el('tr', {}, ['Account', 'Can', 'Credentials', 'Added', ''].map(
         (h, i) => el('th', { class: i === 4 ? 'right' : '', text: h })))),
@@ -621,21 +629,18 @@ function showSecret(token, note) {
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-// libraryPicker is the row of checkboxes that decides which libraries one
-// token may see.
+// libraryPicker is the row of checkboxes that decides which libraries a
+// credential or an account may see.
 //
 // Every box ticked is stored as no restriction at all, so a library added
-// later is visible to that device rather than quietly missing from it. Saving
-// is explicit: a half-ticked set of boxes is somebody mid-thought, not an
-// instruction.
-function libraryPicker(token, sections, onSaved) {
-  const chosen = new Set(token.sections || []);
+// later is visible rather than quietly missing. Saving is explicit: a
+// half-ticked set of boxes is somebody mid-thought, not an instruction.
+function libraryPicker(granted, libraries, path, noun, onSaved) {
+  const chosen = new Set(granted || []);
   const all = chosen.size === 0;
-  const boxes = sections.map((section) => {
-    const box = el('input', {
-      type: 'checkbox',
-      id: 'tok' + token.id + 'sec' + section.id,
-    });
+  const key = path.replace(/[^a-z0-9]+/gi, '-');
+  const boxes = libraries.map((section) => {
+    const box = el('input', { type: 'checkbox', id: 'pick' + key + '-' + section.id });
     box.checked = all || chosen.has(section.id);
     return { section, box };
   });
@@ -643,7 +648,7 @@ function libraryPicker(token, sections, onSaved) {
   const summary = el('span', { class: 'muted' });
   const describe = () => {
     const ticked = boxes.filter((b) => b.box.checked);
-    summary.textContent = ticked.length === sections.length
+    summary.textContent = ticked.length === libraries.length
       ? 'every library'
       : ticked.length === 0
         ? 'nothing ticked yet'
@@ -660,12 +665,12 @@ function libraryPicker(token, sections, onSaved) {
         click: async () => {
           const ticked = boxes.filter((b) => b.box.checked).map((b) => b.section.id);
           if (ticked.length === 0) {
-            toast('Tick at least one library. To stop this device reaching anything, revoke its token.', true);
+            toast('Tick at least one library. To stop this ' + noun + ' reaching anything, remove it.', true);
             return;
           }
           try {
-            await api('PATCH', '/tokens/' + token.id, { sections: ticked });
-            toast(ticked.length === sections.length ? 'This device sees every library.' : 'Saved.');
+            await api('PATCH', path, { sections: ticked });
+            toast(ticked.length === libraries.length ? 'This ' + noun + ' sees every library.' : 'Saved.');
             onSaved();
           } catch (err) { failed(err); }
         },
@@ -702,7 +707,7 @@ async function showTokens(user) {
         }))),
       sections.length
         ? el('tr', {}, el('td', { colspan: '4' },
-            libraryPicker(t, sections, () => showTokens(user))))
+            libraryPicker(t.sections, sections, '/tokens/' + t.id, 'device', () => showTokens(user))))
         : null,
     ]);
 

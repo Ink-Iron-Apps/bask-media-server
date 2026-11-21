@@ -180,3 +180,83 @@ func TestRevokingATokenRemovesItsGrants(t *testing.T) {
 		t.Fatalf("grants outlived the token: %v", stored)
 	}
 }
+
+// An account's libraries are set the same way a token's are, and listed
+// beside it so the page can draw the boxes already ticked.
+func TestAnAccountsLibrariesAreSetAndListed(t *testing.T) {
+	h := newHarness(t)
+	films, _ := twoLibraries(t, h)
+	h.signIn(h.adminToken)
+	ctx := context.Background()
+
+	users, err := h.db.Users(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var viewer int64
+	for _, user := range users {
+		if user.Username == "kitchen-tv" {
+			viewer = user.ID
+		}
+	}
+
+	if res, body := h.call(http.MethodPatch, "/admin/api/users/"+strconv.FormatInt(viewer, 10),
+		map[string]any{"sections": []int64{films}}); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("patch = %d: %v", res.StatusCode, body)
+	}
+
+	for _, row := range h.list("/admin/api/users") {
+		if row["username"] != "kitchen-tv" {
+			continue
+		}
+		granted, _ := row["sections"].([]any)
+		if len(granted) != 1 || int64(granted[0].(float64)) != films {
+			t.Fatalf("expected the films library, got %v", row["sections"])
+		}
+		return
+	}
+	t.Fatal("the account was not listed")
+}
+
+// Changing only the libraries leaves the role alone, and changing only the
+// role leaves the libraries alone: one endpoint, two independent settings.
+func TestRoleAndLibrariesAreChangedIndependently(t *testing.T) {
+	h := newHarness(t)
+	films, _ := twoLibraries(t, h)
+	h.signIn(h.adminToken)
+	ctx := context.Background()
+
+	users, err := h.db.Users(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var viewer int64
+	for _, user := range users {
+		if user.Username == "kitchen-tv" {
+			viewer = user.ID
+		}
+	}
+	path := "/admin/api/users/" + strconv.FormatInt(viewer, 10)
+
+	if res, _ := h.call(http.MethodPatch, path, map[string]any{"sections": []int64{films}}); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("setting libraries = %d", res.StatusCode)
+	}
+	if res, _ := h.call(http.MethodPatch, path, map[string]any{"admin": true}); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("setting the role = %d", res.StatusCode)
+	}
+
+	stored, err := h.db.UserSections(ctx, viewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("changing the role lost the libraries: %v", stored)
+	}
+	user, err := h.db.User(ctx, viewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !user.Admin {
+		t.Fatal("the role did not change")
+	}
+}

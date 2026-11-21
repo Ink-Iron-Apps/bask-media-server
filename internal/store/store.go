@@ -344,6 +344,19 @@ var migrations = []string{
 	// sessions that predate this column, which are therefore unrestricted —
 	// the same answer they were already getting.
 	`ALTER TABLE sessions ADD COLUMN token_id INTEGER NOT NULL DEFAULT 0`,
+
+	// Which libraries an account may see, whatever it signs in from.
+	//
+	// The companion to token_sections and the same rule: no row means no
+	// restriction. The two are combined rather than ranked — a device reaches
+	// a library only if both its account and its own grants allow it — so an
+	// account narrowed here cannot be widened by handing it a token with
+	// different grants.
+	`CREATE TABLE user_sections (
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
+		PRIMARY KEY (user_id, section_id)
+	)`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

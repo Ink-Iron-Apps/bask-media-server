@@ -79,23 +79,42 @@ func (d *DB) only(column string) (string, []any) {
 	return " AND " + column + " IN (" + placeholders + ")", args
 }
 
+// UserSections lists the libraries an account is restricted to. An empty
+// result means the account is not restricted: see [DB.Credential].
+func (d *DB) UserSections(ctx context.Context, userID int64) ([]int64, error) {
+	return d.sectionsFor(ctx, `SELECT section_id FROM user_sections WHERE user_id = ? ORDER BY section_id`, userID)
+}
+
+// SetUserSections replaces the libraries an account may see.
+//
+// Empty means every library, the same way it does for a token: an account
+// that could reach nothing cannot sign in to anything useful, and deleting
+// the account is the honest way to say that.
+func (d *DB) SetUserSections(ctx context.Context, userID int64, sections []int64) error {
+	return d.setSections(ctx, "user_sections", "user_id", userID, sections)
+}
+
 // TokenSections lists the libraries a token is restricted to. An empty result
 // means the token is not restricted: see [DB.Credential].
 func (d *DB) TokenSections(ctx context.Context, tokenID int64) ([]int64, error) {
-	rows, err := d.sql.QueryContext(ctx,
-		`SELECT section_id FROM token_sections WHERE token_id = ? ORDER BY section_id`, tokenID)
+	return d.sectionsFor(ctx, `SELECT section_id FROM token_sections WHERE token_id = ? ORDER BY section_id`, tokenID)
+}
+
+// sectionsFor reads one grant list.
+func (d *DB) sectionsFor(ctx context.Context, query string, id int64) ([]int64, error) {
+	rows, err := d.sql.QueryContext(ctx, query, id)
 	if err != nil {
-		return nil, fmt.Errorf("list token sections: %w", err)
+		return nil, fmt.Errorf("list granted sections: %w", err)
 	}
 	defer rows.Close()
 
 	var out []int64
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan token section: %w", err)
+		var section int64
+		if err := rows.Scan(&section); err != nil {
+			return nil, fmt.Errorf("scan granted section: %w", err)
 		}
-		out = append(out, id)
+		out = append(out, section)
 	}
 	return out, rows.Err()
 }
@@ -107,26 +126,62 @@ func (d *DB) TokenSections(ctx context.Context, tokenID int64) ([]int64, error) 
 // a token that can reach no library is a revoked token with extra steps, and
 // the button for that already exists.
 func (d *DB) SetTokenSections(ctx context.Context, tokenID int64, sections []int64) error {
+	return d.setSections(ctx, "token_sections", "token_id", tokenID, sections)
+}
+
+// setSections replaces one grant list in a single transaction, so a half
+// written set is never what a request reads.
+func (d *DB) setSections(ctx context.Context, table, column string, id int64, sections []int64) error {
 	tx, err := d.sql.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("set token sections: %w", err)
+		return fmt.Errorf("set %s: %w", table, err)
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM token_sections WHERE token_id = ?`, tokenID); err != nil {
-		return fmt.Errorf("clear token sections: %w", err)
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM `+table+` WHERE `+column+` = ?`, id); err != nil {
+		return fmt.Errorf("clear %s: %w", table, err)
 	}
-	for _, id := range sections {
+	for _, section := range sections {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO token_sections (token_id, section_id) VALUES (?, ?)`,
-			tokenID, id); err != nil {
-			return fmt.Errorf("add token section: %w", err)
+			`INSERT OR IGNORE INTO `+table+` (`+column+`, section_id) VALUES (?, ?)`,
+			id, section); err != nil {
+			return fmt.Errorf("add to %s: %w", table, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("set token sections: %w", err)
+		return fmt.Errorf("set %s: %w", table, err)
 	}
 	return nil
+}
+
+// narrow combines an account's grants with a credential's own.
+//
+// Either empty means that side imposes nothing, so the other side stands
+// alone and two empties are no restriction at all. Where both name libraries
+// the answer is what they agree on, which can be nothing: an account allowed
+// the films and a television allowed the music are contradictory
+// instructions, and the device reaches neither rather than both.
+func narrow(user, own []int64) (sections []int64, restricted bool) {
+	switch {
+	case len(user) == 0 && len(own) == 0:
+		return nil, false
+	case len(user) == 0:
+		return own, true
+	case len(own) == 0:
+		return user, true
+	}
+	allowed := make(map[int64]bool, len(user))
+	for _, id := range user {
+		allowed[id] = true
+	}
+	both := make([]int64, 0, len(own))
+	for _, id := range own {
+		if allowed[id] {
+			both = append(both, id)
+		}
+	}
+	return both, true
 }
 
 // TokenExists reports whether a credential row is there, so the admin
@@ -159,15 +214,16 @@ func (d *DB) NoteTokenDevice(ctx context.Context, tokenID int64, device string) 
 		`UPDATE tokens SET device = ? WHERE id = ? AND device <> ?`, device, tokenID, device)
 }
 
-// scopedFor turns a credential's library set into the handle its requests
-// should run on: the unrestricted handle when nothing was granted, because no
-// grant means no restriction, and a scoped one otherwise.
+// scopedFor turns a credential into the handle its requests should run on:
+// the unrestricted handle when nobody narrowed it, and a scoped one otherwise.
 //
 // The one place that policy is written down. Every surface that authenticates
 // a credential calls this rather than deciding for itself, so there is no
-// second opinion about what an empty grant list means.
+// second opinion about what a restriction means — including the restriction
+// that allows nothing, which [narrow] can produce and which must not be read
+// as allowing everything.
 func (d *DB) scopedFor(cred *domain.Credential) *DB {
-	if cred == nil || len(cred.Sections) == 0 {
+	if cred == nil || !cred.Restricted {
 		return d
 	}
 	return d.Visible(cred.Sections)

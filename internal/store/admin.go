@@ -106,13 +106,21 @@ func (d *DB) SessionCredential(ctx context.Context, secret string) (*domain.Cred
 	}
 	u.CreatedAt = fromMillis(createdAt)
 
-	cred := &domain.Credential{User: u, TokenID: tokenID}
+	open := d.unscoped()
+	var granted []int64
 	if tokenID != 0 {
-		sections, err := d.unscoped().TokenSections(ctx, tokenID)
+		granted, err = open.TokenSections(ctx, tokenID)
 		if err != nil {
 			return nil, err
 		}
-		cred.Sections = sections
+	}
+	account, err := open.UserSections(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	sections, restricted := narrow(account, granted)
+	cred := &domain.Credential{
+		User: u, TokenID: tokenID, Restricted: restricted, Sections: sections,
 	}
 
 	_, _ = d.sql.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id = ?`,

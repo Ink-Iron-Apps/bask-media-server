@@ -16,8 +16,8 @@ and the Plex vocabulary never reaches storage or scanning.
 - Playback by direct play, with HTTP range requests so seeking works
 - Playback progress, resume offsets and watched state, per user
 - Local accounts and tokens; the first run prints an admin token once
-- Libraries per device: a token can be narrowed to some of the libraries, so
-  one library reaches the phone and not the television
+- Libraries per account and per device: an account is given some of the
+  libraries, and one of its devices can be narrowed further still
 - Posters, backdrops and summaries from TMDB, cached on disk under a byte cap
 - Skip Intro and Skip Credits: markers read from a file's chapters, and
   measured from the audio a season's episodes share where there are none
@@ -108,15 +108,30 @@ It is one page, one stylesheet and one script compiled into the binary, so a
 release is still a single file and there is no Node, no bundler and no
 framework at serve time. Run with `-admin=false` to leave it off entirely.
 
-## One library per device
+## Who sees which libraries
 
-A token is BMS's per-device credential — it is the thing you can revoke for one
-television without touching anybody else — so it is also where "this library,
-on that device" belongs. No second notion of a device is invented, and nothing
-depends on the device id a client sends, which the client writes itself and
-which changes when somebody reinstalls the app.
+Two settings, and a request has to pass both.
 
-Narrowing a token restricts every answer, not only the list of libraries:
+**An account** is given some of the libraries, which is the Plex-shaped
+question: this person gets the films and the music, that person does not get
+the documentaries. Set under Users.
+
+**A device** can be narrowed further, because a token is BMS's per-device
+credential — the thing you can revoke for one television without touching
+anybody else. Set under that account's Tokens. No second notion of a device is
+invented, and nothing depends on the device id a client sends, which the
+client writes itself and which changes when somebody reinstalls the app.
+
+The two are combined rather than ranked: a device reaches a library only if
+its account allows it *and* its own grants allow it. So a token cannot be used
+to widen an account, and two grants that overlap nowhere — the account allowed
+the films, the television allowed the music — mean that television reaches
+neither. Contradictory instructions resolve to less access, never more.
+
+Either setting left at every library is stored as no restriction at all, so a
+library added next month is visible rather than quietly missing.
+
+A restriction applies to every answer, not only the list of libraries:
 
 - The libraries the client is told about, on both APIs.
 - Anything addressed by id afterwards. A hidden film is a 404 for its
@@ -140,6 +155,9 @@ Two things worth knowing before using it:
   always suggested it, and this is what makes it pay.
 - **It is a setting, not a deletion.** Ticking the library back on makes
   everything reachable again, immediately, including a session already open.
+
+Administrators are not narrowed: an administrator administers the server
+rather than browsing it, so the setting is not offered for one.
 
 ## Watching in a browser
 

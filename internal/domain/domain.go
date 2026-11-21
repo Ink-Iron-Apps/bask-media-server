@@ -211,16 +211,24 @@ type Token struct {
 }
 
 // Credential is who a presented secret belongs to and what it may reach: the
-// account, the token row it was resolved through, and the libraries that token
-// is restricted to.
+// account, the token row it was resolved through, and the libraries left after
+// the account's grants and the token's are combined.
 //
-// Sections empty means no restriction rather than no access. A token with no
-// grants is the ordinary case — every token until somebody narrows one — and
-// the store turns this into a database handle so no surface has to decide what
-// an empty list means.
+// Restricted says whether Sections means anything at all, and it exists
+// because an empty list has to be able to mean "nothing". Two grants that do
+// not overlap — an account allowed the films, a television allowed the music —
+// are contradictory instructions, and the honest answer to them is that this
+// device reaches nothing rather than everything. Reading emptiness as "no
+// restriction" would turn exactly that case inside out.
 type Credential struct {
-	User     User
-	TokenID  int64
+	User    User
+	TokenID int64
+
+	// Restricted is false for the ordinary credential nobody has narrowed,
+	// which reaches every library whatever Sections holds.
+	Restricted bool
+
+	// Sections is what it may reach when Restricted. Meaningless otherwise.
 	Sections []int64
 }
 

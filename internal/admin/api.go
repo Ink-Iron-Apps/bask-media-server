@@ -314,6 +314,9 @@ type userView struct {
 	CreatedAt time.Time `json:"createdAt"`
 	Tokens    int       `json:"tokens"`
 	Self      bool      `json:"self"`
+	// Sections is the libraries this account may see, empty meaning all of
+	// them. A device can be narrowed further but never past this.
+	Sections []int64 `json:"sections"`
 }
 
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
@@ -331,9 +334,17 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 			s.fail(w, "count tokens", err)
 			return
 		}
+		sections, err := s.DB.UserSections(r.Context(), u.ID)
+		if err != nil {
+			s.fail(w, "list account libraries", err)
+			return
+		}
+		if sections == nil {
+			sections = []int64{}
+		}
 		out = append(out, userView{
 			ID: u.ID, Username: u.Username, Admin: u.Admin, CreatedAt: u.CreatedAt,
-			Tokens: len(tokens), Self: me != nil && me.ID == u.ID,
+			Tokens: len(tokens), Self: me != nil && me.ID == u.ID, Sections: sections,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -379,12 +390,13 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Admin *bool `json:"admin"`
+		Admin    *bool    `json:"admin"`
+		Sections *[]int64 `json:"sections"`
 	}
 	if !decode(w, r, &body) {
 		return
 	}
-	if body.Admin == nil {
+	if body.Admin == nil && body.Sections == nil {
 		writeError(w, http.StatusBadRequest, "nothing to change")
 		return
 	}
@@ -397,16 +409,65 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "read user", err)
 		return
 	}
-	if user.Admin && !*body.Admin {
-		if ok, err := s.lastAdmin(w, r); err != nil || ok {
+	if body.Admin != nil {
+		if user.Admin && !*body.Admin {
+			if ok, err := s.lastAdmin(w, r); err != nil || ok {
+				return
+			}
+		}
+		if err := s.DB.SetUserAdmin(r.Context(), id, *body.Admin); err != nil {
+			s.fail(w, "set admin", err)
 			return
 		}
 	}
-	if err := s.DB.SetUserAdmin(r.Context(), id, *body.Admin); err != nil {
-		s.fail(w, "set admin", err)
-		return
+	if body.Sections != nil {
+		wanted, ok := s.knownSections(w, r, *body.Sections)
+		if !ok {
+			return
+		}
+		if err := s.DB.SetUserSections(r.Context(), id, wanted); err != nil {
+			s.fail(w, "set account libraries", err)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// knownSections checks a list of library ids against the libraries that exist
+// and answers the client itself when one does not.
+//
+// Every library named comes back as none at all, because "all of them" and
+// "no restriction" should be the same stored thing: otherwise a library added
+// next month would be missing from an account somebody thought they had
+// opened up completely.
+func (s *Server) knownSections(w http.ResponseWriter, r *http.Request, asked []int64) ([]int64, bool) {
+	sections, err := s.DB.Sections(r.Context())
+	if err != nil {
+		s.fail(w, "list sections", err)
+		return nil, false
+	}
+	known := make(map[int64]bool, len(sections))
+	for _, section := range sections {
+		known[section.ID] = true
+	}
+
+	wanted := make([]int64, 0, len(asked))
+	seen := make(map[int64]bool, len(asked))
+	for _, want := range asked {
+		if !known[want] {
+			writeError(w, http.StatusBadRequest, "no such library")
+			return nil, false
+		}
+		if seen[want] {
+			continue
+		}
+		seen[want] = true
+		wanted = append(wanted, want)
+	}
+	if len(wanted) == len(sections) {
+		return nil, true
+	}
+	return wanted, true
 }
 
 func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
@@ -525,32 +586,9 @@ func (s *Server) updateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sections, err := s.DB.Sections(r.Context())
-	if err != nil {
-		s.fail(w, "list sections", err)
+	wanted, ok := s.knownSections(w, r, body.Sections)
+	if !ok {
 		return
-	}
-	known := make(map[int64]bool, len(sections))
-	for _, section := range sections {
-		known[section.ID] = true
-	}
-	wanted := make([]int64, 0, len(body.Sections))
-	seen := make(map[int64]bool, len(body.Sections))
-	for _, want := range body.Sections {
-		if !known[want] {
-			writeError(w, http.StatusBadRequest, "no such library")
-			return
-		}
-		if seen[want] {
-			continue
-		}
-		seen[want] = true
-		wanted = append(wanted, want)
-	}
-	// Every library named is the same thing as naming none: stored as none, so
-	// adding a library later does not leave a device behind.
-	if len(wanted) == len(sections) {
-		wanted = nil
 	}
 
 	if err := s.DB.SetTokenSections(r.Context(), id, wanted); err != nil {

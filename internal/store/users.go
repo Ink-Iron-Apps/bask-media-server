@@ -99,14 +99,22 @@ func (d *DB) Credential(ctx context.Context, token string) (*domain.Credential, 
 	// The grants are read on the unrestricted handle on purpose: a narrowed
 	// handle resolving a credential would filter the very rows that decide
 	// how it should be narrowed.
-	sections, err := d.unscoped().TokenSections(ctx, tokenID)
+	open := d.unscoped()
+	granted, err := open.TokenSections(ctx, tokenID)
 	if err != nil {
 		return nil, err
 	}
+	account, err := open.UserSections(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	sections, restricted := narrow(account, granted)
 
 	_, _ = d.sql.ExecContext(ctx, `UPDATE tokens SET last_seen_at = ? WHERE id = ?`,
 		millis(time.Now().UTC()), tokenID)
-	return &domain.Credential{User: u, TokenID: tokenID, Sections: sections}, nil
+	return &domain.Credential{
+		User: u, TokenID: tokenID, Restricted: restricted, Sections: sections,
+	}, nil
 }
 
 // UserForToken resolves a presented token to its account, for the callers that
