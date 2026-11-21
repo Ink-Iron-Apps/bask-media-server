@@ -60,6 +60,11 @@ type item struct {
 	ImageTags         map[string]string `json:"ImageTags,omitempty"`
 	BackdropImageTags []string          `json:"BackdropImageTags,omitempty"`
 
+	// PlaylistItemID identifies one line of a playlist rather than the thing
+	// on it, because the same track twice is two lines and a client removing
+	// or moving one has to be able to say which.
+	PlaylistItemID string `json:"PlaylistItemId,omitempty"`
+
 	ChildCount         int `json:"ChildCount,omitempty"`
 	RecursiveItemCount int `json:"RecursiveItemCount,omitempty"`
 
@@ -185,6 +190,10 @@ func (s *Server) view(section domain.Section) item {
 type related struct {
 	parents map[int64]domain.Item
 	counts  map[int64]int
+	// favourites is which of this page's items the asking account marked.
+	// One query for the page rather than one per row, the same way the
+	// parents and the child counts are read.
+	favourites map[int64]bool
 }
 
 func (r related) of(id *int64) (domain.Item, bool) {
@@ -197,8 +206,20 @@ func (r related) of(id *int64) (domain.Item, bool) {
 
 // relatives reads the containers above a page of items, and how many things
 // are inside the folders on it.
-func (s *Server) relatives(ctx context.Context, items []domain.Item) related {
+func (s *Server) relatives(ctx context.Context, items []domain.Item, user *domain.User) related {
 	out := related{}
+
+	if user != nil && len(items) > 0 {
+		marked := make([]int64, 0, len(items))
+		for _, it := range items {
+			marked = append(marked, it.ID)
+		}
+		if set, err := s.db(ctx).FavouriteSet(ctx, user.ID, marked); err == nil {
+			out.favourites = set
+		} else {
+			s.logger().Warn("could not read favourites", "error", err)
+		}
+	}
 
 	var wanted []int64
 	for _, it := range items {
@@ -347,11 +368,16 @@ func (s *Server) render(it domain.Item, rel related, progress domain.Progress) i
 		out.MediaSources = []mediaSource{s.mediaSource(it, part)}
 	}
 
-	if it.Playable() {
+	// User data on anything that can carry an opinion, not only on the things
+	// that play: a show or an album can be a favourite, and a client that is
+	// sent no user data for one draws an empty star it cannot fill.
+	favourite := rel.favourites[it.ID]
+	if it.Playable() || favourite {
 		out.UserData = &userData{
 			PlaybackPositionTicks: ticks(progress.Offset),
 			PlayCount:             progress.ViewCount,
 			Played:                progress.Watched,
+			IsFavorite:            favourite,
 			Key:                   itemID(it.ID),
 		}
 		if it.Duration > 0 && progress.Offset > 0 {

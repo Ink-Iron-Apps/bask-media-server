@@ -153,15 +153,44 @@ func (s *Server) clearUserData(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, &userData{Key: itemID(id)})
 }
 
-// favourite is accepted and not kept: BMS has no favourites, and answering
-// with the item's user data keeps a client's star from spinning for ever.
-func (s *Server) favourite(w http.ResponseWriter, r *http.Request) {
+// addFavourite and dropFavourite are the star, pressed and unpressed.
+//
+// Jellyfin spells both at the same path and distinguishes them by method,
+// and answers with the item's user data so the client can draw the star from
+// what came back rather than from what it assumed.
+func (s *Server) addFavourite(w http.ResponseWriter, r *http.Request)  { s.setFavourite(w, r, true) }
+func (s *Server) dropFavourite(w http.ResponseWriter, r *http.Request) { s.setFavourite(w, r, false) }
+
+func (s *Server) setFavourite(w http.ResponseWriter, r *http.Request, favourite bool) {
+	user := userFrom(r.Context())
 	id, _, err := parseID(r.PathValue("item"))
 	if err != nil {
 		http.Error(w, "bad item", http.StatusBadRequest)
 		return
 	}
-	writeJSON(w, http.StatusOK, &userData{Key: itemID(id)})
+	if user == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Through the scoped handle, so marking something in a library this
+	// device cannot see writes nothing. It is not an error: a client that can
+	// name an item it was never shown is guessing, and the answer to a guess
+	// is the same answer it would get for anything else.
+	if err := s.db(r.Context()).SetFavourite(r.Context(), user.ID, id, favourite); err != nil {
+		s.fail(w, "set favourite", err)
+		return
+	}
+
+	data := &userData{Key: itemID(id), IsFavorite: favourite}
+	if progress, err := s.db(r.Context()).Progress(r.Context(), user.ID, []int64{id}); err == nil {
+		if at, found := progress[id]; found {
+			data.PlaybackPositionTicks = ticks(at.Offset)
+			data.PlayCount = at.ViewCount
+			data.Played = at.Watched
+		}
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 // markPlayed and markUnplayed are the viewer saying so by hand.

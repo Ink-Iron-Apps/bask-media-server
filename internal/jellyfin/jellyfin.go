@@ -105,6 +105,15 @@ func (s *Server) routes() []route {
 		{"GET /Shows/{series}/Seasons", s.seasons, false},
 		{"GET /Shows/{series}/Episodes", s.episodes, false},
 		{"GET /Shows/NextUp", s.nextUp, false},
+		// Playlists. A playlist is one account's, so none of these take a
+		// user in the path: the credential already said whose it is.
+		{"GET /Playlists", s.playlists, false},
+		{"POST /Playlists", s.createPlaylist, false},
+		{"GET /Playlists/{playlist}/Items", s.playlistItems, false},
+		{"POST /Playlists/{playlist}/Items", s.addToPlaylist, false},
+		{"DELETE /Playlists/{playlist}/Items", s.removeFromPlaylist, false},
+		{"POST /Playlists/{playlist}/Items/{entry}/Move/{index}", s.movePlaylistItem, false},
+
 		{"GET /Artists", s.artists, false},
 		{"GET /Artists/AlbumArtists", s.artists, false},
 
@@ -148,11 +157,16 @@ func (s *Server) routes() []route {
 		{"POST /UserPlayedItems/{item}", s.markPlayed, false},
 		{"DELETE /UserPlayedItems/{item}", s.markUnplayed, false},
 
+		// The star. Jellyfin clients use both spellings of the path and tell
+		// the two apart by method.
+		{"POST /UserFavoriteItems/{item}", s.addFavourite, false},
+		{"DELETE /UserFavoriteItems/{item}", s.dropFavourite, false},
+		{"POST /Users/{user}/FavoriteItems/{item}", s.addFavourite, false},
+		{"DELETE /Users/{user}/FavoriteItems/{item}", s.dropFavourite, false},
+
 		// Answered so a client's shelves resolve rather than error. BMS has
-		// no favourites, no trailers and no extras, and says so with an empty
-		// answer instead of a 404 — a missing route reads as a broken server.
-		{"POST /UserFavoriteItems/{item}", s.favourite, false},
-		{"DELETE /UserFavoriteItems/{item}", s.favourite, false},
+		// no trailers and no extras, and says so with an empty answer instead
+		// of a 404 — a missing route reads as a broken server.
 		{"GET /Items/{item}/LocalTrailers", s.emptyList, false},
 		{"GET /Items/{item}/SpecialFeatures", s.emptyList, false},
 		{"GET /Items/{item}/Similar", s.emptyItems, false},
@@ -221,6 +235,7 @@ func normalisePath(next http.Handler) http.Handler {
 	for _, segment := range []string{
 		"System", "Info", "Public", "Users", "AuthenticateByName", "Views", "Items",
 		"Latest", "Resume", "Images", "PlaybackInfo", "Shows", "Seasons", "Episodes",
+		"Playlists", "Move",
 		"NextUp", "Artists", "AlbumArtists", "Videos", "Audio", "Subtitles",
 		"Sessions", "Capabilities", "Full", "Playing", "Progress", "Stopped", "Me",
 		"QuickConnect", "Enabled", "UserData", "PlayedItems", "UserItems",
@@ -421,35 +436,54 @@ func (s *Server) version() string {
 // and two servers never collide with each other's library.
 func itemID(id int64) string { return fmt.Sprintf("%032x", id) }
 
-// sectionID is the same for a library, in a space of its own.
+// space says which table an id came from.
 //
-// Libraries and the things in them are separate tables with separate id
-// sequences, and Jellyfin addresses both as plain ids: without a marker,
-// library 1 and film 1 are the same string, and whichever the server looked
-// up first would shadow the other. The leading `f` is that marker — still a
-// hex digit, still a GUID to a client that parses one.
-func sectionID(id int64) string { return fmt.Sprintf("f%031x", id) }
+// Libraries, items, playlists and collections are four tables with four id
+// sequences, and Jellyfin addresses all of them as plain ids: without a
+// marker, library 1 and film 1 are the same string and whichever the server
+// looked up first would shadow the other. The marker is a leading hex digit,
+// so what comes out is still a GUID to a client that parses one.
+//
+// The letters are picked from the end of the alphabet so they cannot collide
+// with the leading zeros an item id has.
+type space int
 
-// parseID reads an id back, saying which kind it was. Accepts the GUID
-// spelling with dashes, which is how some clients normalise what they were
-// given.
-func parseID(value string) (id int64, library bool, err error) {
+const (
+	spaceItem space = iota
+	spaceLibrary
+	spacePlaylist
+	spaceCollection
+)
+
+func sectionID(id int64) string    { return fmt.Sprintf("f%031x", id) }
+func playlistID(id int64) string   { return fmt.Sprintf("e%031x", id) }
+func collectionID(id int64) string { return fmt.Sprintf("d%031x", id) }
+
+// parseID reads an id back, saying which table it belongs to. Accepts the
+// GUID spelling with dashes, which is how some clients normalise what they
+// were given.
+func parseID(value string) (id int64, from space, err error) {
 	cleaned := strings.ReplaceAll(strings.TrimSpace(value), "-", "")
 	if cleaned == "" {
-		return 0, false, errors.New("no id")
+		return 0, spaceItem, errors.New("no id")
 	}
-	if strings.HasPrefix(strings.ToLower(cleaned), "f") {
-		library, cleaned = true, cleaned[1:]
+	switch strings.ToLower(cleaned[:1]) {
+	case "f":
+		from, cleaned = spaceLibrary, cleaned[1:]
+	case "e":
+		from, cleaned = spacePlaylist, cleaned[1:]
+	case "d":
+		from, cleaned = spaceCollection, cleaned[1:]
 	}
 	trimmed := strings.TrimLeft(cleaned, "0")
 	if trimmed == "" {
-		return 0, library, fmt.Errorf("not an id: %q", value)
+		return 0, from, fmt.Errorf("not an id: %q", value)
 	}
 	id, err = strconv.ParseInt(trimmed, 16, 64)
 	if err != nil || id <= 0 {
-		return 0, library, fmt.Errorf("not an id: %q", value)
+		return 0, from, fmt.Errorf("not an id: %q", value)
 	}
-	return id, library, nil
+	return id, from, nil
 }
 
 /* ---------- replies ---------- */

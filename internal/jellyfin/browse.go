@@ -43,13 +43,29 @@ func (s *Server) items(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := store.Page{Start: intQuery(r, "StartIndex"), Size: intQuery(r, "Limit")}
-	wanted, understood := wantedKinds(query.Get("IncludeItemTypes"))
+	wanted, aside, understood := wantedKinds(query.Get("IncludeItemTypes"))
 	if !understood {
 		nothing(w, page)
 		return
 	}
 
+	// Favourites are a filter over the library rather than a place in it, so
+	// a client asking for them is answered before anything about parents or
+	// kinds is considered.
+	if wantsFavourites(query.Get("Filters")) {
+		s.favourites(w, r, page)
+		return
+	}
+
 	parent := strings.TrimSpace(query.Get("ParentId"))
+
+	// Playlists and collections are not rows in the items table, so a client
+	// asking only for those is answered from their own. Asked for alongside
+	// ordinary kinds, they come first in the list and the rest follows.
+	if parent == "" && aside.any() && len(wanted) == 0 {
+		s.asideItems(w, r, aside, page)
+		return
+	}
 	if parent == "" {
 		// No parent: everything of the asked-for kinds across the library,
 		// which is what a client does for "all movies" and for a sweep it
@@ -58,14 +74,25 @@ func (s *Server) items(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, library, err := parseID(parent)
+	id, from, err := parseID(parent)
 	if err != nil {
 		http.Error(w, "bad ParentId", http.StatusBadRequest)
 		return
 	}
 
+	// A collection is browsed into like a folder, and a playlist answers at
+	// its own route but clients also reach for it this way.
+	switch from {
+	case spaceCollection:
+		s.collectionChildren(w, r, id, page)
+		return
+	case spacePlaylist:
+		s.playlistItemsFor(w, r, id, page)
+		return
+	}
+
 	// The id says which it is: a library's top level, or a parent's children.
-	if library {
+	if from == spaceLibrary {
 		section, err := s.db(r.Context()).Section(r.Context(), id)
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, "no such library", http.StatusNotFound)
@@ -102,6 +129,72 @@ func (s *Server) items(w http.ResponseWriter, r *http.Request) {
 	}
 	children = keepKinds(children, wanted)
 	s.writeItems(w, r, children, total, page, user)
+}
+
+// wantsFavourites reads Jellyfin's Filters parameter, which is a comma
+// separated list a client builds for its "favourites" shelf.
+func wantsFavourites(value string) bool {
+	for _, name := range strings.Split(value, ",") {
+		if strings.EqualFold(strings.TrimSpace(name), "IsFavorite") {
+			return true
+		}
+	}
+	return false
+}
+
+// favourites is the shelf of what this account marked.
+func (s *Server) favourites(w http.ResponseWriter, r *http.Request, page store.Page) {
+	user := userFrom(r.Context())
+	if user == nil {
+		nothing(w, page)
+		return
+	}
+	marked, total, err := s.db(r.Context()).Favourites(r.Context(), user.ID, page)
+	if err != nil {
+		s.fail(w, "list favourites", err)
+		return
+	}
+	s.writeItems(w, r, marked, total, page, user)
+}
+
+// asideItems answers for the kinds that are not rows in the items table.
+func (s *Server) asideItems(w http.ResponseWriter, r *http.Request, aside asideKinds, page store.Page) {
+	user := userFrom(r.Context())
+	var out []item
+
+	if aside.playlists && user != nil {
+		lists, err := s.db(r.Context()).Playlists(r.Context(), user.ID)
+		if err != nil {
+			s.fail(w, "list playlists", err)
+			return
+		}
+		for _, list := range lists {
+			out = append(out, s.playlistItem(list))
+		}
+	}
+	if aside.collections {
+		grouped, err := s.collections(w, r)
+		if err != nil {
+			s.fail(w, "list collections", err)
+			return
+		}
+		out = append(out, grouped...)
+	}
+
+	total := len(out)
+	writeJSON(w, http.StatusOK, itemsReply{
+		Items: windowItems(out, page), TotalRecordCount: total, StartIndex: page.Start,
+	})
+}
+
+// windowItems cuts an already-assembled list to the asked-for page.
+func windowItems(all []item, page store.Page) []item {
+	offset, limit := page.Window(len(all) + 1)
+	if offset >= len(all) {
+		return []item{}
+	}
+	end := min(offset+limit, len(all))
+	return all[offset:end]
 }
 
 // everything answers a query with no parent: the asked-for kinds across every
@@ -172,7 +265,9 @@ func (s *Server) searchItems(w http.ResponseWriter, r *http.Request, term string
 		s.fail(w, "search", err)
 		return
 	}
-	wanted, understood := wantedKinds(r.URL.Query().Get("IncludeItemTypes"))
+	// A search looks through the library, so the kinds that are not in it are
+	// not searched: a playlist is a name somebody typed, not a thing to find.
+	wanted, _, understood := wantedKinds(r.URL.Query().Get("IncludeItemTypes"))
 	if !understood {
 		nothing(w, page)
 		return
@@ -184,15 +279,46 @@ func (s *Server) searchItems(w http.ResponseWriter, r *http.Request, term string
 // item is one thing, with everything a client needs to open or play it.
 func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r.Context())
-	id, library, err := parseID(r.PathValue("item"))
+	id, from, err := parseID(r.PathValue("item"))
 	if err != nil {
 		http.Error(w, "bad item", http.StatusBadRequest)
 		return
 	}
 
+	switch from {
+	case spaceCollection:
+		found, err := s.db(r.Context()).Collection(r.Context(), id)
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "no such collection", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			s.fail(w, "read collection", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.collectionItem(*found))
+		return
+	case spacePlaylist:
+		if user == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		found, err := s.db(r.Context()).Playlist(r.Context(), user.ID, id)
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "no such playlist", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			s.fail(w, "read playlist", err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.playlistItem(*found))
+		return
+	}
+
 	// A client opening a library asks for it here, the same way it asks for
 	// anything else.
-	if library {
+	if from == spaceLibrary {
 		section, err := s.db(r.Context()).Section(r.Context(), id)
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, "no such library", http.StatusNotFound)
@@ -216,7 +342,7 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rel := s.relatives(r.Context(), []domain.Item{*found})
+	rel := s.relatives(r.Context(), []domain.Item{*found}, user)
 	progress := s.progressFor(r, user, []domain.Item{*found})
 	rendered := s.render(*found, rel, progress[found.ID])
 	rendered.MediaStreams = s.streamsOf(r.Context(), *found)
@@ -324,7 +450,7 @@ func (s *Server) latest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// /Items/Latest answers with a bare array, not the usual envelope.
-	rel := s.relatives(r.Context(), recent)
+	rel := s.relatives(r.Context(), recent, user)
 	progress := s.progressFor(r, user, recent)
 	out := make([]item, 0, len(recent))
 	for _, it := range recent {
@@ -396,7 +522,7 @@ func (s *Server) displayPreferences(w http.ResponseWriter, r *http.Request) {
 /* ---------- shared ---------- */
 
 func (s *Server) writeItems(w http.ResponseWriter, r *http.Request, items []domain.Item, total int, page store.Page, user *domain.User) {
-	rel := s.relatives(r.Context(), items)
+	rel := s.relatives(r.Context(), items, user)
 	progress := s.progressFor(r, user, items)
 
 	out := make([]item, 0, len(items))
@@ -427,21 +553,26 @@ func (s *Server) progressFor(r *http.Request, user *domain.User, items []domain.
 
 // wantedKinds reads IncludeItemTypes.
 //
-// Three answers, and the third one matters: no filter at all, a filter this
-// server understands, and a filter naming only things it does not have —
-// Playlist, BoxSet, LiveTvChannel. The last is not "no filter": a client
-// asking for playlists on a server with none must be told there are none,
-// and the first version of this answered it with every film, artist and
-// photo album in the library, which is what a client's Playlists tab then
+// Four answers now. No filter at all; a filter this server understands; a
+// filter naming playlists or collections, which do not live in the items
+// table and are answered from their own; and a filter naming only things
+// this server does not have, such as LiveTvChannel. That last is not "no
+// filter": a client asking for something a server has none of must be told
+// there are none, and the first version of this answered it with every film,
+// artist and photo album in the library, which is what the client's tab then
 // showed.
-func wantedKinds(value string) (kinds map[domain.Kind]bool, understood bool) {
+func wantedKinds(value string) (kinds map[domain.Kind]bool, aside asideKinds, understood bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return nil, true
+		return nil, aside, true
 	}
 	out := map[domain.Kind]bool{}
 	for _, name := range strings.Split(value, ",") {
 		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "playlist":
+			aside.playlists = true
+		case "boxset":
+			aside.collections = true
 		case "movie":
 			out[domain.KindMovie] = true
 		case "series":
@@ -463,10 +594,18 @@ func wantedKinds(value string) (kinds map[domain.Kind]bool, understood bool) {
 		}
 	}
 	if len(out) == 0 {
-		return nil, false
+		return nil, aside, aside.any()
 	}
-	return out, true
+	return out, aside, true
 }
+
+// asideKinds are the asked-for types that are not rows in the items table.
+type asideKinds struct {
+	playlists   bool
+	collections bool
+}
+
+func (a asideKinds) any() bool { return a.playlists || a.collections }
 
 // nothing answers a query for something this server does not have.
 func nothing(w http.ResponseWriter, page store.Page) {
