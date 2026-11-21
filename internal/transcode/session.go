@@ -21,6 +21,12 @@ type Session struct {
 	req     Request
 	segment time.Duration
 
+	// accel is the hardware encoder this session uses, or nil for the
+	// processor. Copied from the manager when the session starts and then
+	// left alone: a session that began on the card finishes on it, so a
+	// stream does not change its character halfway through.
+	accel *Accel
+
 	mu       sync.Mutex
 	cmd      *exec.Cmd
 	waiting  chan struct{} // closed when the current process has been reaped
@@ -220,6 +226,11 @@ func (s *Session) args(index int) []string {
 	start := time.Duration(index) * s.segment
 
 	args := []string{"-nostdin", "-hide_banner", "-loglevel", "error", "-y"}
+	// Ahead of everything, because an accelerator that opens a device wants
+	// it open before the input is read.
+	if s.accel != nil && s.req.Plan.VideoCodec != "copy" {
+		args = append(args, s.accel.Before...)
+	}
 	if start > 0 {
 		// Before the input, so ffmpeg seeks rather than decodes its way
 		// there: the difference on a long film is seconds against minutes.
@@ -232,19 +243,7 @@ func (s *Session) args(index int) []string {
 	if plan.VideoCodec == "copy" {
 		args = append(args, "-c:v", "copy")
 	} else {
-		args = append(args,
-			"-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-			"-pix_fmt", "yuv420p", "-profile:v", "high",
-			"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%g)", seconds),
-			"-sc_threshold", "0")
-		if plan.VideoBitRate > 0 {
-			args = append(args,
-				"-maxrate", strconv.FormatInt(plan.VideoBitRate, 10),
-				"-bufsize", strconv.FormatInt(plan.VideoBitRate*2, 10))
-		}
-		if plan.Height > 0 {
-			args = append(args, "-vf", fmt.Sprintf("scale=-2:%d", plan.Height))
-		}
+		args = s.video(args, seconds, plan.Height, plan.VideoBitRate)
 	}
 	if plan.AudioCodec == "copy" {
 		args = append(args, "-c:a", "copy")

@@ -75,6 +75,7 @@ func main() {
 		webUI       = flag.Bool("web", true, "serve the viewing web interface at /web")
 		jellyfinAPI = flag.Bool("jellyfin", true, "answer the Jellyfin API, so clients can be pointed straight at this server")
 		transcodes  = flag.Int("transcode-sessions", 3, "how many files may be converted at once for clients that cannot play them; 0 turns conversion off")
+		accel       = flag.String("hwaccel", "auto", "hardware encoder to convert with: auto, off, or one of vaapi, nvenc, qsv, videotoolbox, amf. Anything other than off falls back to the processor if the hardware does not work")
 		artworkDir  = flag.String("artwork", "", "where to cache posters and backdrops (default: beside the database)")
 		artworkMB   = flag.Int64("artwork-cache-mb", 512, "cap on the artwork cache in MiB")
 		tmdbKey     = flag.String("tmdb-key", "", "TMDB API key or v4 read token; falls back to BMS_TMDB_API_KEY")
@@ -110,6 +111,7 @@ func main() {
 		webUI:      *webUI,
 		jellyfin:   *jellyfinAPI,
 		transcodes: *transcodes,
+		accel:      *accel,
 		ffmpegPath: *ffmpegPath,
 		detectJobs: *detectJobs,
 		artworkDir: *artworkDir,
@@ -134,6 +136,7 @@ type runConfig struct {
 	webUI      bool
 	jellyfin   bool
 	transcodes int
+	accel      string
 	ffmpegPath string
 	detectJobs int
 	artworkDir string
@@ -220,6 +223,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 			FFmpeg:      cfg.ffmpegPath,
 			Root:        filepath.Join(filepath.Dir(cfg.dbPath), "transcodes"),
 			MaxSessions: cfg.transcodes,
+			Accel:       cfg.accel,
 			Log:         log,
 		})
 		if err != nil {

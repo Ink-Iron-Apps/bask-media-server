@@ -17,6 +17,7 @@ package transcode
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -84,6 +85,16 @@ type Options struct {
 	// seconds, which is what most players are tuned for.
 	SegmentLength time.Duration
 
+	// Accel asks for hardware encoding. Empty or "auto" tries what this
+	// machine has, in order, and keeps the first that proves it works; "off"
+	// stays on the processor; a name — vaapi, nvenc, qsv, videotoolbox, amf
+	// — tries only that one and falls back to the processor if it does not
+	// work, rather than refusing to start.
+	//
+	// Hardware encoding is an optimisation, so no setting of this can stop a
+	// file being watchable.
+	Accel string
+
 	Log *slog.Logger
 }
 
@@ -92,6 +103,7 @@ type Manager struct {
 	ffmpeg  string
 	root    string
 	options Options
+	accel   *Accel // nil means the processor
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -143,9 +155,30 @@ func New(opts Options) (*Manager, error) {
 		sessions: map[string]*Session{}, byKey: map[string]*Session{},
 		stop: make(chan struct{}),
 	}
+
+	// Probed at startup rather than on the first stream, so the cost lands
+	// here instead of on whoever presses play first, and so the log says on
+	// one line what this server will be doing for the rest of its life.
+	m.accel = Detect(context.Background(), ffmpeg, opts.Accel)
+	if m.accel != nil {
+		m.logger().Info("encoding with hardware", "accelerator", m.accel.Name, "encoder", m.accel.Encoder)
+	} else if asked := strings.ToLower(strings.TrimSpace(opts.Accel)); asked != "" && asked != "off" && asked != "auto" {
+		m.logger().Warn("no hardware encoder; staying on the processor", "asked", opts.Accel)
+	}
+
 	m.wg.Add(1)
 	go m.reap()
 	return m, nil
+}
+
+// Accel names the hardware encoder in use, or "" for the processor. For the
+// status page, which is where an operator finds out whether the card they
+// installed is being used.
+func (m *Manager) Accel() string {
+	if m.accel == nil {
+		return ""
+	}
+	return m.accel.Name
 }
 
 // Root is where this manager keeps its working files.
@@ -200,6 +233,7 @@ func (m *Manager) Start(req Request) (*Session, error) {
 		dir:      dir,
 		req:      req,
 		segment:  m.segmentLength(),
+		accel:    m.accel,
 		lastSeen: time.Now(),
 	}
 	m.sessions[id] = session
