@@ -2,6 +2,7 @@ package plexapi_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -42,6 +43,28 @@ func narrow(t *testing.T, db *store.DB, title string) {
 	if err := db.SetTokenSections(ctx, tokens[0].ID, []int64{wanted}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// post is create, which Plex spells as the same path it lists with.
+func post(t *testing.T, srv *plexapi.Server, token, path string) map[string]any {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, nil)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Plex-Token", token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST %s: %d %s", path, rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("POST %s: %v (%s)", path, err, rec.Body.String())
+	}
+	mc, ok := body["MediaContainer"].(map[string]any)
+	if !ok {
+		t.Fatalf("POST %s: no MediaContainer in %s", path, rec.Body.String())
+	}
+	return mc
 }
 
 func status(t *testing.T, srv *plexapi.Server, token, path string) int {
@@ -123,4 +146,159 @@ func TestAPartInAHiddenLibraryWillNotStream(t *testing.T) {
 
 func partPath(id int64) string {
 	return "/library/parts/" + strconv.FormatInt(id, 10)
+}
+
+// Plex has no favourites, only a ten point rating, and its clients send a
+// ten when somebody presses the heart. This is where one becomes the other.
+func TestTheHeartBecomesAFavourite(t *testing.T) {
+	srv, token, db := library(t)
+	ctx := context.Background()
+
+	sections, err := db.Sections(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var movies int64
+	for _, section := range sections {
+		if section.Title == "Movies" {
+			movies = section.ID
+		}
+	}
+	films, _, err := db.SectionItems(ctx, movies, "movie", store.Page{Size: 5})
+	if err != nil || len(films) == 0 {
+		t.Fatalf("films = %v (%v)", films, err)
+	}
+	film := films[0].ID
+
+	users, err := db.Users(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rate := func(rating string) int {
+		return status(t, srv, token,
+			"/:/rate?key="+itoa(film)+"&rating="+rating+"&identifier=com.plexapp.plugins.library")
+	}
+
+	if code := rate("10"); code != http.StatusOK {
+		t.Fatalf("the heart = %d", code)
+	}
+	marked, _, err := db.Favourites(ctx, users[0].ID, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(marked) != 1 || marked[0].ID != film {
+		t.Fatalf("after the heart, favourites = %v", marked)
+	}
+
+	// And clearing it takes the favourite away.
+	if code := rate("0"); code != http.StatusOK {
+		t.Fatalf("clearing = %d", code)
+	}
+	marked, _, err = db.Favourites(ctx, users[0].ID, store.Page{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(marked) != 0 {
+		t.Fatalf("clearing left %v", marked)
+	}
+}
+
+func TestAPlexPlaylistIsMadeAndRead(t *testing.T) {
+	srv, token, db := library(t)
+	ctx := context.Background()
+
+	sections, err := db.Sections(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var movies int64
+	for _, section := range sections {
+		if section.Title == "Movies" {
+			movies = section.ID
+		}
+	}
+	films, _, err := db.SectionItems(ctx, movies, "movie", store.Page{Size: 5})
+	if err != nil || len(films) == 0 {
+		t.Fatal("no films in the fixture")
+	}
+
+	// Plex passes what goes in as a URI whose last segment is the list, and
+	// creates with a POST to the same path it lists with.
+	made := post(t, srv, token,
+		"/playlists?title=Tonight&type=video&uri=server://x/com.plexapp.plugins.library/library/metadata/"+itoa(films[0].ID))
+	rows, _ := made["Metadata"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("create returned %v", made)
+	}
+	row, _ := rows[0].(map[string]any)
+	id, _ := row["ratingKey"].(string)
+	if id == "" {
+		t.Fatalf("no ratingKey on %v", row)
+	}
+
+	listed := get(t, srv, token, "/playlists")
+	if n, _ := listed["size"].(float64); int(n) != 1 {
+		t.Fatalf("playlists = %v", listed)
+	}
+
+	inside := get(t, srv, token, "/playlists/"+id+"/items")
+	items, _ := inside["Metadata"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("playlist items = %v", inside)
+	}
+	entry, _ := items[0].(map[string]any)
+	if entry["playlistItemID"] == nil || entry["playlistItemID"] == "" {
+		t.Fatalf("no playlistItemID on %v", entry)
+	}
+}
+
+// A collection appears under the library its items are in, and a library
+// holding none of them is not offered it.
+func TestAPlexCollectionAppearsUnderItsLibrary(t *testing.T) {
+	srv, token, db := library(t)
+	ctx := context.Background()
+
+	sections, err := db.Sections(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var movies, shows int64
+	for _, section := range sections {
+		switch section.Title {
+		case "Movies":
+			movies = section.ID
+		case "TV Shows":
+			shows = section.ID
+		}
+	}
+	films, _, err := db.SectionItems(ctx, movies, "movie", store.Page{Size: 5})
+	if err != nil || len(films) == 0 {
+		t.Fatal("no films in the fixture")
+	}
+
+	made, err := db.CreateCollection(ctx, "Science fiction", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetCollectionItems(ctx, made.ID, []int64{films[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	under := get(t, srv, token, "/library/sections/"+itoa(movies)+"/collections")
+	if n, _ := under["size"].(float64); int(n) != 1 {
+		t.Fatalf("under the films library: %v", under)
+	}
+
+	// The shows library holds none of it, so it is not offered there.
+	elsewhere := get(t, srv, token, "/library/sections/"+itoa(shows)+"/collections")
+	if n, _ := elsewhere["size"].(float64); int(n) != 0 {
+		t.Fatalf("offered under a library holding none of it: %v", elsewhere)
+	}
+
+	inside := get(t, srv, token, "/library/collections/"+itoa(made.ID)+"/children")
+	items, _ := inside["Metadata"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("inside the collection: %v", inside)
+	}
 }

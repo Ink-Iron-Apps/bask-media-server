@@ -198,6 +198,9 @@ async function render() {
     if (hash.startsWith('#/library/')) return await libraryView(Number(hash.slice(10)));
     if (hash.startsWith('#/item/')) return await itemView(Number(hash.slice(7)));
     if (hash.startsWith('#/search/')) return await searchView(decodeURIComponent(hash.slice(9)));
+    if (hash.startsWith('#/playlist/')) return await playlistView(Number(hash.slice(11)));
+    if (hash.startsWith('#/collection/')) return await collectionView(Number(hash.slice(13)));
+    if (hash === '#/favourites') return await favouritesView();
     return await homeView();
   } catch (err) {
     fill(main(), el('p', { class: 'error', text: err.message }));
@@ -221,14 +224,157 @@ async function homeView() {
   markLibrary(location.hash || '#/');
 
   const resume = home.continue || [];
+
+  // Asked for together rather than one after another: three small queries
+  // that do not depend on each other should not be three round trips.
+  const [starred, lists, groups] = await Promise.all([
+    api('GET', '/favourites?size=12').catch(() => ({ items: [] })),
+    api('GET', '/playlists').catch(() => ({ playlists: [] })),
+    api('GET', '/collections').catch(() => ({ collections: [] })),
+  ]);
+  const favourites = starred.items || [];
+  const playlists = lists.playlists || [];
+  const collections = groups.collections || [];
+
   fill(main(),
     resume.length ? el('h2', { text: 'Where you left off' }) : null,
     resume.length ? grid(resume) : null,
+
+    favourites.length ? el('h2', {},
+      'Favourites',
+      el('a', { class: 'more', href: '#/favourites', text: 'All' })) : null,
+    favourites.length ? grid(favourites) : null,
+
+    playlists.length ? el('h2', { text: 'Playlists' }) : null,
+    playlists.length ? el('div', { class: 'row' }, playlists.map((list) =>
+      el('a', {
+        class: 'button',
+        href: '#/playlist/' + list.id,
+        text: list.title + ' · ' + list.entries + (list.entries === 1 ? ' item' : ' items'),
+      }))) : null,
+
+    collections.length ? el('h2', { text: 'Collections' }) : null,
+    collections.length ? el('div', { class: 'row' }, collections.map((c) =>
+      el('a', { class: 'button', href: '#/collection/' + c.id, text: c.title }))) : null,
+
     el('h2', { text: 'Libraries' }),
     (home.sections || []).length
       ? el('div', { class: 'row' }, (home.sections || []).map((section) =>
         el('a', { class: 'button', href: '#/library/' + section.id, text: section.title })))
       : el('p', { class: 'empty', text: 'No libraries yet. Whoever runs this server adds them in the admin interface.' }));
+}
+
+async function favouritesView() {
+  const page = await api('GET', '/favourites?size=200');
+  const items = page.items || [];
+  fill(main(),
+    el('h1', { text: 'Favourites' }),
+    items.length ? grid(items)
+      : el('p', { class: 'empty', text: 'Nothing starred yet. The star is on a film or an episode page.' }));
+}
+
+async function collectionView(id) {
+  const page = await api('GET', '/collections/' + id + '?size=200');
+  const items = page.items || [];
+  fill(main(),
+    el('h1', { text: page.collection.title }),
+    page.collection.summary ? el('p', { class: 'summary', text: page.collection.summary }) : null,
+    items.length ? grid(items) : el('p', { class: 'empty', text: 'Nothing in it.' }));
+}
+
+// playlistView is the one list that is ordered and editable, so it is a list
+// of rows rather than a grid: a row has somewhere to put a remove button and
+// a grid of posters does not.
+async function playlistView(id) {
+  const page = await api('GET', '/playlists/' + id + '?size=500');
+  const lines = page.lines || [];
+
+  const rows = lines.map((line, index) => el('div', { class: 'episode-row' },
+    el('button', {
+      class: 'episode',
+      on: { click: () => { location.hash = '#/item/' + line.item.id; } },
+    }, el('span', { class: 'n', text: String(index + 1) }),
+      el('span', { class: 'title', text: line.item.title }),
+      line.item.subtitle ? el('span', { class: 'sub', text: line.item.subtitle }) : null),
+    el('button', {
+      class: 'ghost',
+      title: 'Remove from this playlist',
+      text: '✕',
+      on: {
+        click: async () => {
+          try {
+            await api('DELETE', '/playlists/' + id + '/items/' + line.entry);
+            render();
+          } catch (err) { failed(err); }
+        },
+      },
+    })));
+
+  fill(main(),
+    el('h1', { text: page.playlist.title }),
+    el('p', { class: 'meta', text: page.playlist.entries + (page.playlist.entries === 1 ? ' item' : ' items') }),
+    lines.length ? el('div', { class: 'episodes' }, rows)
+      : el('p', { class: 'empty', text: 'Nothing in it yet.' }),
+    el('div', { class: 'row actions' }, el('button', {
+      class: 'ghost',
+      text: 'Delete this playlist',
+      on: {
+        click: async () => {
+          if (!confirm('Delete "' + page.playlist.title + '"?\n\nThe list goes. Nothing in your library is touched.')) return;
+          try {
+            await api('DELETE', '/playlists/' + id);
+            location.hash = '#/';
+          } catch (err) { failed(err); }
+        },
+      },
+    })));
+}
+
+// starButton is the one control that appears on every playable page.
+function starButton(item) {
+  let on = !!item.favourite;
+  const button = el('button', {
+    class: 'ghost',
+    title: 'Favourite',
+    text: on ? '★' : '☆',
+  });
+  button.addEventListener('click', async () => {
+    try {
+      const reply = await api(on ? 'DELETE' : 'POST', '/favourites/' + item.id);
+      on = !!reply.favourite;
+      button.textContent = on ? '★' : '☆';
+    } catch (err) { failed(err); }
+  });
+  return button;
+}
+
+// addToPlaylistButton asks which list, offering to make one.
+function addToPlaylistButton(item) {
+  return el('button', {
+    class: 'ghost',
+    text: 'Add to playlist',
+    on: {
+      click: async () => {
+        try {
+          const lists = (await api('GET', '/playlists')).playlists || [];
+          const names = lists.map((list, i) => (i + 1) + '. ' + list.title).join('\n');
+          const answer = prompt(
+            (lists.length ? 'Which playlist?\n' + names + '\n\n' : '') +
+            'Type a number, or a name for a new one.');
+          if (answer === null || answer.trim() === '') return;
+
+          const picked = lists[Number(answer.trim()) - 1];
+          if (picked) {
+            await api('POST', '/playlists/' + picked.id + '/items', { items: [item.id] });
+            toast('Added to ' + picked.title + '.');
+            return;
+          }
+          const made = await api('POST', '/playlists', { title: answer.trim(), items: [item.id] });
+          toast('Added to ' + made.title + '.');
+        } catch (err) { failed(err); }
+      },
+    },
+  });
 }
 
 // holds is what one of these libraries is full of, said properly.
@@ -313,6 +459,8 @@ async function itemView(id) {
   if (detail.parent) {
     actions.append(el('a', { class: 'button', href: '#/item/' + detail.parent.id, text: '‹ ' + detail.parent.title }));
   }
+  actions.append(starButton(item));
+  if (parts.length) actions.append(addToPlaylistButton(item));
 
   hero.append(el('div', { class: 'over' },
     el('h1', { text: item.title }),

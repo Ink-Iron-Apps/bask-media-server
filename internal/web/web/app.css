@@ -356,3 +356,25 @@ h2.disc { font-size: .85rem; text-transform: uppercase; letter-spacing: .06em; c
   .audio .playbar, .audio #audio-time, .audio #audio-mode { display: none; }
   .audio .now { max-width: none; flex: 1; }
 }
+
+/* A playlist row is an episode row with somewhere to put the remove button,
+   so the two share everything but the trailing control. */
+.episode-row { display: flex; align-items: stretch; gap: .5rem; }
+.episode-row .episode { flex: 1; min-width: 0; }
+.episode .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.episode .sub { color: var(--muted); font-size: .85rem; }
+
+/* button.ghost already exists above and is the quiet control these pages
+   use for the star, add-to-playlist and delete: present, but not competing
+   with Play, which is the only thing most people came for.
+   Nothing is added for it here on purpose. */
+
+/* "All" beside a heading, for a row that is a sample of a longer list. */
+h2 .more {
+  float: right;
+  font-size: .8rem;
+  font-weight: 400;
+  color: var(--muted);
+  text-decoration: none;
+}
+h2 .more:hover { color: var(--accent); }

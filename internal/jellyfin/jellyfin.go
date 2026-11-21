@@ -194,13 +194,27 @@ func (s *Server) Handler() http.Handler {
 	return normalisePath(mux)
 }
 
+// sharedWithPlex are the first segments the Plex surface also answers on.
+//
+// The two APIs are told apart by case — Plex's paths are lower case and
+// these are PascalCase — and that works until a word appears in both. The
+// lower-case courtesy spelling of such a word is the other API's real path,
+// and registering it here takes the route away: `/playlists` is Plex's, and
+// mirroring `/Playlists` onto it answered a Plex client with a 401 from this
+// surface. A Jellyfin client that mis-cases one of these gets a 404, which
+// is the smaller harm by a long way.
+var sharedWithPlex = map[string]bool{
+	"playlists": true,
+}
+
 // Prefixes are the paths this presenter answers, for a server that mounts it
 // beside another API at the same root.
 //
 // Derived from [Server.routes], so a route added without a prefix cannot
-// 404 behind a mux that never sends it here. The two vocabularies do not
-// overlap: Plex's are lower-case and start at `/library`, `/identity` and
-// `/:`, and every path here is PascalCase.
+// 404 behind a mux that never sends it here. Includes the lower-case
+// spellings, because clients are not consistent about the case of the fixed
+// segments and the mux matches a path exactly — except where that spelling
+// belongs to the other API, which is [sharedWithPlex].
 func Prefixes() []string {
 	seen := map[string]bool{}
 	var out []string
@@ -218,6 +232,12 @@ func Prefixes() []string {
 		// Both spellings: the bare path for the routes that are one segment
 		// (`/Items`, `/Artists`), and the subtree for everything under it.
 		out = append(out, "/"+first, "/"+first+"/")
+
+		lower := strings.ToLower(first)
+		if lower == first || sharedWithPlex[lower] {
+			continue
+		}
+		out = append(out, "/"+lower, "/"+lower+"/")
 	}
 	return out
 }
@@ -230,12 +250,19 @@ func Prefixes() []string {
 // id is a path value and is left exactly as it arrived, and `stream` is a
 // file name rather than a segment name — renaming it to `Stream` turned a
 // request for a file into a 404 from a server that had it.
+//
+// A segment the Plex surface also uses is left out of this list, however
+// often a Jellyfin client mis-cases it. The two APIs are told apart by case —
+// Plex's paths are lower case and these are PascalCase — so case-folding a
+// shared word here takes the other surface's route away: `/playlists` is
+// Plex's, and folding it to `/Playlists` answered a Plex client with a
+// Jellyfin 401. Being lenient about one spelling is not worth breaking the
+// other API.
 func normalisePath(next http.Handler) http.Handler {
 	known := map[string]string{}
 	for _, segment := range []string{
 		"System", "Info", "Public", "Users", "AuthenticateByName", "Views", "Items",
 		"Latest", "Resume", "Images", "PlaybackInfo", "Shows", "Seasons", "Episodes",
-		"Playlists", "Move",
 		"NextUp", "Artists", "AlbumArtists", "Videos", "Audio", "Subtitles",
 		"Sessions", "Capabilities", "Full", "Playing", "Progress", "Stopped", "Me",
 		"QuickConnect", "Enabled", "UserData", "PlayedItems", "UserItems",

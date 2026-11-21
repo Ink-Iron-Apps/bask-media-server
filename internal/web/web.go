@@ -102,6 +102,21 @@ func (s *Server) Handler() http.Handler {
 	watcher("POST /web/api/play", s.play)
 	watcher("POST /web/api/play/{session}/stop", s.stopPlayback)
 
+	watcher("GET /web/api/favourites", s.favourites)
+	watcher("POST /web/api/favourites/{id}", s.setFavourite)
+	watcher("DELETE /web/api/favourites/{id}", s.setFavourite)
+
+	watcher("GET /web/api/playlists", s.playlists)
+	watcher("POST /web/api/playlists", s.createPlaylist)
+	watcher("GET /web/api/playlists/{id}", s.playlist)
+	watcher("POST /web/api/playlists/{id}/items", s.addToPlaylist)
+	watcher("DELETE /web/api/playlists/{id}/items/{entry}", s.removeFromPlaylist)
+	watcher("POST /web/api/playlists/{id}/items/{entry}/move", s.movePlaylistEntry)
+	watcher("DELETE /web/api/playlists/{id}", s.deletePlaylist)
+
+	watcher("GET /web/api/collections", s.collections)
+	watcher("GET /web/api/collections/{id}", s.collection)
+
 	// Images and media are ordinary GETs so a browser can put them in an
 	// <img> or a <video>, where no header can be set and the cookie is all
 	// there is.

@@ -18,6 +18,11 @@ and the Plex vocabulary never reaches storage or scanning.
 - Local accounts and tokens; the first run prints an admin token once
 - Libraries per account and per device: an account is given some of the
   libraries, and one of its devices can be narrowed further still
+- Favourites, playlists and collections, on both APIs and in the browser
+- Two cuts of a film as one film with two versions, named so a client can
+  offer the choice
+- Hardware encoding where the machine has it: VAAPI, NVENC, QSV,
+  VideoToolbox or AMF, proved on the machine before it is used
 - Posters, backdrops and summaries from TMDB, cached on disk under a byte cap
 - Skip Intro and Skip Credits: markers read from a file's chapters, and
   measured from the audio a season's episodes share where there are none

@@ -324,15 +324,13 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 				emby.Prober = prober
 			}
 			handler := emby.Handler()
+			// Every spelling the presenter claims, and only those. The
+			// lower-case courtesy spellings are in that list too, minus the
+			// ones the Plex surface owns — which is a decision for the
+			// package that knows its own vocabulary rather than for this
+			// loop. See jellyfin.Prefixes.
 			for _, prefix := range jellyfin.Prefixes() {
 				root.Handle(prefix, handler)
-				// Clients are not consistent about the case of the fixed
-				// segments, and the mux matches a path exactly: the lower-case
-				// spelling has to reach the same place, where the handler's own
-				// normaliser puts it right.
-				if lower := strings.ToLower(prefix); lower != prefix {
-					root.Handle(lower, handler)
-				}
 			}
 		}
 		if cfg.adminUI {

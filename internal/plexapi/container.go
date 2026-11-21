@@ -108,6 +108,21 @@ type entry struct {
 	LeafCount             int    `xml:"leafCount,attr,omitempty" json:"leafCount,omitempty"`
 	ChildCount            int    `xml:"childCount,attr,omitempty" json:"childCount,omitempty"`
 
+	// PlaylistKind is Plex's playlistType, which a client's playlist shelf
+	// filters on: a music client asking for audio playlists should not be
+	// offered a list of films.
+	PlaylistKind string `xml:"playlistType,attr,omitempty" json:"playlistType,omitempty"`
+
+	// Smart says a playlist is built from a rule rather than by hand. Always
+	// false here, and sent because a client that reads no value at all treats
+	// some playlists as unopenable.
+	Smart bool `xml:"smart,attr" json:"smart"`
+
+	// PlaylistItemID identifies one line of a playlist rather than the thing
+	// on it, because the same track twice is two lines and a client removing
+	// one has to be able to say which.
+	PlaylistItemID string `xml:"playlistItemID,attr,omitempty" json:"playlistItemID,omitempty"`
+
 	Media    []media    `xml:"Media,omitempty" json:"Media,omitempty"`
 	Location []location `xml:"Location,omitempty" json:"Location,omitempty"`
 	Marker   []marker   `xml:"Marker,omitempty" json:"Marker,omitempty"`

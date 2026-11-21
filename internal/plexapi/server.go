@@ -75,6 +75,23 @@ func (s *Server) Handler() http.Handler {
 	// image they want as a url parameter. Serving it ourselves is what keeps a
 	// poster wall from pulling full-size images to a phone.
 	authed("GET /photo/:/transcode", s.photoTranscode)
+	// Playlists, which Plex keeps at the root rather than under a library.
+	authed("GET /playlists", s.playlists)
+	authed("POST /playlists", s.playlists)
+	authed("GET /playlists/{playlist}/items", s.playlistItems)
+	authed("PUT /playlists/{playlist}/items", s.playlistItems)
+	authed("DELETE /playlists/{playlist}/items/{entry}", s.removePlaylistItem)
+	authed("DELETE /playlists/{playlist}", s.deletePlaylist)
+
+	// Collections, which it keeps under the library they appear in.
+	authed("GET /library/sections/{id}/collections", s.collections)
+	authed("GET /library/collections/{id}/children", s.collectionChildren)
+
+	// The heart. Plex has no favourites, only a ten point rating, and this
+	// is where one becomes the other.
+	authed("PUT /:/rate", s.rate)
+	authed("GET /:/rate", s.rate)
+
 	authed("GET /hubs/search", s.search)
 	authed("GET /search", s.search)
 	authed("GET /hubs", s.hubs)

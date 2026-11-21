@@ -50,6 +50,12 @@ type itemView struct {
 	// is per account, which is the point of having accounts.
 	OffsetMS int64 `json:"offsetMs,omitempty"`
 	Watched  bool  `json:"watched,omitempty"`
+
+	// Favourite is whether this viewer starred it, and theirs alone for the
+	// same reason. Always sent, never omitted: a page that receives nothing
+	// cannot tell "not a favourite" from "this server does not do stars",
+	// and would draw an empty star it has no way to fill.
+	Favourite bool `json:"favourite"`
 }
 
 // views renders items for one viewer, with their progress and — for episodes
@@ -64,6 +70,11 @@ func (s *Server) views(ctx context.Context, items []domain.Item, userID int64) (
 		ids = append(ids, it.ID)
 	}
 	progress, err := s.db(ctx).Progress(ctx, userID, ids)
+	if err != nil {
+		return nil, err
+	}
+	// One query for the page, like the progress above it.
+	favourites, err := s.db(ctx).FavouriteSet(ctx, userID, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -87,6 +98,7 @@ func (s *Server) views(ctx context.Context, items []domain.Item, userID int64) (
 			ID: it.ID, Kind: string(it.Kind), Title: it.Title, Year: it.Year,
 			Index: it.Index, Disc: it.Disc, Summary: it.Summary,
 			DurationMS: it.Duration.Milliseconds(),
+			Favourite:  favourites[it.ID],
 			// A photograph and an album of them have no poster in the cache:
 			// the picture itself is the thumbnail, made on request.
 			Poster: it.PosterKey != "" || it.Kind == domain.KindPhoto || it.Kind == domain.KindPhotoAlbum,

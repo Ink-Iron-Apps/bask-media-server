@@ -307,3 +307,23 @@ func TestAClaimedDeviceNameCannotWidenWhatATokenSees(t *testing.T) {
 		t.Fatalf("expected one library whatever the client calls itself, got %d", len(views))
 	}
 }
+
+// The two APIs are told apart by case: Plex's paths are lower case and these
+// are PascalCase. Case-folding a word both surfaces use takes the other
+// one's route away, which is how a Plex client asking for /playlists was
+// once answered with a Jellyfin 401.
+func TestALowerCasePlexPathIsNotFoldedIntoThisOne(t *testing.T) {
+	server, token, _ := library(t)
+	c := call{t: t, server: server, token: token}
+
+	// The Jellyfin spelling is answered.
+	if res, body := c.do(http.MethodGet, "/Playlists", nil); res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /Playlists = %d %s", res.StatusCode, body)
+	}
+	// The Plex spelling is not this surface's, so it is left alone for the
+	// mux to send somewhere else rather than claimed here.
+	res, _ := c.do(http.MethodGet, "/playlists", nil)
+	if res.StatusCode == http.StatusOK {
+		t.Fatal("this surface answered a path that belongs to the Plex one")
+	}
+}
