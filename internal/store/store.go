@@ -357,6 +357,66 @@ var migrations = []string{
 		section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
 		PRIMARY KEY (user_id, section_id)
 	)`,
+
+	// What somebody marked. Per account rather than per server, because
+	// whether a film is a favourite is an opinion and two people in a
+	// household are allowed different ones.
+	`CREATE TABLE favourites (
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		item_id    INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY (user_id, item_id)
+	)`,
+	`CREATE INDEX favourites_recent ON favourites(user_id, created_at DESC)`,
+
+	// A playlist belongs to one account and is ordered by hand.
+	//
+	// kind is what the client's Playlists tab filters on — a music client
+	// asking for audio playlists should not be shown a list of films. It is
+	// decided by what goes in rather than declared, and a list holding both
+	// is "mixed", which is a real answer rather than a failure to choose.
+	`CREATE TABLE playlists (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		title      TEXT NOT NULL,
+		kind       TEXT NOT NULL DEFAULT 'mixed',
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	)`,
+	`CREATE INDEX playlists_owner ON playlists(user_id, title)`,
+
+	// An entry rather than a membership: the same track twice in one playlist
+	// is two entries, which is what a playlist is for. position is a sparse
+	// ordering so a move rewrites one row rather than all of them.
+	`CREATE TABLE playlist_entries (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+		item_id     INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+		position    INTEGER NOT NULL
+	)`,
+	`CREATE INDEX playlist_entries_order ON playlist_entries(playlist_id, position, id)`,
+
+	// A collection is the library's, not a person's: everybody who can see
+	// the films in it sees the same grouping, which is what makes it a
+	// property of the library rather than an opinion about it.
+	`CREATE TABLE collections (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		title      TEXT NOT NULL,
+		sort_title TEXT NOT NULL,
+		summary    TEXT NOT NULL DEFAULT '',
+		poster_key TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	)`,
+	`CREATE UNIQUE INDEX collections_title ON collections(sort_title)`,
+
+	`CREATE TABLE collection_items (
+		collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+		item_id       INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+		position      INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (collection_id, item_id)
+	)`,
+	`CREATE INDEX collection_items_item ON collection_items(item_id)`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

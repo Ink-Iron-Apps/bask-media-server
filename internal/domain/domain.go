@@ -363,3 +363,58 @@ func (s Subtitle) Text() bool { return TextSubtitle(s.Codec) }
 
 // Duration is how long a marker runs for.
 func (m Marker) Duration() time.Duration { return m.End - m.Start }
+
+// PlaylistKind is what a playlist holds, which is what a client's Playlists
+// tab filters on: a music client asking for audio playlists should not be
+// offered a list of films.
+//
+// Derived from the contents rather than declared when the list is made, and
+// a list holding both is mixed — a real answer, not a failure to choose.
+type PlaylistKind string
+
+const (
+	PlaylistAudio PlaylistKind = "audio"
+	PlaylistVideo PlaylistKind = "video"
+	PlaylistMixed PlaylistKind = "mixed"
+)
+
+// Playlist is one account's arrangement of things in the library.
+//
+// Never shared: whether these twelve tracks belong together is an opinion,
+// and two people in a household are allowed different ones.
+type Playlist struct {
+	ID        int64
+	UserID    int64
+	Title     string
+	Kind      PlaylistKind
+	Entries   int
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// PlaylistEntry is one line of a playlist.
+//
+// It carries its own id because the same track twice is two entries, and
+// removing or moving "the track" would otherwise be ambiguous.
+type PlaylistEntry struct {
+	ID   int64
+	Item Item
+}
+
+// Collection is the library's own grouping — a trilogy, a director, a
+// Christmas shelf.
+//
+// The library's rather than a person's: "these four films are one story" is a
+// fact about the films, so everybody who can see them sees the same grouping.
+type Collection struct {
+	ID        int64
+	Title     string
+	SortTitle string
+	Summary   string
+	PosterKey string
+	// Held is how many of its items the asker may see, which is not
+	// necessarily how many are in it.
+	Held      int
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
