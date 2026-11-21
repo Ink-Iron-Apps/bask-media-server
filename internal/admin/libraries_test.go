@@ -3,10 +3,12 @@ package admin_test
 import (
 	"context"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"testing"
 
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/store"
 )
 
 // twoLibraries gives the fixture something to tick, and returns their ids in
@@ -258,5 +260,114 @@ func TestRoleAndLibrariesAreChangedIndependently(t *testing.T) {
 	}
 	if !user.Admin {
 		t.Fatal("the role did not change")
+	}
+}
+
+// Collections are made in the administration interface, because they are the
+// library's grouping rather than a viewer's.
+func TestACollectionIsMadeFilledAndRead(t *testing.T) {
+	h := newHarness(t)
+	h.signIn(h.adminToken)
+	ctx := context.Background()
+
+	films, err := h.db.CreateSection(ctx, "Films", domain.SectionMovies, []string{t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := h.db.NewWriter(4)
+	for _, title := range []string{"Blue", "White", "Red"} {
+		if err := writer.Add(ctx, store.Found{
+			SectionID: films.ID, Kind: domain.KindMovie, Title: title, Year: 1994,
+			Path: filepath.Join(t.TempDir(), title+".mkv"), Container: "mkv", Size: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	res, body := h.call(http.MethodPost, "/admin/api/collections",
+		map[string]any{"title": "Three Colours", "summary": "A trilogy"})
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create = %d: %v", res.StatusCode, body)
+	}
+	id := int64(body["id"].(float64))
+
+	// The search behind the picker finds the films and says which library
+	// each came from.
+	found := h.list("/admin/api/items?q=blue")
+	if len(found) != 1 || found[0]["library"] != "Films" {
+		t.Fatalf("search = %v", found)
+	}
+
+	all, _, err := h.db.SectionItems(ctx, films.ID, domain.KindMovie, store.Page{Size: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered := []int64{}
+	for _, item := range all {
+		ordered = append(ordered, item.ID)
+	}
+	path := "/admin/api/collections/" + strconv.FormatInt(id, 10)
+	if res, body := h.call(http.MethodPatch, path, map[string]any{"items": ordered}); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("set items = %d: %v", res.StatusCode, body)
+	}
+
+	_, read := h.call(http.MethodGet, path, nil)
+	if int(read["held"].(float64)) != 3 {
+		t.Fatalf("held = %v", read["held"])
+	}
+	items, _ := read["items"].([]any)
+	if len(items) != 3 {
+		t.Fatalf("the editor was given %d items", len(items))
+	}
+
+	listed := h.list("/admin/api/collections")
+	if len(listed) != 1 || listed[0]["title"] != "Three Colours" {
+		t.Fatalf("collections = %v", listed)
+	}
+}
+
+// Deleting the grouping must not delete the films, which is the one mistake
+// that would be unrecoverable.
+func TestDeletingACollectionKeepsTheFilms(t *testing.T) {
+	h := newHarness(t)
+	h.signIn(h.adminToken)
+	ctx := context.Background()
+
+	films, err := h.db.CreateSection(ctx, "Films", domain.SectionMovies, []string{t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := h.db.NewWriter(2)
+	if err := writer.Add(ctx, store.Found{
+		SectionID: films.ID, Kind: domain.KindMovie, Title: "Blue", Year: 1993,
+		Path: filepath.Join(t.TempDir(), "Blue.mkv"), Container: "mkv", Size: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	all, _, err := h.db.SectionItems(ctx, films.ID, domain.KindMovie, store.Page{Size: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	made, err := h.db.CreateCollection(ctx, "Going", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.db.SetCollectionItems(ctx, made.ID, []int64{all[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, _ := h.call(http.MethodDelete, "/admin/api/collections/"+strconv.FormatInt(made.ID, 10), nil)
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete = %d", res.StatusCode)
+	}
+	if _, err := h.db.Item(ctx, all[0].ID); err != nil {
+		t.Fatalf("the film went with the collection: %v", err)
 	}
 }

@@ -500,22 +500,31 @@ func (d *DB) CreateCollection(ctx context.Context, title, summary string) (*doma
 	}, nil
 }
 
-// Collections lists them, leaving out any whose every item is in a library
-// this handle cannot see.
+// Collections lists what a viewer should be offered: the groupings holding
+// something this handle can actually see.
 //
-// Left out rather than shown empty: a group with nothing in it still tells a
-// viewer that something exists, which is the thing a hidden library is meant
-// to stop.
+// An empty one is left out rather than shown empty, and that covers two
+// different emptinesses with one rule. A group whose every item is in a
+// hidden library would otherwise announce that something exists, which is
+// the thing a hidden library is meant to stop; and a group whose library was
+// deleted would linger as a shelf with nothing on it. Neither belongs in
+// front of somebody trying to watch something.
+//
+// The administration interface wants the opposite and asks for it by name —
+// see [DB.EveryCollection], which is what you need the moment after making
+// one and before filling it.
 func (d *DB) Collections(ctx context.Context) ([]domain.Collection, error) {
-	only, scope := d.only("i.section_id")
-	rows, err := d.sql.QueryContext(ctx,
-		`SELECT c.id, c.title, c.sort_title, c.summary, c.poster_key, c.created_at, c.updated_at,
-		        COUNT(ci.item_id) AS held
-		   FROM collections c
-		   JOIN collection_items ci ON ci.collection_id = c.id
-		   JOIN items i ON i.id = ci.item_id
-		  WHERE 1 = 1`+only+`
-		  GROUP BY c.id ORDER BY c.sort_title, c.id`, scope...)
+	return d.listCollections(ctx, true)
+}
+
+// EveryCollection lists them all, including the empty ones. For the interface
+// that makes and fills them, never for one that browses them.
+func (d *DB) EveryCollection(ctx context.Context) ([]domain.Collection, error) {
+	return d.listCollections(ctx, false)
+}
+
+func (d *DB) listCollections(ctx context.Context, occupied bool) ([]domain.Collection, error) {
+	rows, err := d.sql.QueryContext(ctx, collectionQuery(d, "", occupied), d.collectionArgs()...)
 	if err != nil {
 		return nil, fmt.Errorf("list collections: %w", err)
 	}
@@ -532,19 +541,22 @@ func (d *DB) Collections(ctx context.Context) ([]domain.Collection, error) {
 	return out, rows.Err()
 }
 
-// Collection reads one, or ErrNotFound when it holds nothing this handle may
-// see — which is the same answer as a collection that does not exist, for the
-// same reason.
+// Collection reads one a viewer may have, or ErrNotFound when this handle may
+// see nothing in it — the same answer as a collection that does not exist,
+// for the same reason.
 func (d *DB) Collection(ctx context.Context, id int64) (*domain.Collection, error) {
-	only, scope := d.only("i.section_id")
-	row := d.sql.QueryRowContext(ctx,
-		`SELECT c.id, c.title, c.sort_title, c.summary, c.poster_key, c.created_at, c.updated_at,
-		        COUNT(ci.item_id) AS held
-		   FROM collections c
-		   JOIN collection_items ci ON ci.collection_id = c.id
-		   JOIN items i ON i.id = ci.item_id
-		  WHERE c.id = ?`+only+` GROUP BY c.id`,
-		append([]any{id}, scope...)...)
+	return d.readCollection(ctx, id, true)
+}
+
+// AnyCollection reads one whether or not it holds anything, for the interface
+// that administers them.
+func (d *DB) AnyCollection(ctx context.Context, id int64) (*domain.Collection, error) {
+	return d.readCollection(ctx, id, false)
+}
+
+func (d *DB) readCollection(ctx context.Context, id int64, occupied bool) (*domain.Collection, error) {
+	args := append([]any{id}, d.collectionArgs()...)
+	row := d.sql.QueryRowContext(ctx, collectionQuery(d, "WHERE c.id = ?", occupied), args...)
 	c, err := scanCollection(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -553,6 +565,34 @@ func (d *DB) Collection(ctx context.Context, id int64) (*domain.Collection, erro
 		return nil, err
 	}
 	return &c, nil
+}
+
+// collectionQuery builds the one statement every reader here uses.
+//
+// A LEFT JOIN so an empty collection has a row at all, with the library
+// restriction in the ON clause rather than the WHERE — in a WHERE it would
+// turn the outer join back into an inner one and lose the empty rows again,
+// which is the mistake this comment exists to stop somebody repeating.
+// HAVING then drops the empty ones when the caller asked for occupied.
+func collectionQuery(d *DB, where string, occupied bool) string {
+	only, _ := d.only("i.section_id")
+	having := ""
+	if occupied {
+		having = " HAVING held > 0"
+	}
+	return `SELECT c.id, c.title, c.sort_title, c.summary, c.poster_key, c.created_at, c.updated_at,
+	               COUNT(i.id) AS held
+	          FROM collections c
+	          LEFT JOIN collection_items ci ON ci.collection_id = c.id
+	          LEFT JOIN items i ON i.id = ci.item_id` + only + `
+	         ` + where + `
+	         GROUP BY c.id` + having + `
+	         ORDER BY c.sort_title, c.id`
+}
+
+func (d *DB) collectionArgs() []any {
+	_, scope := d.only("i.section_id")
+	return scope
 }
 
 func scanCollection(row interface{ Scan(...any) error }) (domain.Collection, error) {

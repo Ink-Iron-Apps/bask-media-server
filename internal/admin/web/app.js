@@ -528,6 +528,163 @@ views.jobs = async function (main) {
   await draw();
 };
 
+/* ---------- collections ---------- */
+
+// A collection is the library's grouping, so it is made here rather than by a
+// viewer. Playlists and favourites are deliberately not in this interface:
+// they belong to an account, and an administrator reaching into somebody's
+// playlists is the wrong shape even on a server they own.
+views.collections = async function (main) {
+  const all = (await api('GET', '/collections')) || [];
+  const title = el('input', { id: 'new-collection', placeholder: 'The Three Colours Trilogy' });
+
+  const rows = all.map((c) => el('tr', {},
+    el('td', {}, el('strong', { text: c.title }),
+      c.summary ? el('div', { class: 'muted', text: c.summary }) : null),
+    el('td', { class: 'muted', text: count(c.held, 'item') }),
+    el('td', { class: 'right' }, el('div', { class: 'row actions' },
+      el('button', { text: 'Edit', on: { click: () => editCollection(c.id) } }),
+      el('button', {
+        class: 'danger',
+        text: 'Delete',
+        on: {
+          click: async () => {
+            if (!confirm('Delete "' + c.title + '"?\n\nThe grouping goes. The films stay exactly where they are.')) return;
+            try {
+              await api('DELETE', '/collections/' + c.id);
+              toast('Deleted.');
+              render();
+            } catch (err) { failed(err); }
+          },
+        },
+      })))));
+
+  fill(main,
+    el('div', { class: 'head' }, el('div', {}, el('h1', { text: 'Collections' }),
+      el('p', { class: 'muted', text: 'Groupings the whole household sees: a trilogy, a director, a Christmas shelf. A collection holding nothing a device may see is hidden from that device entirely.' }))),
+    el('div', { class: 'card' }, all.length
+      ? el('table', {}, el('tbody', {}, rows))
+      : el('p', { class: 'muted', text: 'No collections yet.' })),
+    el('div', { class: 'card' },
+      el('h2', { text: 'Add a collection' }),
+      el('label', { for: 'new-collection', text: 'Name' }), title,
+      el('div', { class: 'row' }, el('button', {
+        class: 'primary',
+        text: 'Create',
+        on: {
+          click: async () => {
+            try {
+              const made = await api('POST', '/collections', { title: title.value });
+              editCollection(made.id);
+            } catch (err) { failed(err); }
+          },
+        },
+      }))));
+};
+
+// editCollection is the picker: what is in it, in order, and a search to add
+// more. Nothing is saved until Save, because a half-built list is somebody
+// mid-thought rather than an instruction.
+async function editCollection(id) {
+  try {
+    const collection = await api('GET', '/collections/' + id);
+    const chosen = (collection.items || []).slice();
+    const name = el('input', { value: collection.title });
+    const summary = el('input', { value: collection.summary || '' });
+    const search = el('input', { placeholder: 'Search the library' });
+    const results = el('div', { class: 'row wrap' });
+    const list = el('tbody', {});
+
+    const label = (item) =>
+      item.title + (item.year ? ' (' + item.year + ')' : '') + ' · ' + item.library;
+
+    const drawChosen = () => {
+      fill(list, chosen.map((item, index) => el('tr', {},
+        el('td', { class: 'muted', text: String(index + 1) }),
+        el('td', { text: label(item) }),
+        el('td', { class: 'right' }, el('div', { class: 'row actions' },
+          el('button', {
+            text: '↑',
+            on: { click: () => { if (index > 0) { chosen.splice(index - 1, 0, chosen.splice(index, 1)[0]); drawChosen(); } } },
+          }),
+          el('button', {
+            text: '↓',
+            on: { click: () => { if (index < chosen.length - 1) { chosen.splice(index + 1, 0, chosen.splice(index, 1)[0]); drawChosen(); } } },
+          }),
+          el('button', {
+            class: 'danger',
+            text: 'Remove',
+            on: { click: () => { chosen.splice(index, 1); drawChosen(); } },
+          }))))));
+      if (chosen.length === 0) {
+        fill(list, el('tr', {}, el('td', { class: 'muted', text: 'Nothing in it yet.' })));
+      }
+    };
+    drawChosen();
+
+    let searching = null;
+    const runSearch = async () => {
+      const term = search.value.trim();
+      if (!term) { fill(results); return; }
+      clearTimeout(searching);
+      searching = setTimeout(async () => {
+        try {
+          const found = (await api('GET', '/items?q=' + encodeURIComponent(term))) || [];
+          fill(results, found.map((item) => el('button', {
+            text: label(item),
+            on: {
+              click: () => {
+                if (chosen.some((already) => already.id === item.id)) {
+                  toast('Already in it.');
+                  return;
+                }
+                chosen.push(item);
+                drawChosen();
+              },
+            },
+          })));
+          if (found.length === 0) fill(results, el('span', { class: 'muted', text: 'Nothing matched.' }));
+        } catch (err) { failed(err); }
+      }, 200);
+    };
+    search.addEventListener('input', runSearch);
+
+    const main = document.getElementById('main');
+    fill(main,
+      el('div', { class: 'head' }, el('div', {}, el('h1', { text: collection.title }),
+        el('p', { class: 'muted', text: 'The order here is the order a client shows them in.' })),
+        el('button', { text: 'Back to collections', on: { click: () => render() } })),
+      el('div', { class: 'card' },
+        el('label', { text: 'Name' }), name,
+        el('label', { text: 'Summary' }), summary),
+      el('div', { class: 'card' },
+        el('h2', { text: 'In this collection' }),
+        el('table', {}, list)),
+      el('div', { class: 'card' },
+        el('h2', { text: 'Add something' }),
+        el('label', { text: 'Search' }), search,
+        results),
+      el('div', { class: 'card' },
+        el('div', { class: 'row' }, el('button', {
+          class: 'primary',
+          text: 'Save',
+          on: {
+            click: async () => {
+              try {
+                await api('PATCH', '/collections/' + id, {
+                  title: name.value,
+                  summary: summary.value,
+                  items: chosen.map((item) => item.id),
+                });
+                toast('Saved.');
+                render();
+              } catch (err) { failed(err); }
+            },
+          },
+        }))));
+  } catch (err) { failed(err); }
+}
+
 /* ---------- users ---------- */
 
 views.users = async function (main) {

@@ -641,3 +641,52 @@ func ids(entries []domain.PlaylistEntry) []int64 {
 	}
 	return out
 }
+
+// The two emptinesses, and why the browsing reader hides both. A collection
+// whose library was deleted would otherwise linger in front of somebody
+// trying to watch something, as a shelf with nothing on it.
+func TestAnEmptyCollectionIsForTheAdministratorAndNobodyElse(t *testing.T) {
+	s := newShelf(t)
+	made, err := s.db.CreateCollection(s.ctx, "Not filled yet", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The interface that just made it can see it, which is the whole point:
+	// you cannot fill a collection you are told does not exist.
+	every, err := s.db.EveryCollection(s.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(every) != 1 {
+		t.Fatalf("the administrator was shown %d collections", len(every))
+	}
+	if _, err := s.db.AnyCollection(s.ctx, made.ID); err != nil {
+		t.Fatalf("the administrator could not read it: %v", err)
+	}
+
+	// A viewer is shown nothing, on the unrestricted handle as much as a
+	// narrowed one: this is not a library rule, it is an empty shelf rule.
+	browsing, err := s.db.Collections(s.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(browsing) != 0 {
+		t.Fatalf("a viewer was shown an empty collection: %+v", browsing)
+	}
+	if _, err := s.db.Collection(s.ctx, made.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a viewer read an empty collection: %v", err)
+	}
+
+	// Filling it puts it in front of a viewer.
+	if err := s.db.SetCollectionItems(s.ctx, made.ID, []int64{s.filmA}); err != nil {
+		t.Fatal(err)
+	}
+	browsing, err = s.db.Collections(s.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(browsing) != 1 || browsing[0].Held != 1 {
+		t.Fatalf("after filling it, a viewer sees %+v", browsing)
+	}
+}
