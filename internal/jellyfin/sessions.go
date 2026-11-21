@@ -57,7 +57,7 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request, final bool) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	item, err := s.DB.Item(r.Context(), id)
+	item, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -79,7 +79,7 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request, final bool) {
 	if final && domain.Finished(offset, item.Duration) {
 		progress.Watched = true
 	}
-	if err := s.DB.SaveProgress(r.Context(), progress); err != nil {
+	if err := s.db(r.Context()).SaveProgress(r.Context(), progress); err != nil {
 		s.fail(w, "save progress", err)
 		return
 	}
@@ -98,7 +98,7 @@ func (s *Server) writeUserData(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad item", http.StatusBadRequest)
 		return
 	}
-	item, err := s.DB.Item(r.Context(), id)
+	item, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
 		return
@@ -127,7 +127,7 @@ func (s *Server) writeUserData(w http.ResponseWriter, r *http.Request) {
 	if body.Played != nil {
 		progress.Watched = *body.Played
 	}
-	if err := s.DB.SaveProgress(r.Context(), progress); err != nil {
+	if err := s.db(r.Context()).SaveProgress(r.Context(), progress); err != nil {
 		s.fail(w, "save progress", err)
 		return
 	}
@@ -146,7 +146,7 @@ func (s *Server) clearUserData(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad item", http.StatusBadRequest)
 		return
 	}
-	if err := s.DB.SaveProgress(r.Context(), domain.Progress{UserID: user.ID, ItemID: id}); err != nil {
+	if err := s.db(r.Context()).SaveProgress(r.Context(), domain.Progress{UserID: user.ID, ItemID: id}); err != nil {
 		s.fail(w, "clear progress", err)
 		return
 	}
@@ -175,7 +175,7 @@ func (s *Server) setWatched(w http.ResponseWriter, r *http.Request, watched bool
 		http.Error(w, "bad item", http.StatusBadRequest)
 		return
 	}
-	item, err := s.DB.Item(r.Context(), id)
+	item, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
 		return
@@ -189,7 +189,7 @@ func (s *Server) setWatched(w http.ResponseWriter, r *http.Request, watched bool
 	if watched {
 		progress.Offset = item.Duration
 	}
-	if err := s.DB.SaveProgress(r.Context(), progress); err != nil {
+	if err := s.db(r.Context()).SaveProgress(r.Context(), progress); err != nil {
 		s.fail(w, "save progress", err)
 		return
 	}

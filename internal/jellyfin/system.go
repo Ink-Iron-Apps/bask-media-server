@@ -90,7 +90,7 @@ func (s *Server) authenticateByName(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.DB.UserForToken(r.Context(), token)
+	user, err := s.Store.UserForToken(r.Context(), token)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return

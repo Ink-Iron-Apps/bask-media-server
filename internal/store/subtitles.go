@@ -66,9 +66,13 @@ func (d *DB) Subtitles(ctx context.Context, itemIDs []int64) (map[int64][]domain
 		return nil, nil
 	}
 	clause, args := inClause(itemIDs)
+	only, scope := d.only("items.section_id")
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT `+subtitleColumns+` FROM subtitles WHERE item_id IN (`+clause+`)
-		  ORDER BY item_id, is_default DESC, forced DESC, external, id`, args...)
+		`SELECT `+prefixed("subtitles", subtitleColumns)+`
+		   FROM subtitles JOIN items ON items.id = subtitles.item_id
+		  WHERE subtitles.item_id IN (`+clause+`)`+only+`
+		  ORDER BY subtitles.item_id, subtitles.is_default DESC, subtitles.forced DESC,
+		           subtitles.external, subtitles.id`, append(args, scope...)...)
 	if err != nil {
 		return nil, fmt.Errorf("read subtitles: %w", err)
 	}
@@ -87,8 +91,11 @@ func (d *DB) Subtitles(ctx context.Context, itemIDs []int64) (map[int64][]domain
 
 // Subtitle reads one, which is what a request for the text itself needs.
 func (d *DB) Subtitle(ctx context.Context, id int64) (*domain.Subtitle, error) {
+	only, scope := d.only("items.section_id")
 	sub, err := scanSubtitle(d.sql.QueryRowContext(ctx,
-		`SELECT `+subtitleColumns+` FROM subtitles WHERE id = ?`, id))
+		`SELECT `+prefixed("subtitles", subtitleColumns)+`
+		   FROM subtitles JOIN items ON items.id = subtitles.item_id
+		  WHERE subtitles.id = ?`+only, append([]any{id}, scope...)...))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

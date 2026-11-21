@@ -62,12 +62,18 @@ func (d *DB) IssueToken(ctx context.Context, userID int64, label string) (string
 	return token, nil
 }
 
-// UserForToken resolves a presented token, or ErrNotFound.
+// Credential resolves a presented token into the account it belongs to and the
+// libraries it may reach, or ErrNotFound.
 //
 // The lookup is by hash, so a token is never compared in the clear and never
 // logged. last_seen_at is updated on a best-effort basis: it is diagnostics,
 // not authorisation, and a write failure must not refuse a valid request.
-func (d *DB) UserForToken(ctx context.Context, token string) (*domain.User, error) {
+//
+// One statement for the account and one for the grants, rather than a join
+// that would repeat the account per granted library. The second runs only for
+// a token that has grants at all, which is none of them until somebody
+// narrows one.
+func (d *DB) Credential(ctx context.Context, token string) (*domain.Credential, error) {
 	if token == "" {
 		return nil, ErrNotFound
 	}
@@ -90,9 +96,38 @@ func (d *DB) UserForToken(ctx context.Context, token string) (*domain.User, erro
 	}
 	u.CreatedAt = fromMillis(createdAt)
 
+	// The grants are read on the unrestricted handle on purpose: a narrowed
+	// handle resolving a credential would filter the very rows that decide
+	// how it should be narrowed.
+	sections, err := d.unscoped().TokenSections(ctx, tokenID)
+	if err != nil {
+		return nil, err
+	}
+
 	_, _ = d.sql.ExecContext(ctx, `UPDATE tokens SET last_seen_at = ? WHERE id = ?`,
 		millis(time.Now().UTC()), tokenID)
-	return &u, nil
+	return &domain.Credential{User: u, TokenID: tokenID, Sections: sections}, nil
+}
+
+// UserForToken resolves a presented token to its account, for the callers that
+// only need to know who it is.
+func (d *DB) UserForToken(ctx context.Context, token string) (*domain.User, error) {
+	cred, err := d.Credential(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	return &cred.User, nil
+}
+
+// unscoped is this handle without its library restriction, for the few reads
+// that decide what the restriction should be.
+func (d *DB) unscoped() *DB {
+	if !d.restricted() {
+		return d
+	}
+	open := *d
+	open.visible = nil
+	return &open
 }
 
 // SaveProgress records where a user is in an item.
@@ -196,11 +231,13 @@ func (d *DB) ContinueWatching(ctx context.Context, userID int64, limit int) ([]d
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
+	only, scope := d.only("i.section_id")
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT `+prefixed("i", itemColumns)+`
 		   FROM progress p JOIN items i ON i.id = p.item_id
-		  WHERE p.user_id = ? AND p.watched = 0 AND p.offset_ms > 0
-		  ORDER BY p.updated_at DESC LIMIT ?`, userID, limit)
+		  WHERE p.user_id = ? AND p.watched = 0 AND p.offset_ms > 0`+only+`
+		  ORDER BY p.updated_at DESC LIMIT ?`,
+		append([]any{userID}, append(scope, limit)...)...)
 	if err != nil {
 		return nil, fmt.Errorf("continue watching: %w", err)
 	}

@@ -136,6 +136,19 @@ button.link:hover { color: var(--accent); }
    wrapped buttons under a table row read as a second row. */
 .actions { flex-wrap: nowrap; justify-content: flex-end; }
 
+/* A library tick-box and its name read as one word, so the label sits beside
+   the box rather than above it the way every other label here does. */
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  margin: 0;
+  font-size: .9rem;
+  color: var(--text);
+  white-space: nowrap;
+}
+.check input { width: auto; margin: 0; }
+
 label { display: block; font-size: .82rem; color: var(--muted); margin: .6rem 0 .2rem; }
 input, select {
   font: inherit;

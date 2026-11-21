@@ -95,9 +95,12 @@ func (d *DB) Markers(ctx context.Context, itemIDs []int64) (map[int64][]domain.M
 		return nil, nil
 	}
 	placeholders, args := inClause(itemIDs)
+	only, scope := d.only("items.section_id")
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT id, item_id, type, source, start_ms, end_ms FROM markers
-		   WHERE item_id IN (`+placeholders+`) ORDER BY item_id, start_ms`, args...)
+		`SELECT markers.id, markers.item_id, markers.type, markers.source, markers.start_ms, markers.end_ms
+		   FROM markers JOIN items ON items.id = markers.item_id
+		  WHERE markers.item_id IN (`+placeholders+`)`+only+`
+		  ORDER BY markers.item_id, markers.start_ms`, append(args, scope...)...)
 	if err != nil {
 		return nil, fmt.Errorf("read markers: %w", err)
 	}
@@ -145,9 +148,12 @@ func (d *DB) Chapters(ctx context.Context, itemIDs []int64) (map[int64][]domain.
 		return nil, nil
 	}
 	placeholders, args := inClause(itemIDs)
+	only, scope := d.only("items.section_id")
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT id, item_id, idx, title, start_ms, end_ms FROM chapters
-		   WHERE item_id IN (`+placeholders+`) ORDER BY item_id, idx`, args...)
+		`SELECT chapters.id, chapters.item_id, chapters.idx, chapters.title, chapters.start_ms, chapters.end_ms
+		   FROM chapters JOIN items ON items.id = chapters.item_id
+		  WHERE chapters.item_id IN (`+placeholders+`)`+only+`
+		  ORDER BY chapters.item_id, chapters.idx`, append(args, scope...)...)
 	if err != nil {
 		return nil, fmt.Errorf("read chapters: %w", err)
 	}

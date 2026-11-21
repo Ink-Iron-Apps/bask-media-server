@@ -55,8 +55,10 @@ func (d *DB) CreateSection(ctx context.Context, title string, kind domain.Sectio
 // Sections lists every library, oldest first so a client's section order is
 // stable across restarts.
 func (d *DB) Sections(ctx context.Context) ([]domain.Section, error) {
+	only, args := d.only("id")
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT id, title, kind, roots, scanned_at, created_at, updated_at FROM sections ORDER BY id`)
+		`SELECT id, title, kind, roots, scanned_at, created_at, updated_at
+		   FROM sections WHERE 1 = 1`+only+` ORDER BY id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list sections: %w", err)
 	}
@@ -143,6 +145,9 @@ func scanItem(rows interface{ Scan(...any) error }) (domain.Item, error) {
 // Returns the page and the total, because a client that is paging needs to
 // know how far it can page and Plex's MediaContainer carries both.
 func (d *DB) SectionItems(ctx context.Context, sectionID int64, kind domain.Kind, page Page) ([]domain.Item, int, error) {
+	if !d.canSee(sectionID) {
+		return nil, 0, nil
+	}
 	var total int
 	if err := d.sql.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM items WHERE section_id = ? AND kind = ? AND parent_id IS NULL`,
@@ -178,17 +183,22 @@ func (d *DB) SectionItems(ctx context.Context, sectionID int64, kind domain.Kind
 // alternative is a query per kind, which is five queries that have to be kept
 // agreeing with each other.
 func (d *DB) Children(ctx context.Context, parentID int64, page Page) ([]domain.Item, int, error) {
+	only, scope := d.only("section_id")
+
 	var total int
 	if err := d.sql.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM items WHERE parent_id = ?`, parentID).Scan(&total); err != nil {
+		`SELECT COUNT(*) FROM items WHERE parent_id = ?`+only,
+		append([]any{parentID}, scope...)...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count children: %w", err)
 	}
 
 	offset, limit := page.Window(500)
+	args := append([]any{parentID}, scope...)
+	args = append(args, limit, offset)
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT `+itemColumns+` FROM items WHERE parent_id = ?
+		`SELECT `+itemColumns+` FROM items WHERE parent_id = ?`+only+`
 		 ORDER BY disc, idx, taken_at, year, sort_title LIMIT ? OFFSET ?`,
-		parentID, limit, offset)
+		args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list children: %w", err)
 	}
@@ -203,7 +213,10 @@ func (d *DB) Children(ctx context.Context, parentID int64, page Page) ([]domain.
 
 // Item reads one item, with its parts when it is playable.
 func (d *DB) Item(ctx context.Context, id int64) (*domain.Item, error) {
-	row := d.sql.QueryRowContext(ctx, `SELECT `+itemColumns+` FROM items WHERE id = ?`, id)
+	only, scope := d.only("section_id")
+	row := d.sql.QueryRowContext(ctx,
+		`SELECT `+itemColumns+` FROM items WHERE id = ?`+only,
+		append([]any{id}, scope...)...)
 	it, err := scanItem(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -229,21 +242,25 @@ func (d *DB) Item(ctx context.Context, id int64) (*domain.Item, error) {
 // ever serves a library large enough to notice.
 func (d *DB) Search(ctx context.Context, query string, page Page) ([]domain.Item, int, error) {
 	pattern := "%" + strings.ToLower(query) + "%"
+	only, scope := d.only("section_id")
+
 	var total int
 	if err := d.sql.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM items WHERE kind IN `+searchableKinds+` AND LOWER(title) LIKE ?`,
-		pattern).Scan(&total); err != nil {
+		`SELECT COUNT(*) FROM items WHERE kind IN `+searchableKinds+` AND LOWER(title) LIKE ?`+only,
+		append([]any{pattern}, scope...)...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count search: %w", err)
 	}
 
 	offset, limit := page.Window(100)
+	args := append([]any{pattern}, scope...)
+	args = append(args, limit, offset)
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT `+itemColumns+` FROM items WHERE kind IN `+searchableKinds+` AND LOWER(title) LIKE ?
+		`SELECT `+itemColumns+` FROM items WHERE kind IN `+searchableKinds+` AND LOWER(title) LIKE ?`+only+`
 		 ORDER BY CASE kind
 		     WHEN 'movie' THEN 0 WHEN 'show' THEN 1 WHEN 'artist' THEN 2
 		     WHEN 'album' THEN 3 WHEN 'photoalbum' THEN 4 WHEN 'episode' THEN 5 ELSE 6
 		   END, sort_title LIMIT ? OFFSET ?`,
-		pattern, limit, offset)
+		args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("search: %w", err)
 	}
@@ -311,13 +328,22 @@ func (d *DB) Parts(ctx context.Context, itemID int64) ([]domain.Part, error) {
 }
 
 // Part reads one file row, which is what a stream request resolves.
+//
+// Joined to its item rather than read on its own, because a part id is a
+// number a client can hold from before a library was hidden from it and a
+// Plex stream addresses the file directly. Without the join this is the one
+// door left open in a locked house.
 func (d *DB) Part(ctx context.Context, id int64) (*domain.Part, error) {
+	only, scope := d.only("items.section_id")
 	var (
 		p          domain.Part
 		modifiedAt int64
 	)
 	err := d.sql.QueryRowContext(ctx,
-		`SELECT `+partColumns+` FROM parts WHERE id = ?`, id).
+		`SELECT `+prefixed("parts", partColumns)+`
+		   FROM parts JOIN items ON items.id = parts.item_id
+		  WHERE parts.id = ?`+only,
+		append([]any{id}, scope...)...).
 		Scan(&p.ID, &p.ItemID, &p.Path, &p.Size, &p.Container, &modifiedAt,
 			&p.Width, &p.Height, &p.Orientation)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -396,8 +422,10 @@ func (d *DB) ItemsByIDs(ctx context.Context, ids []int64) (map[int64]domain.Item
 		end := min(start+chunk, len(wanted))
 		batch := wanted[start:end]
 		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+		only, scope := d.only("section_id")
 		rows, err := d.sql.QueryContext(ctx,
-			`SELECT `+itemColumns+` FROM items WHERE id IN (`+placeholders+`)`, batch...)
+			`SELECT `+itemColumns+` FROM items WHERE id IN (`+placeholders+`)`+only,
+			append(append([]any{}, batch...), scope...)...)
 		if err != nil {
 			return nil, fmt.Errorf("read items: %w", err)
 		}
@@ -428,8 +456,11 @@ func (d *DB) ChildCounts(ctx context.Context, ids []int64) (map[int64]int, error
 	for _, id := range ids {
 		args = append(args, id)
 	}
+	only, scope := d.only("section_id")
+	args = append(args, scope...)
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT parent_id, COUNT(*) FROM items WHERE parent_id IN (`+placeholders+`) GROUP BY parent_id`,
+		`SELECT parent_id, COUNT(*) FROM items WHERE parent_id IN (`+placeholders+`)`+only+`
+		  GROUP BY parent_id`,
 		args...)
 	if err != nil {
 		return nil, fmt.Errorf("count children: %w", err)
@@ -459,6 +490,7 @@ func (d *DB) ChildCounts(ctx context.Context, ids []int64) (map[int64]int, error
 // SQLite, which is a handful of rows: the depth of a folder tree, not the size
 // of a library.
 func (d *DB) AlbumCover(ctx context.Context, itemID int64) (*domain.Part, error) {
+	only, scope := d.only("items.section_id")
 	var (
 		p          domain.Part
 		modifiedAt int64
@@ -472,9 +504,9 @@ func (d *DB) AlbumCover(ctx context.Context, itemID int64) (*domain.Part, error)
 		 SELECT `+prefixed("parts", partColumns)+`
 		   FROM parts
 		   JOIN items ON items.id = parts.item_id
-		  WHERE items.kind = 'photo' AND items.id IN (SELECT id FROM tree)
+		  WHERE items.kind = 'photo' AND items.id IN (SELECT id FROM tree)`+only+`
 		  ORDER BY items.taken_at, items.id
-		  LIMIT 1`, itemID).
+		  LIMIT 1`, append([]any{itemID}, scope...)...).
 		Scan(&p.ID, &p.ItemID, &p.Path, &p.Size, &p.Container, &modifiedAt,
 			&p.Width, &p.Height, &p.Orientation)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -493,6 +525,9 @@ func (d *DB) AlbumCover(ctx context.Context, itemID int64) (*domain.Part, error)
 // A client's "all episodes" row asks for exactly this, and walking the tree
 // to build it would be a query per show and a query per season.
 func (d *DB) SectionItemsOfKind(ctx context.Context, sectionID int64, kind domain.Kind, limit int) ([]domain.Item, error) {
+	if !d.canSee(sectionID) {
+		return nil, nil
+	}
 	if limit <= 0 || limit > 2000 {
 		limit = 1000
 	}
@@ -517,10 +552,12 @@ func (d *DB) RecentlyAdded(ctx context.Context, limit int) ([]domain.Item, error
 	if limit <= 0 || limit > 200 {
 		limit = 20
 	}
+	only, scope := d.only("section_id")
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT `+itemColumns+` FROM items
-		  WHERE kind IN ('movie','episode','album','photo')
-		  ORDER BY added_at DESC, id DESC LIMIT ?`, limit)
+		  WHERE kind IN ('movie','episode','album','photo')`+only+`
+		  ORDER BY added_at DESC, id DESC LIMIT ?`,
+		append(scope, limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("recently added: %w", err)
 	}
@@ -536,6 +573,7 @@ func (d *DB) RecentlyAdded(ctx context.Context, limit int) ([]domain.Item, error
 // per show, because a library of forty shows would otherwise be forty round
 // trips before anything is drawn.
 func (d *DB) NextUp(ctx context.Context, userID int64, limit int) ([]domain.Item, error) {
+	only, scope := d.only("episode.section_id")
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
@@ -557,11 +595,11 @@ func (d *DB) NextUp(ctx context.Context, userID int64, limit int) ([]domain.Item
 		       JOIN items season ON season.id = episode.parent_id
 		       JOIN watched ON watched.show_id = season.parent_id
 		       LEFT JOIN progress p ON p.item_id = episode.id AND p.user_id = ?
-		      WHERE episode.kind = 'episode' AND IFNULL(p.watched, 0) = 0
+		      WHERE episode.kind = 'episode' AND IFNULL(p.watched, 0) = 0`+only+`
 		 )
 		 SELECT `+itemColumns+` FROM candidates WHERE rank = 1
 		  ORDER BY seen_at DESC LIMIT ?`,
-		userID, userID, limit)
+		append([]any{userID, userID}, append(scope, limit)...)...)
 	if err != nil {
 		return nil, fmt.Errorf("next up: %w", err)
 	}

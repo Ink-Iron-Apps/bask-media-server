@@ -16,6 +16,8 @@ and the Plex vocabulary never reaches storage or scanning.
 - Playback by direct play, with HTTP range requests so seeking works
 - Playback progress, resume offsets and watched state, per user
 - Local accounts and tokens; the first run prints an admin token once
+- Libraries per device: a token can be narrowed to some of the libraries, so
+  one library reaches the phone and not the television
 - Posters, backdrops and summaries from TMDB, cached on disk under a byte cap
 - Skip Intro and Skip Credits: markers read from a file's chapters, and
   measured from the audio a season's episodes share where there are none
@@ -92,6 +94,12 @@ From there:
   token per device. A token is shown once, because only its hash is stored.
   The last administrator cannot be deleted or demoted: there is nothing to
   recover from that but editing the database by hand.
+- **Libraries per device.** Under each token is a row of libraries, and the
+  ones ticked are the only ones that credential can reach. Ticking all of them
+  is stored as no restriction at all, so a library added next month is visible
+  to that device rather than quietly missing from it. Beside the label a human
+  typed is what the client last called itself, which is how a list of
+  credentials reads as a list of devices.
 - **Settings.** Rename the server — clients see it immediately and nothing
   else about the server changes — and save the TMDB key so the metadata pass
   can run without a restart.
@@ -99,6 +107,39 @@ From there:
 It is one page, one stylesheet and one script compiled into the binary, so a
 release is still a single file and there is no Node, no bundler and no
 framework at serve time. Run with `-admin=false` to leave it off entirely.
+
+## One library per device
+
+A token is BMS's per-device credential — it is the thing you can revoke for one
+television without touching anybody else — so it is also where "this library,
+on that device" belongs. No second notion of a device is invented, and nothing
+depends on the device id a client sends, which the client writes itself and
+which changes when somebody reinstalls the app.
+
+Narrowing a token restricts every answer, not only the list of libraries:
+
+- The libraries the client is told about, on both APIs.
+- Anything addressed by id afterwards. A hidden film is a 404 for its
+  metadata, its poster, its playback negotiation, its direct stream and its
+  converted stream, and a Plex client's request for the file by part id is a
+  404 too — that one never passes through the item it belongs to, so it is the
+  door that would otherwise be left open.
+- Search, the home screen rows, Next Up and Continue Watching, which are built
+  across every library at once and are the other place a hidden library leaks.
+- The web interface, which signs in with a token and inherits its restriction,
+  so opening a browser on that television shows the same libraries the app on
+  it shows.
+
+What it does not do is hide anything from the admin interface, which
+administers the server rather than browsing a library.
+
+Two things worth knowing before using it:
+
+- **One token per device.** A token shared between a phone and a television
+  cannot tell them apart. Issue each device its own — the admin interface has
+  always suggested it, and this is what makes it pay.
+- **It is a setting, not a deletion.** Ticking the library back on makes
+  everything reachable again, immediately, including a session already open.
 
 ## Watching in a browser
 

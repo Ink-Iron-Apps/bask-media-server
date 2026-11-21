@@ -11,7 +11,7 @@ import (
 
 // views lists the libraries.
 func (s *Server) views(w http.ResponseWriter, r *http.Request) {
-	sections, err := s.DB.Sections(r.Context())
+	sections, err := s.db(r.Context()).Sections(r.Context())
 	if err != nil {
 		s.fail(w, "list sections", err)
 		return
@@ -66,7 +66,7 @@ func (s *Server) items(w http.ResponseWriter, r *http.Request) {
 
 	// The id says which it is: a library's top level, or a parent's children.
 	if library {
-		section, err := s.DB.Section(r.Context(), id)
+		section, err := s.db(r.Context()).Section(r.Context(), id)
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, "no such library", http.StatusNotFound)
 			return
@@ -86,7 +86,7 @@ func (s *Server) items(w http.ResponseWriter, r *http.Request) {
 			s.sectionRecursive(w, r, *section, wanted, page)
 			return
 		}
-		list, total, err := s.DB.SectionItems(r.Context(), section.ID, kind, page)
+		list, total, err := s.db(r.Context()).SectionItems(r.Context(), section.ID, kind, page)
 		if err != nil {
 			s.fail(w, "list section", err)
 			return
@@ -95,7 +95,7 @@ func (s *Server) items(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	children, total, err := s.DB.Children(r.Context(), id, page)
+	children, total, err := s.db(r.Context()).Children(r.Context(), id, page)
 	if err != nil {
 		s.fail(w, "list children", err)
 		return
@@ -108,7 +108,7 @@ func (s *Server) items(w http.ResponseWriter, r *http.Request) {
 // library, or every library's top level when nothing was asked for.
 func (s *Server) everything(w http.ResponseWriter, r *http.Request, wanted map[domain.Kind]bool, page store.Page) {
 	user := userFrom(r.Context())
-	sections, err := s.DB.Sections(r.Context())
+	sections, err := s.db(r.Context()).Sections(r.Context())
 	if err != nil {
 		s.fail(w, "list sections", err)
 		return
@@ -126,7 +126,7 @@ func (s *Server) everything(w http.ResponseWriter, r *http.Request, wanted map[d
 		for _, kind := range kinds {
 			// Paged per section and then cut to the window, because the page
 			// is a window over the whole answer rather than over one library.
-			list, _, err := s.DB.SectionItems(r.Context(), section.ID, kind, store.Page{Size: 500})
+			list, _, err := s.db(r.Context()).SectionItems(r.Context(), section.ID, kind, store.Page{Size: 500})
 			if err != nil {
 				s.fail(w, "list section", err)
 				return
@@ -153,7 +153,7 @@ func (s *Server) sectionRecursive(w http.ResponseWriter, r *http.Request, sectio
 
 	var all []domain.Item
 	for _, kind := range kinds {
-		list, err := s.DB.SectionItemsOfKind(r.Context(), section.ID, kind, 1000)
+		list, err := s.db(r.Context()).SectionItemsOfKind(r.Context(), section.ID, kind, 1000)
 		if err != nil {
 			s.fail(w, "list library", err)
 			return
@@ -167,7 +167,7 @@ func (s *Server) sectionRecursive(w http.ResponseWriter, r *http.Request, sectio
 func (s *Server) searchItems(w http.ResponseWriter, r *http.Request, term string) {
 	user := userFrom(r.Context())
 	page := store.Page{Start: intQuery(r, "StartIndex"), Size: intQuery(r, "Limit")}
-	found, total, err := s.DB.Search(r.Context(), term, page)
+	found, total, err := s.db(r.Context()).Search(r.Context(), term, page)
 	if err != nil {
 		s.fail(w, "search", err)
 		return
@@ -193,7 +193,7 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 	// A client opening a library asks for it here, the same way it asks for
 	// anything else.
 	if library {
-		section, err := s.DB.Section(r.Context(), id)
+		section, err := s.db(r.Context()).Section(r.Context(), id)
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, "no such library", http.StatusNotFound)
 			return
@@ -206,7 +206,7 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	found, err := s.DB.Item(r.Context(), id)
+	found, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
 		return
@@ -247,14 +247,14 @@ func (s *Server) episodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	seasons, _, err := s.DB.Children(r.Context(), id, store.Page{Size: 200})
+	seasons, _, err := s.db(r.Context()).Children(r.Context(), id, store.Page{Size: 200})
 	if err != nil {
 		s.fail(w, "list seasons", err)
 		return
 	}
 	var all []domain.Item
 	for _, season := range seasons {
-		episodes, _, err := s.DB.Children(r.Context(), season.ID, store.Page{Size: 500})
+		episodes, _, err := s.db(r.Context()).Children(r.Context(), season.ID, store.Page{Size: 500})
 		if err != nil {
 			s.fail(w, "list episodes", err)
 			return
@@ -274,7 +274,7 @@ func (s *Server) childrenOf(w http.ResponseWriter, r *http.Request, rawID string
 		return
 	}
 	page := store.Page{Start: intQuery(r, "StartIndex"), Size: intQuery(r, "Limit")}
-	children, total, err := s.DB.Children(r.Context(), id, page)
+	children, total, err := s.db(r.Context()).Children(r.Context(), id, page)
 	if err != nil {
 		s.fail(w, "list children", err)
 		return
@@ -289,7 +289,7 @@ func (s *Server) artists(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r.Context())
 	page := store.Page{Start: intQuery(r, "StartIndex"), Size: intQuery(r, "Limit")}
 
-	sections, err := s.DB.Sections(r.Context())
+	sections, err := s.db(r.Context()).Sections(r.Context())
 	if err != nil {
 		s.fail(w, "list sections", err)
 		return
@@ -299,7 +299,7 @@ func (s *Server) artists(w http.ResponseWriter, r *http.Request) {
 		if section.Kind != domain.SectionMusic {
 			continue
 		}
-		list, _, err := s.DB.SectionItems(r.Context(), section.ID, domain.KindArtist, store.Page{Size: 500})
+		list, _, err := s.db(r.Context()).SectionItems(r.Context(), section.ID, domain.KindArtist, store.Page{Size: 500})
 		if err != nil {
 			s.fail(w, "list artists", err)
 			return
@@ -318,7 +318,7 @@ func (s *Server) latest(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 {
 		limit = 20
 	}
-	recent, err := s.DB.RecentlyAdded(r.Context(), limit)
+	recent, err := s.db(r.Context()).RecentlyAdded(r.Context(), limit)
 	if err != nil {
 		s.fail(w, "recently added", err)
 		return
@@ -339,7 +339,7 @@ func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 {
 		limit = 20
 	}
-	items, err := s.DB.ContinueWatching(r.Context(), user.ID, limit)
+	items, err := s.db(r.Context()).ContinueWatching(r.Context(), user.ID, limit)
 	if err != nil {
 		s.fail(w, "continue watching", err)
 		return
@@ -356,7 +356,7 @@ func (s *Server) nextUp(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 {
 		limit = 20
 	}
-	items, err := s.DB.NextUp(r.Context(), user.ID, limit)
+	items, err := s.db(r.Context()).NextUp(r.Context(), user.ID, limit)
 	if err != nil {
 		s.fail(w, "next up", err)
 		return
@@ -417,7 +417,7 @@ func (s *Server) progressFor(r *http.Request, user *domain.User, items []domain.
 	for _, it := range items {
 		ids = append(ids, it.ID)
 	}
-	progress, err := s.DB.Progress(r.Context(), user.ID, ids)
+	progress, err := s.db(r.Context()).Progress(r.Context(), user.ID, ids)
 	if err != nil {
 		s.logger().Warn("could not read progress", "error", err)
 		return nil

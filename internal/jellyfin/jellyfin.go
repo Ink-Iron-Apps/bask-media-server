@@ -36,9 +36,14 @@ import (
 
 // Server answers the Jellyfin API over BMS's library.
 type Server struct {
-	DB   *store.DB
-	Log  *slog.Logger
-	Name string
+	// Store is the library, unrestricted. Handlers do not query it directly:
+	// they call s.db(ctx), which narrows it to what the request's credential
+	// may see. The exceptions are the reads that decide the restriction —
+	// resolving a token, reading a server-wide setting — and they say so by
+	// naming this field.
+	Store *store.DB
+	Log   *slog.Logger
+	Name  string
 
 	// MachineID is this server's identity, the same one the Plex surface
 	// reports: a client that has both configured is talking to one server and
@@ -242,7 +247,7 @@ func normalisePath(next http.Handler) http.Handler {
 	})
 }
 
-type userKey struct{}
+type credKey struct{}
 
 // authenticate resolves the access token a client was given.
 //
@@ -253,7 +258,7 @@ type userKey struct{}
 func (s *Server) authenticate(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := tokenFrom(r)
-		user, err := s.DB.UserForToken(r.Context(), token)
+		cred, err := s.Store.Credential(r.Context(), token)
 		if errors.Is(err, store.ErrNotFound) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -263,7 +268,11 @@ func (s *Server) authenticate(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), userKey{}, user)))
+		// What the client calls itself, kept beside the label a human typed so
+		// the token list reads as a list of devices. Written here because this
+		// is the only place that sees both the header and the token row.
+		s.Store.NoteTokenDevice(r.Context(), cred.TokenID, deviceFrom(r))
+		next(w, r.WithContext(context.WithValue(r.Context(), credKey{}, cred)))
 	}
 }
 
@@ -298,6 +307,11 @@ func tokenFrom(r *http.Request) string {
 // tokenInAuthorization reads the Token field out of Jellyfin's own
 // Authorization scheme: `MediaBrowser Client="Bask", Device="…", Token="…"`.
 func tokenInAuthorization(value string) string {
+	return fieldInAuthorization(value, "Token")
+}
+
+// fieldInAuthorization reads one named field out of that scheme.
+func fieldInAuthorization(value, want string) string {
 	if value == "" {
 		return ""
 	}
@@ -308,7 +322,7 @@ func tokenInAuthorization(value string) string {
 			field = strings.TrimSpace(field[space+1:])
 		}
 		name, raw, found := strings.Cut(field, "=")
-		if !found || !strings.EqualFold(strings.TrimSpace(name), "Token") {
+		if !found || !strings.EqualFold(strings.TrimSpace(name), want) {
 			continue
 		}
 		return strings.Trim(strings.TrimSpace(raw), `"`)
@@ -317,8 +331,46 @@ func tokenInAuthorization(value string) string {
 }
 
 func userFrom(ctx context.Context) *domain.User {
-	user, _ := ctx.Value(userKey{}).(*domain.User)
-	return user
+	cred := credFrom(ctx)
+	if cred == nil {
+		return nil
+	}
+	return &cred.User
+}
+
+// credFrom is the credential this request authenticated with, nil on the
+// handful of routes that answer without one.
+func credFrom(ctx context.Context) *domain.Credential {
+	cred, _ := ctx.Value(credKey{}).(*domain.Credential)
+	return cred
+}
+
+// db is the library as this request's credential may see it.
+//
+// Every handler reads through this rather than through s.Store, so hiding a
+// library is one decision taken once at the edge instead of a condition each
+// handler has to remember. A route that answers without a credential gets the
+// unrestricted handle, which is correct: those routes answer questions about
+// the server rather than about its contents.
+func (s *Server) db(ctx context.Context) *store.DB {
+	return s.Store.Scoped(credFrom(ctx))
+}
+
+// deviceFrom reads how a client described itself: the Device field of
+// Jellyfin's own Authorization scheme, falling back to the device id when it
+// gave no name.
+//
+// Diagnostics only. A client writes these fields itself, so they are worth
+// showing and worth nothing as a gate — see [store.DB.NoteTokenDevice].
+func deviceFrom(r *http.Request) string {
+	for _, want := range []string{"Device", "DeviceId"} {
+		for _, header := range []string{"Authorization", "X-Emby-Authorization"} {
+			if value := fieldInAuthorization(r.Header.Get(header), want); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
 }
 
 func (s *Server) logger() *slog.Logger {
@@ -331,7 +383,7 @@ func (s *Server) logger() *slog.Logger {
 // friendlyName is what clients show for this server, read per request so a
 // rename in the admin interface reaches the next client that asks.
 func (s *Server) friendlyName(ctx context.Context) string {
-	stored, err := s.DB.ServerValue(ctx, store.KeyFriendlyName)
+	stored, err := s.Store.ServerValue(ctx, store.KeyFriendlyName)
 	if err == nil && stored != "" {
 		return stored
 	}

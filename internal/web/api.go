@@ -63,7 +63,7 @@ func (s *Server) views(ctx context.Context, items []domain.Item, userID int64) (
 	for _, it := range items {
 		ids = append(ids, it.ID)
 	}
-	progress, err := s.DB.Progress(ctx, userID, ids)
+	progress, err := s.db(ctx).Progress(ctx, userID, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (s *Server) views(ctx context.Context, items []domain.Item, userID int64) (
 		if known, found := parents[id]; found {
 			return known
 		}
-		it, err := s.DB.Item(ctx, id)
+		it, err := s.db(ctx).Item(ctx, id)
 		if err != nil {
 			it = nil
 		}
@@ -150,12 +150,12 @@ func (s *Server) views(ctx context.Context, items []domain.Item, userID int64) (
 func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r.Context())
 
-	sections, err := s.DB.Sections(r.Context())
+	sections, err := s.db(r.Context()).Sections(r.Context())
 	if err != nil {
 		s.fail(w, "list sections", err)
 		return
 	}
-	resume, err := s.DB.ContinueWatching(r.Context(), user.ID, 20)
+	resume, err := s.db(r.Context()).ContinueWatching(r.Context(), user.ID, 20)
 	if err != nil {
 		s.fail(w, "continue watching", err)
 		return
@@ -184,7 +184,7 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) friendlyName(r *http.Request) string {
-	stored, err := s.DB.ServerValue(r.Context(), store.KeyFriendlyName)
+	stored, err := s.Store.ServerValue(r.Context(), store.KeyFriendlyName)
 	if err == nil && stored != "" {
 		return stored
 	}
@@ -201,7 +201,7 @@ func (s *Server) section(w http.ResponseWriter, r *http.Request) {
 	}
 	user := userFrom(r.Context())
 
-	section, err := s.DB.Section(r.Context(), id)
+	section, err := s.db(r.Context()).Section(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "no such library")
 		return
@@ -213,7 +213,7 @@ func (s *Server) section(w http.ResponseWriter, r *http.Request) {
 
 	page := store.Page{Start: intQuery(r, "start"), Size: intQuery(r, "size")}
 	kind := section.Kind.TopKind()
-	items, total, err := s.DB.SectionItems(r.Context(), id, kind, page)
+	items, total, err := s.db(r.Context()).SectionItems(r.Context(), id, kind, page)
 	if err != nil {
 		s.fail(w, "list items", err)
 		return
@@ -239,7 +239,7 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 	}
 	user := userFrom(r.Context())
 
-	found, err := s.DB.Item(r.Context(), id)
+	found, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "no such item")
 		return
@@ -257,7 +257,7 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"item": views[0]}
 
 	if !found.Playable() {
-		children, _, err := s.DB.Children(r.Context(), found.ID, store.Page{Size: 200})
+		children, _, err := s.db(r.Context()).Children(r.Context(), found.ID, store.Page{Size: 200})
 		if err != nil {
 			s.fail(w, "read children", err)
 			return
@@ -283,7 +283,7 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 	}
 	out["parts"] = parts
 
-	markers, err := s.DB.Markers(r.Context(), []int64{found.ID})
+	markers, err := s.db(r.Context()).Markers(r.Context(), []int64{found.ID})
 	if err != nil {
 		s.fail(w, "read markers", err)
 		return
@@ -308,7 +308,7 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 	// Subtitles as a menu: which ones exist, what to call them, and which of
 	// them this page can actually show — a picture subtitle has no text to
 	// hand over, and saying so is better than an empty track.
-	subs, err := s.DB.Subtitles(r.Context(), []int64{found.ID})
+	subs, err := s.db(r.Context()).Subtitles(r.Context(), []int64{found.ID})
 	if err != nil {
 		s.fail(w, "read subtitles", err)
 		return
@@ -318,7 +318,7 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 	// The season and show above an episode, so a player can say what is on
 	// without another round trip.
 	if found.ParentID != nil {
-		if parent, err := s.DB.Item(r.Context(), *found.ParentID); err == nil {
+		if parent, err := s.db(r.Context()).Item(r.Context(), *found.ParentID); err == nil {
 			title := parent.Title
 			if parent.Kind == domain.KindSeason && title == "" {
 				title = "Season " + strconv.Itoa(parent.Index)
@@ -337,7 +337,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, _, err := s.DB.Search(r.Context(), query, store.Page{Size: 40})
+	items, _, err := s.db(r.Context()).Search(r.Context(), query, store.Page{Size: 40})
 	if err != nil {
 		s.fail(w, "search", err)
 		return
@@ -368,7 +368,7 @@ func (s *Server) saveProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	user := userFrom(r.Context())
 
-	if err := s.DB.SaveProgress(r.Context(), domain.Progress{
+	if err := s.db(r.Context()).SaveProgress(r.Context(), domain.Progress{
 		UserID:   user.ID,
 		ItemID:   body.ItemID,
 		Offset:   time.Duration(body.OffsetMS) * time.Millisecond,
@@ -390,7 +390,7 @@ func (s *Server) image(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no artwork", http.StatusNotFound)
 		return
 	}
-	item, err := s.DB.Item(r.Context(), id)
+	item, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
 		return
@@ -442,7 +442,7 @@ func (s *Server) photoSource(ctx context.Context, item *domain.Item) (domain.Par
 	case domain.KindPhoto:
 		parts := item.Parts
 		if len(parts) == 0 {
-			found, err := s.DB.Parts(ctx, item.ID)
+			found, err := s.db(ctx).Parts(ctx, item.ID)
 			if err != nil {
 				s.logger().Warn("could not read a photograph's file", "item", item.ID, "error", err)
 				return domain.Part{}, false
@@ -453,7 +453,7 @@ func (s *Server) photoSource(ctx context.Context, item *domain.Item) (domain.Par
 			return parts[0], true
 		}
 	case domain.KindPhotoAlbum:
-		part, err := s.DB.AlbumCover(ctx, item.ID)
+		part, err := s.db(ctx).AlbumCover(ctx, item.ID)
 		if err == nil {
 			return *part, true
 		}
@@ -480,7 +480,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	part, err := s.DB.Part(r.Context(), id)
+	part, err := s.db(r.Context()).Part(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such file", http.StatusNotFound)
 		return

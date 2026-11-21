@@ -103,6 +103,15 @@ Peak means peak: a scan that allocates 400 MB for a moment and settles back to
     capped in number, in its own process group, with an idle deadline, killed
     as a group, and freed early when a client says it has stopped.
 
+14. **A restriction costs one predicate, not a second query path.**
+    Narrowing a credential to some of the libraries hands the handlers a copy
+    of the database handle carrying a set of section ids, and every query that
+    returns a library, an item or a file appends `AND section_id IN (…)` to
+    the statement it was already running. No second set of queries to keep in
+    step with the first, no post-filtering of a page that would make a count
+    wrong, and nothing cached per credential: the sets are a handful of
+    integers read once per request alongside the token.
+
 ## Proving it
 
 - `go test ./...` runs `goleak` per package: goroutine leaks fail the build.

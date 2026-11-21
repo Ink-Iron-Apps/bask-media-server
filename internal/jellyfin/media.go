@@ -106,7 +106,7 @@ func (s *Server) streamsOf(ctx context.Context, it domain.Item) []mediaStream {
 	if !it.Playable() {
 		return nil
 	}
-	subs, err := s.DB.Subtitles(ctx, []int64{it.ID})
+	subs, err := s.db(ctx).Subtitles(ctx, []int64{it.ID})
 	if err != nil {
 		s.logger().Warn("could not read subtitles", "error", err)
 		return nil
@@ -177,7 +177,7 @@ func (s *Server) image(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad item", http.StatusBadRequest)
 		return
 	}
-	found, err := s.DB.Item(r.Context(), id)
+	found, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
 		return
@@ -242,7 +242,7 @@ func (s *Server) inheritedPoster(ctx context.Context, it *domain.Item) string {
 		if parent == nil {
 			return ""
 		}
-		above, err := s.DB.Item(ctx, *parent)
+		above, err := s.db(ctx).Item(ctx, *parent)
 		if err != nil {
 			return ""
 		}
@@ -259,7 +259,7 @@ func (s *Server) photoSource(ctx context.Context, it *domain.Item) (domain.Part,
 	case domain.KindPhoto:
 		parts := it.Parts
 		if len(parts) == 0 {
-			found, err := s.DB.Parts(ctx, it.ID)
+			found, err := s.db(ctx).Parts(ctx, it.ID)
 			if err != nil {
 				return domain.Part{}, false
 			}
@@ -269,7 +269,7 @@ func (s *Server) photoSource(ctx context.Context, it *domain.Item) (domain.Part,
 			return parts[0], true
 		}
 	case domain.KindPhotoAlbum:
-		part, err := s.DB.AlbumCover(ctx, it.ID)
+		part, err := s.db(ctx).AlbumCover(ctx, it.ID)
 		if err == nil {
 			return *part, true
 		}
@@ -295,7 +295,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad item", http.StatusBadRequest)
 		return
 	}
-	found, err := s.DB.Item(r.Context(), id)
+	found, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
 		return
@@ -349,7 +349,7 @@ func (s *Server) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad item", http.StatusBadRequest)
 		return
 	}
-	found, err := s.DB.Item(r.Context(), id)
+	found, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
 		return
@@ -394,7 +394,7 @@ func (s *Server) subtitleStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad subtitle", http.StatusBadRequest)
 		return
 	}
-	sub, err := s.DB.Subtitle(r.Context(), id)
+	sub, err := s.db(r.Context()).Subtitle(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such subtitle", http.StatusNotFound)
 		return

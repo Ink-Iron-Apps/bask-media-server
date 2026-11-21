@@ -121,7 +121,7 @@ func library(t *testing.T) (*jellyfin.Server, string, *store.DB) {
 	}
 
 	return &jellyfin.Server{
-		DB: db, Name: "BMS test", MachineID: "0123456789abcdef0123456789abcdef0123", Version: "test",
+		Store: db, Name: "BMS test", MachineID: "0123456789abcdef0123456789abcdef0123", Version: "test",
 		Artwork: images, Subtitles: &subtitles.Converter{},
 	}, token, db
 }

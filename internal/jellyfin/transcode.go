@@ -426,7 +426,7 @@ func (s *Server) sessionFor(w http.ResponseWriter, r *http.Request) (*transcode.
 		http.Error(w, "bad item", http.StatusBadRequest)
 		return nil, false
 	}
-	found, err := s.DB.Item(r.Context(), id)
+	found, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
 		return nil, false
@@ -564,7 +564,7 @@ func (s *Server) partsOfPlaySession(ctx context.Context, play string) []int64 {
 	if err != nil {
 		return nil
 	}
-	found2, err := s.DB.Item(ctx, id)
+	found2, err := s.db(ctx).Item(ctx, id)
 	if err != nil {
 		return nil
 	}

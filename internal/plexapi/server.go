@@ -21,9 +21,14 @@ import (
 
 // Server serves the Plex-compatible surface.
 type Server struct {
-	DB   *store.DB
-	Log  *slog.Logger
-	Name string // friendlyName a client shows for this server
+	// Store is the library, unrestricted. Handlers do not query it directly:
+	// they call s.db(ctx), which narrows it to what the request's credential
+	// may see. The exceptions are the reads that decide the restriction —
+	// resolving a token, reading a server-wide setting — and they say so by
+	// naming this field.
+	Store *store.DB
+	Log   *slog.Logger
+	Name  string // friendlyName a client shows for this server
 	// MachineID is this server's permanent identity. A client that sees it
 	// change treats BMS as a different server and forgets every setting,
 	// every playback position and every download it had, so it is generated
@@ -40,7 +45,7 @@ type Server struct {
 	Subtitles *subtitles.Converter
 }
 
-type userKey struct{}
+type credKey struct{}
 
 // Handler builds the routes. Go's pattern-matching mux covers everything here,
 // so there is no router dependency and no reflection in the hot path.
@@ -88,7 +93,7 @@ func (s *Server) authenticate(next http.HandlerFunc) http.HandlerFunc {
 		if token == "" {
 			token = r.URL.Query().Get("X-Plex-Token")
 		}
-		user, err := s.DB.UserForToken(r.Context(), token)
+		cred, err := s.Store.Credential(r.Context(), token)
 		if errors.Is(err, store.ErrNotFound) {
 			// 401 with the header Plex clients expect, so a client prompts for
 			// a sign-in rather than reporting a broken server.
@@ -101,13 +106,44 @@ func (s *Server) authenticate(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), userKey{}, user)))
+		// What the client calls itself, for the token list. Plex clients send
+		// it in their own headers; worth showing, never a gate.
+		s.Store.NoteTokenDevice(r.Context(), cred.TokenID, deviceFrom(r))
+		next(w, r.WithContext(context.WithValue(r.Context(), credKey{}, cred)))
 	}
 }
 
 func userFrom(ctx context.Context) *domain.User {
-	user, _ := ctx.Value(userKey{}).(*domain.User)
-	return user
+	cred := credFrom(ctx)
+	if cred == nil {
+		return nil
+	}
+	return &cred.User
+}
+
+// credFrom is the credential this request authenticated with, nil on the
+// unauthenticated identity route.
+func credFrom(ctx context.Context) *domain.Credential {
+	cred, _ := ctx.Value(credKey{}).(*domain.Credential)
+	return cred
+}
+
+// db is the library as this request's credential may see it. Handlers read
+// through this and never through s.Store, so a library hidden from a device is
+// hidden from every answer rather than only from the list of libraries.
+func (s *Server) db(ctx context.Context) *store.DB {
+	return s.Store.Scoped(credFrom(ctx))
+}
+
+// deviceFrom reads how a Plex client described itself, for the token list.
+// Client-supplied, so it is shown and never trusted.
+func deviceFrom(r *http.Request) string {
+	for _, header := range []string{"X-Plex-Device-Name", "X-Plex-Model", "X-Plex-Product", "X-Plex-Client-Identifier"} {
+		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (s *Server) logger() *slog.Logger {
@@ -124,7 +160,7 @@ func (s *Server) logger() *slog.Logger {
 // see the new name without the server being restarted. It is one indexed point
 // read against a table with a handful of rows.
 func (s *Server) friendlyName(ctx context.Context) string {
-	stored, err := s.DB.ServerValue(ctx, store.KeyFriendlyName)
+	stored, err := s.Store.ServerValue(ctx, store.KeyFriendlyName)
 	if err != nil {
 		s.logger().Warn("could not read the server name", "error", err)
 		return s.Name
@@ -146,7 +182,7 @@ func (s *Server) identity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sections(w http.ResponseWriter, r *http.Request) {
-	sections, err := s.DB.Sections(r.Context())
+	sections, err := s.db(r.Context()).Sections(r.Context())
 	if err != nil {
 		s.fail(w, "list sections", err)
 		return
@@ -201,7 +237,7 @@ func (s *Server) sectionAll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad section", http.StatusBadRequest)
 		return
 	}
-	section, err := s.DB.Section(r.Context(), id)
+	section, err := s.db(r.Context()).Section(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such section", http.StatusNotFound)
 		return
@@ -215,7 +251,7 @@ func (s *Server) sectionAll(w http.ResponseWriter, r *http.Request) {
 	viewGroup := string(kind)
 
 	page := pageFrom(r)
-	items, total, err := s.DB.SectionItems(r.Context(), id, kind, page)
+	items, total, err := s.db(r.Context()).SectionItems(r.Context(), id, kind, page)
 	if err != nil {
 		s.fail(w, "list items", err)
 		return
@@ -243,7 +279,7 @@ func (s *Server) metadata(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad key", http.StatusBadRequest)
 		return
 	}
-	item, err := s.DB.Item(r.Context(), id)
+	item, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
 		return
@@ -252,7 +288,7 @@ func (s *Server) metadata(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "read item", err)
 		return
 	}
-	section, err := s.DB.Section(r.Context(), item.SectionID)
+	section, err := s.db(r.Context()).Section(r.Context(), item.SectionID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.fail(w, "read section", err)
 		return
@@ -276,7 +312,7 @@ func (s *Server) children(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad key", http.StatusBadRequest)
 		return
 	}
-	parent, err := s.DB.Item(r.Context(), id)
+	parent, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
 		return
@@ -287,12 +323,12 @@ func (s *Server) children(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := pageFrom(r)
-	items, total, err := s.DB.Children(r.Context(), id, page)
+	items, total, err := s.db(r.Context()).Children(r.Context(), id, page)
 	if err != nil {
 		s.fail(w, "list children", err)
 		return
 	}
-	section, err := s.DB.Section(r.Context(), parent.SectionID)
+	section, err := s.db(r.Context()).Section(r.Context(), parent.SectionID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.fail(w, "read section", err)
 		return
@@ -344,7 +380,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 		write(w, r, container{Size: 0})
 		return
 	}
-	items, total, err := s.DB.Search(r.Context(), query, pageFrom(r))
+	items, total, err := s.db(r.Context()).Search(r.Context(), query, pageFrom(r))
 	if err != nil {
 		s.fail(w, "search", err)
 		return
@@ -361,7 +397,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 // rows (Recently Added, On Deck per section) slot into the same structure.
 func (s *Server) hubs(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r.Context())
-	items, err := s.DB.ContinueWatching(r.Context(), user.ID, 20)
+	items, err := s.db(r.Context()).ContinueWatching(r.Context(), user.ID, 20)
 	if err != nil {
 		s.fail(w, "continue watching", err)
 		return
@@ -395,7 +431,7 @@ func (s *Server) timeline(w http.ResponseWriter, r *http.Request) {
 	if q.Get("state") == "stopped" && domain.Finished(p.Offset, p.Duration) {
 		p.Watched = true
 	}
-	if err := s.DB.SaveProgress(r.Context(), p); err != nil {
+	if err := s.db(r.Context()).SaveProgress(r.Context(), p); err != nil {
 		s.fail(w, "save progress", err)
 		return
 	}
@@ -413,7 +449,7 @@ func (s *Server) setWatched(w http.ResponseWriter, r *http.Request, watched bool
 		return
 	}
 
-	item, err := s.DB.Item(r.Context(), id)
+	item, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
 		return
@@ -427,7 +463,7 @@ func (s *Server) setWatched(w http.ResponseWriter, r *http.Request, watched bool
 	if watched {
 		p.Offset = item.Duration
 	}
-	if err := s.DB.SaveProgress(r.Context(), p); err != nil {
+	if err := s.db(r.Context()).SaveProgress(r.Context(), p); err != nil {
 		s.fail(w, "save progress", err)
 		return
 	}
@@ -447,7 +483,7 @@ func (s *Server) streamPart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad part", http.StatusBadRequest)
 		return
 	}
-	p, err := s.DB.Part(r.Context(), id)
+	p, err := s.db(r.Context()).Part(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such part", http.StatusNotFound)
 		return
@@ -483,7 +519,7 @@ func (s *Server) serveImage(w http.ResponseWriter, r *http.Request, backdrop boo
 		http.Error(w, "bad key", http.StatusBadRequest)
 		return
 	}
-	item, err := s.DB.Item(r.Context(), id)
+	item, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
 		return
@@ -529,7 +565,7 @@ func (s *Server) photoTranscode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad url", http.StatusBadRequest)
 		return
 	}
-	item, err := s.DB.Item(r.Context(), id)
+	item, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
 		return
@@ -577,7 +613,7 @@ func (s *Server) photoSource(ctx context.Context, item *domain.Item) (domain.Par
 	case domain.KindPhoto:
 		parts := item.Parts
 		if len(parts) == 0 {
-			found, err := s.DB.Parts(ctx, item.ID)
+			found, err := s.db(ctx).Parts(ctx, item.ID)
 			if err != nil {
 				s.logger().Warn("could not read a photograph's file", "item", item.ID, "error", err)
 				return domain.Part{}, false
@@ -588,7 +624,7 @@ func (s *Server) photoSource(ctx context.Context, item *domain.Item) (domain.Par
 			return parts[0], true
 		}
 	case domain.KindPhotoAlbum:
-		part, err := s.DB.AlbumCover(ctx, item.ID)
+		part, err := s.db(ctx).AlbumCover(ctx, item.ID)
 		if err == nil {
 			return *part, true
 		}
@@ -628,7 +664,7 @@ func (s *Server) appendItems(ctx context.Context, out *container, section *domai
 	}
 	var progress map[int64]domain.Progress
 	if user != nil {
-		if p, err := s.DB.Progress(ctx, user.ID, ids); err == nil {
+		if p, err := s.db(ctx).Progress(ctx, user.ID, ids); err == nil {
 			progress = p
 		} else {
 			s.logger().Warn("could not read progress", "error", err)
@@ -644,14 +680,14 @@ func (s *Server) appendItems(ctx context.Context, out *container, section *domai
 		subtitlesByItem map[int64][]domain.Subtitle
 	)
 	if want.markers {
-		if m, err := s.DB.Markers(ctx, ids); err == nil {
+		if m, err := s.db(ctx).Markers(ctx, ids); err == nil {
 			markersByItem = m
 		} else {
 			s.logger().Warn("could not read markers", "error", err)
 		}
 	}
 	if want.chapters {
-		if c, err := s.DB.Chapters(ctx, ids); err == nil {
+		if c, err := s.db(ctx).Chapters(ctx, ids); err == nil {
 			chaptersByItem = c
 		} else {
 			s.logger().Warn("could not read chapters", "error", err)
@@ -659,7 +695,7 @@ func (s *Server) appendItems(ctx context.Context, out *container, section *domai
 	}
 
 	if want.streams {
-		if subs, err := s.DB.Subtitles(ctx, ids); err == nil {
+		if subs, err := s.db(ctx).Subtitles(ctx, ids); err == nil {
 			subtitlesByItem = subs
 		} else {
 			s.logger().Warn("could not read subtitles", "error", err)
@@ -715,7 +751,7 @@ func (s *Server) relatives(ctx context.Context, items []domain.Item, ids []int64
 		}
 	}
 	if len(wanted) > 0 {
-		parents, err := s.DB.ItemsByIDs(ctx, wanted)
+		parents, err := s.db(ctx).ItemsByIDs(ctx, wanted)
 		if err != nil {
 			s.logger().Warn("could not read parents", "error", err)
 		} else {
@@ -729,7 +765,7 @@ func (s *Server) relatives(ctx context.Context, items []domain.Item, ids []int64
 				}
 			}
 			if len(grand) > 0 {
-				if more, err := s.DB.ItemsByIDs(ctx, grand); err == nil {
+				if more, err := s.db(ctx).ItemsByIDs(ctx, grand); err == nil {
 					for id, item := range more {
 						out.parents[id] = item
 					}
@@ -745,7 +781,7 @@ func (s *Server) relatives(ctx context.Context, items []domain.Item, ids []int64
 		}
 	}
 	if len(containers) > 0 {
-		if counts, err := s.DB.ChildCounts(ctx, containers); err == nil {
+		if counts, err := s.db(ctx).ChildCounts(ctx, containers); err == nil {
 			out.counts = counts
 		} else {
 			s.logger().Warn("could not count children", "error", err)
@@ -961,7 +997,7 @@ func (s *Server) subtitleStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad stream", http.StatusBadRequest)
 		return
 	}
-	sub, err := s.DB.Subtitle(r.Context(), id)
+	sub, err := s.db(r.Context()).Subtitle(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such stream", http.StatusNotFound)
 		return

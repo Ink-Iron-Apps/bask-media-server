@@ -143,7 +143,7 @@ func newHarnessWith(t *testing.T, fit func(*web.Server)) *harness {
 		t.Fatal(err)
 	}
 
-	viewing := &web.Server{DB: db, Name: "Bask Media Server"}
+	viewing := &web.Server{Store: db, Name: "Bask Media Server"}
 	if fit != nil {
 		fit(viewing)
 	}

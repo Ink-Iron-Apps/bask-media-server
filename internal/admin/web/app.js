@@ -621,34 +621,95 @@ function showSecret(token, note) {
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
+// libraryPicker is the row of checkboxes that decides which libraries one
+// token may see.
+//
+// Every box ticked is stored as no restriction at all, so a library added
+// later is visible to that device rather than quietly missing from it. Saving
+// is explicit: a half-ticked set of boxes is somebody mid-thought, not an
+// instruction.
+function libraryPicker(token, sections, onSaved) {
+  const chosen = new Set(token.sections || []);
+  const all = chosen.size === 0;
+  const boxes = sections.map((section) => {
+    const box = el('input', {
+      type: 'checkbox',
+      id: 'tok' + token.id + 'sec' + section.id,
+    });
+    box.checked = all || chosen.has(section.id);
+    return { section, box };
+  });
+
+  const summary = el('span', { class: 'muted' });
+  const describe = () => {
+    const ticked = boxes.filter((b) => b.box.checked);
+    summary.textContent = ticked.length === sections.length
+      ? 'every library'
+      : ticked.length === 0
+        ? 'nothing ticked yet'
+        : ticked.map((b) => b.section.title).join(', ');
+  };
+  describe();
+  for (const b of boxes) b.box.addEventListener('change', describe);
+
+  return el('div', { class: 'row wrap' },
+    boxes.map((b) => el('label', { class: 'check', for: b.box.id }, b.box, b.section.title)),
+    el('button', {
+      text: 'Save libraries',
+      on: {
+        click: async () => {
+          const ticked = boxes.filter((b) => b.box.checked).map((b) => b.section.id);
+          if (ticked.length === 0) {
+            toast('Tick at least one library. To stop this device reaching anything, revoke its token.', true);
+            return;
+          }
+          try {
+            await api('PATCH', '/tokens/' + token.id, { sections: ticked });
+            toast(ticked.length === sections.length ? 'This device sees every library.' : 'Saved.');
+            onSaved();
+          } catch (err) { failed(err); }
+        },
+      },
+    }),
+    summary);
+}
+
 async function showTokens(user) {
   try {
     const tokens = (await api('GET', '/users/' + user.id + '/tokens')) || [];
+    const sections = (await api('GET', '/sections')) || [];
     const label = el('input', { placeholder: 'living room' });
 
-    const rows = tokens.map((t) => el('tr', {},
-      el('td', { text: t.label || '—' }),
-      el('td', { class: 'muted', text: 'added ' + when(t.createdAt) }),
-      el('td', { class: 'muted', text: 'last used ' + when(t.lastSeenAt) }),
-      el('td', { class: 'right' }, el('button', {
-        class: 'danger',
-        text: 'Revoke',
-        on: {
-          click: async () => {
-            if (!confirm('Revoke this token?\n\nThe client holding it is signed out the next time it asks for anything.')) return;
-            try {
-              await api('DELETE', '/tokens/' + t.id);
-              toast('Revoked.');
-              showTokens(user);
-            } catch (err) { failed(err); }
+    const rows = tokens.flatMap((t) => [
+      el('tr', {},
+        el('td', {}, el('strong', { text: t.label || '—' }),
+          t.device ? el('div', { class: 'muted', text: 'last signed in as ' + t.device }) : null),
+        el('td', { class: 'muted', text: 'added ' + when(t.createdAt) }),
+        el('td', { class: 'muted', text: 'last used ' + when(t.lastSeenAt) }),
+        el('td', { class: 'right' }, el('button', {
+          class: 'danger',
+          text: 'Revoke',
+          on: {
+            click: async () => {
+              if (!confirm('Revoke this token?\n\nThe client holding it is signed out the next time it asks for anything.')) return;
+              try {
+                await api('DELETE', '/tokens/' + t.id);
+                toast('Revoked.');
+                showTokens(user);
+              } catch (err) { failed(err); }
+            },
           },
-        },
-      }))));
+        }))),
+      sections.length
+        ? el('tr', {}, el('td', { colspan: '4' },
+            libraryPicker(t, sections, () => showTokens(user))))
+        : null,
+    ]);
 
     const main = document.getElementById('main');
     fill(main,
       el('div', { class: 'head' }, el('div', {}, el('h1', { text: user.username }),
-        el('p', { class: 'muted', text: 'One token per device is worth the minute it costs: revoking one then signs out one television.' })),
+        el('p', { class: 'muted', text: 'One token per device is worth the minute it costs: revoking one then signs out one television, and the libraries ticked under a token are the only ones that device can reach.' })),
         el('button', { text: 'Back to users', on: { click: () => render() } })),
       el('div', { class: 'card' }, tokens.length
         ? el('table', {}, el('tbody', {}, rows))

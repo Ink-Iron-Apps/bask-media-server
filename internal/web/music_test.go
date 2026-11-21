@@ -90,7 +90,7 @@ func newListening(t *testing.T) *listening {
 		}
 	}
 
-	viewing := &web.Server{DB: db, Name: "Bask Media Server", Artwork: images}
+	viewing := &web.Server{Store: db, Name: "Bask Media Server", Artwork: images}
 	server := httptest.NewServer(viewing.Handler())
 	t.Cleanup(server.Close)
 	jar, err := cookiejar.New(nil)

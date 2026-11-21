@@ -42,8 +42,13 @@ const maxBody = 8 << 10
 
 // Server is the viewing interface.
 type Server struct {
-	DB  *store.DB
-	Log *slog.Logger
+	// Store is the library, unrestricted. Handlers do not query it directly:
+	// they call s.db(ctx), which narrows it to what the request's credential
+	// may see. The exceptions are the reads that decide the restriction —
+	// resolving a token, reading a server-wide setting — and they say so by
+	// naming this field.
+	Store *store.DB
+	Log   *slog.Logger
 
 	// Name is the fallback name shown in the corner; the stored one wins.
 	Name string
@@ -70,7 +75,7 @@ type Server struct {
 	SessionTTL time.Duration
 }
 
-type userKey struct{}
+type credKey struct{}
 
 // Handler builds the viewing routes, which carry their /web prefix because
 // the handler is mounted beside the Plex surface without stripping it.
@@ -125,7 +130,7 @@ func (s *Server) authenticate(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "sign in first")
 			return
 		}
-		user, err := s.DB.SessionUser(r.Context(), cookie.Value)
+		cred, err := s.Store.SessionCredential(r.Context(), cookie.Value)
 		if errors.Is(err, store.ErrNotFound) {
 			s.clearCookie(w, r)
 			writeError(w, http.StatusUnauthorized, "that session has expired")
@@ -135,13 +140,31 @@ func (s *Server) authenticate(next http.HandlerFunc) http.HandlerFunc {
 			s.fail(w, "resolve session", err)
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), userKey{}, user)))
+		next(w, r.WithContext(context.WithValue(r.Context(), credKey{}, cred)))
 	}
 }
 
 func userFrom(ctx context.Context) *domain.User {
-	user, _ := ctx.Value(userKey{}).(*domain.User)
-	return user
+	cred := credFrom(ctx)
+	if cred == nil {
+		return nil
+	}
+	return &cred.User
+}
+
+// credFrom is the credential behind this request's session.
+func credFrom(ctx context.Context) *domain.Credential {
+	cred, _ := ctx.Value(credKey{}).(*domain.Credential)
+	return cred
+}
+
+// db is the library as this session may see it.
+//
+// A session inherits the restriction of the token it was signed in with, so
+// opening the web interface on a television shows that television's libraries
+// and nothing else. See [store.DB.SessionCredential].
+func (s *Server) db(ctx context.Context) *store.DB {
+	return s.Store.Scoped(credFrom(ctx))
 }
 
 func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +174,7 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &body) {
 		return
 	}
-	user, err := s.DB.UserForToken(r.Context(), strings.TrimSpace(body.Token))
+	cred, err := s.Store.Credential(r.Context(), strings.TrimSpace(body.Token))
 	if errors.Is(err, store.ErrNotFound) {
 		s.logger().Warn("rejected a sign-in to the web interface", "remote", clientIP(r))
 		writeError(w, http.StatusUnauthorized, "that token is not valid")
@@ -162,7 +185,9 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret, err := s.DB.CreateSession(r.Context(), user.ID, s.sessionTTL())
+	// The session remembers which token opened it, so it sees exactly what
+	// that token may see rather than the whole library.
+	secret, err := s.Store.CreateSession(r.Context(), cred.User.ID, cred.TokenID, s.sessionTTL())
 	if err != nil {
 		s.fail(w, "create session", err)
 		return
@@ -176,12 +201,12 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(s.sessionTTL().Seconds()),
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"username": user.Username, "admin": user.Admin})
+	writeJSON(w, http.StatusOK, map[string]any{"username": cred.User.Username, "admin": cred.User.Admin})
 }
 
 func (s *Server) signOut(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(cookieName); err == nil {
-		if err := s.DB.DeleteSession(r.Context(), cookie.Value); err != nil {
+		if err := s.Store.DeleteSession(r.Context(), cookie.Value); err != nil {
 			s.fail(w, "delete session", err)
 			return
 		}

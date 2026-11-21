@@ -28,9 +28,15 @@ import (
 var ErrNotFound = errors.New("not found")
 
 // DB is a handle on the library database.
+//
+// A handle can be narrowed to a subset of the libraries with [DB.Visible],
+// which returns a copy sharing this one's connection pool. Every query that
+// returns a library, an item or a file consults that set, so a request holding
+// a narrowed handle cannot reach past it.
 type DB struct {
-	sql  *sql.DB
-	path string
+	sql     *sql.DB
+	path    string
+	visible *visibility
 }
 
 // Open opens or creates the database at path and brings the schema up to date.
@@ -310,6 +316,34 @@ var migrations = []string{
 	// column because it is per track while the artist is per album, and
 	// because a compilation is unreadable without it.
 	`ALTER TABLE items ADD COLUMN performer TEXT NOT NULL DEFAULT ''`,
+
+	// Which libraries a token may see.
+	//
+	// A token is BMS's per-device credential, so a row here is "this device
+	// may see that library" without inventing a second notion of a device:
+	// the television has its own token already, because that is what makes it
+	// revocable on its own.
+	//
+	// No row for a token means no restriction, which is what keeps this table
+	// empty on every database that does not want the feature and makes the
+	// migration a no-op in behaviour as well as in shape.
+	`CREATE TABLE token_sections (
+		token_id   INTEGER NOT NULL REFERENCES tokens(id) ON DELETE CASCADE,
+		section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
+		PRIMARY KEY (token_id, section_id)
+	)`,
+
+	// What last signed in with a token, as the client described itself. Shown
+	// beside the label a human typed so a list of credentials reads as a list
+	// of devices; never consulted to decide anything, because a client writes
+	// this field itself.
+	`ALTER TABLE tokens ADD COLUMN device TEXT NOT NULL DEFAULT ''`,
+
+	// The token a browser session was born from, so the web interface sees
+	// exactly what the credential it was handed may see. Zero for the
+	// sessions that predate this column, which are therefore unrestricted —
+	// the same answer they were already getting.
+	`ALTER TABLE sessions ADD COLUMN token_id INTEGER NOT NULL DEFAULT 0`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

@@ -77,7 +77,7 @@ func newHarness(t *testing.T) *harness {
 	runner := &jobs.Runner{DB: db, Provider: jobs.TMDBProvider(db, "", 2)}
 	t.Cleanup(runner.Shutdown)
 
-	api := &plexapi.Server{DB: db, Name: "Bask Media Server", MachineID: "machine-1", Version: "test"}
+	api := &plexapi.Server{Store: db, Name: "Bask Media Server", MachineID: "machine-1", Version: "test"}
 	panel := &admin.Server{DB: db, Jobs: runner, Name: "Bask Media Server", MachineID: "machine-1", Version: "test"}
 
 	mux := http.NewServeMux()
@@ -633,7 +633,7 @@ func TestAnExpiredSessionIsNotASession(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t)
 
-	secret, err := h.db.CreateSession(ctx, h.adminID, time.Millisecond)
+	secret, err := h.db.CreateSession(ctx, h.adminID, 0, time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}

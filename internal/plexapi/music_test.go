@@ -107,7 +107,7 @@ func mixedLibrary(t *testing.T) (*plexapi.Server, string, *store.DB) {
 		t.Fatal(err)
 	}
 	return &plexapi.Server{
-		DB: db, Name: "BMS test", MachineID: "machine-1", Version: "test", Artwork: images,
+		Store: db, Name: "BMS test", MachineID: "machine-1", Version: "test", Artwork: images,
 	}, token, db
 }
 

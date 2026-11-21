@@ -45,7 +45,11 @@ const SessionTTL = 14 * 24 * time.Hour
 
 // CreateSession starts a browser session for a user and returns its secret
 // once. Only the hash is stored, for the same reason tokens are hashed.
-func (d *DB) CreateSession(ctx context.Context, userID int64, ttl time.Duration) (string, error) {
+//
+// tokenID is the credential the session was signed in with, and it is kept so
+// the session can see exactly what that credential may see. Zero where there
+// was none, which is unrestricted.
+func (d *DB) CreateSession(ctx context.Context, userID, tokenID int64, ttl time.Duration) (string, error) {
 	if ttl <= 0 {
 		ttl = SessionTTL
 	}
@@ -58,16 +62,22 @@ func (d *DB) CreateSession(ctx context.Context, userID int64, ttl time.Duration)
 
 	now := time.Now().UTC()
 	if _, err := d.sql.ExecContext(ctx,
-		`INSERT INTO sessions (user_id, hash, created_at, expires_at) VALUES (?, ?, ?, ?)`,
-		userID, sum[:], millis(now), millis(now.Add(ttl))); err != nil {
+		`INSERT INTO sessions (user_id, token_id, hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
+		userID, tokenID, sum[:], millis(now), millis(now.Add(ttl))); err != nil {
 		return "", fmt.Errorf("store session: %w", err)
 	}
 	return secret, nil
 }
 
-// SessionUser resolves a session secret to its user, or ErrNotFound when it is
-// unknown or has expired.
-func (d *DB) SessionUser(ctx context.Context, secret string) (*domain.User, error) {
+// SessionCredential resolves a session secret to its account and the libraries
+// the token it was signed in with may reach, or ErrNotFound when the session
+// is unknown or has expired.
+//
+// A browser inherits its token's restriction rather than having one of its
+// own. Handing a device a narrowed token and then letting the same token open
+// the whole library through a web page would be a restriction with a door
+// beside it.
+func (d *DB) SessionCredential(ctx context.Context, secret string) (*domain.Credential, error) {
 	if secret == "" {
 		return nil, ErrNotFound
 	}
@@ -75,13 +85,13 @@ func (d *DB) SessionUser(ctx context.Context, secret string) (*domain.User, erro
 
 	var (
 		u                    domain.User
-		sessionID            int64
+		sessionID, tokenID   int64
 		createdAt, expiresAt int64
 	)
 	err := d.sql.QueryRowContext(ctx,
-		`SELECT s.id, s.expires_at, u.id, u.username, u.admin, u.created_at
+		`SELECT s.id, s.token_id, s.expires_at, u.id, u.username, u.admin, u.created_at
 		   FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.hash = ?`, sum[:]).
-		Scan(&sessionID, &expiresAt, &u.ID, &u.Username, &u.Admin, &createdAt)
+		Scan(&sessionID, &tokenID, &expiresAt, &u.ID, &u.Username, &u.Admin, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -96,9 +106,28 @@ func (d *DB) SessionUser(ctx context.Context, secret string) (*domain.User, erro
 	}
 	u.CreatedAt = fromMillis(createdAt)
 
+	cred := &domain.Credential{User: u, TokenID: tokenID}
+	if tokenID != 0 {
+		sections, err := d.unscoped().TokenSections(ctx, tokenID)
+		if err != nil {
+			return nil, err
+		}
+		cred.Sections = sections
+	}
+
 	_, _ = d.sql.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id = ?`,
 		millis(time.Now().UTC()), sessionID)
-	return &u, nil
+	return cred, nil
+}
+
+// SessionUser resolves a session secret to its user, for the callers that only
+// need to know who it is.
+func (d *DB) SessionUser(ctx context.Context, secret string) (*domain.User, error) {
+	cred, err := d.SessionCredential(ctx, secret)
+	if err != nil {
+		return nil, err
+	}
+	return &cred.User, nil
 }
 
 // DeleteSession signs one browser out.
@@ -201,7 +230,7 @@ func (d *DB) CountAdmins(ctx context.Context) (int, error) {
 // it, and the admin API does not.
 func (d *DB) Tokens(ctx context.Context, userID int64) ([]domain.Token, error) {
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT id, user_id, label, hash, created_at, last_seen_at
+		`SELECT id, user_id, label, hash, created_at, last_seen_at, device
 		   FROM tokens WHERE user_id = ? ORDER BY id`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list tokens: %w", err)
@@ -214,7 +243,7 @@ func (d *DB) Tokens(ctx context.Context, userID int64) ([]domain.Token, error) {
 			t                     domain.Token
 			createdAt, lastSeenAt int64
 		)
-		if err := rows.Scan(&t.ID, &t.UserID, &t.Label, &t.Hash, &createdAt, &lastSeenAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.UserID, &t.Label, &t.Hash, &createdAt, &lastSeenAt, &t.Device); err != nil {
 			return nil, fmt.Errorf("scan token: %w", err)
 		}
 		t.CreatedAt, t.LastSeenAt = fromMillis(createdAt), fromMillis(lastSeenAt)

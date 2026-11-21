@@ -207,7 +207,7 @@ func (s *Server) relatives(ctx context.Context, items []domain.Item) related {
 		}
 	}
 	if len(wanted) > 0 {
-		parents, err := s.DB.ItemsByIDs(ctx, wanted)
+		parents, err := s.db(ctx).ItemsByIDs(ctx, wanted)
 		if err != nil {
 			s.logger().Warn("could not read parents", "error", err)
 		} else {
@@ -219,7 +219,7 @@ func (s *Server) relatives(ctx context.Context, items []domain.Item) related {
 				}
 			}
 			if len(grand) > 0 {
-				if more, err := s.DB.ItemsByIDs(ctx, grand); err == nil {
+				if more, err := s.db(ctx).ItemsByIDs(ctx, grand); err == nil {
 					for id, item := range more {
 						out.parents[id] = item
 					}
@@ -235,7 +235,7 @@ func (s *Server) relatives(ctx context.Context, items []domain.Item) related {
 		}
 	}
 	if len(folders) > 0 {
-		if counts, err := s.DB.ChildCounts(ctx, folders); err == nil {
+		if counts, err := s.db(ctx).ChildCounts(ctx, folders); err == nil {
 			out.counts = counts
 		} else {
 			s.logger().Warn("could not count children", "error", err)

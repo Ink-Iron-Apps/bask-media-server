@@ -130,6 +130,7 @@ func (s *Server) Handler() http.Handler {
 	authed("DELETE /admin/api/users/{id}", s.deleteUser)
 	authed("GET /admin/api/users/{id}/tokens", s.listTokens)
 	authed("POST /admin/api/users/{id}/tokens", s.issueToken)
+	authed("PATCH /admin/api/tokens/{id}", s.updateToken)
 	authed("DELETE /admin/api/tokens/{id}", s.revokeToken)
 
 	authed("GET /admin/api/settings", s.readSettings)
@@ -215,7 +216,9 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secret, err := s.DB.CreateSession(r.Context(), user.ID, s.SessionTTL)
+	// Zero token: the admin interface administers the server rather than
+	// browsing a library, so it is never narrowed by a token's grants.
+	secret, err := s.DB.CreateSession(r.Context(), user.ID, 0, s.SessionTTL)
 	if err != nil {
 		s.fail(w, "create session", err)
 		return

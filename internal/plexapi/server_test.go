@@ -86,7 +86,7 @@ func library(t *testing.T) (*plexapi.Server, string, *store.DB) {
 		t.Fatal(err)
 	}
 
-	return &plexapi.Server{DB: db, Name: "BMS test", MachineID: "machine-1", Version: "test"}, token, db
+	return &plexapi.Server{Store: db, Name: "BMS test", MachineID: "machine-1", Version: "test"}, token, db
 }
 
 func get(t *testing.T, srv *plexapi.Server, token, path string) map[string]any {

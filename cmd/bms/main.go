@@ -292,7 +292,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	converter := &subtitles.Converter{FFmpeg: ffmpegPath(cfg.ffmpegPath)}
 
 	api := &plexapi.Server{
-		DB: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version,
+		Store: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version,
 		Artwork: images, Subtitles: converter,
 	}
 
@@ -308,7 +308,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 			// are told an address rather than an account — which is every
 			// client a server like this one can actually be reached by.
 			emby := &jellyfin.Server{
-				DB: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version,
+				Store: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version,
 				Artwork: images, Subtitles: converter,
 			}
 			if transcoder != nil {
@@ -349,7 +349,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 		}
 		if cfg.webUI {
 			viewing := &web.Server{
-				DB:      db,
+				Store:   db,
 				Log:     log,
 				Name:    cfg.name,
 				Artwork: images,

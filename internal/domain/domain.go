@@ -205,6 +205,23 @@ type Token struct {
 	Hash       []byte
 	CreatedAt  time.Time
 	LastSeenAt time.Time
+	// Device is what the client holding this token last called itself, as it
+	// described itself in a header. Shown, never trusted.
+	Device string
+}
+
+// Credential is who a presented secret belongs to and what it may reach: the
+// account, the token row it was resolved through, and the libraries that token
+// is restricted to.
+//
+// Sections empty means no restriction rather than no access. A token with no
+// grants is the ordinary case — every token until somebody narrows one — and
+// the store turns this into a database handle so no surface has to decide what
+// an empty list means.
+type Credential struct {
+	User     User
+	TokenID  int64
+	Sections []int64
 }
 
 // Progress is one user's position in one item.

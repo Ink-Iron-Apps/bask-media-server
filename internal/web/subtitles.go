@@ -76,7 +76,7 @@ func (s *Server) subtitle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "that is not a subtitle", http.StatusBadRequest)
 		return
 	}
-	sub, err := s.DB.Subtitle(r.Context(), id)
+	sub, err := s.db(r.Context()).Subtitle(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such subtitle", http.StatusNotFound)
 		return

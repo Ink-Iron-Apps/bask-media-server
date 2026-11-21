@@ -453,9 +453,15 @@ func (s *Server) lastAdmin(w http.ResponseWriter, r *http.Request) (refused bool
 }
 
 // tokenView describes a credential without being one.
+//
+// Sections is the libraries this token is restricted to, empty meaning all of
+// them. Device is what the client last called itself: shown so a list of
+// credentials reads as a list of devices, and never used to decide anything.
 type tokenView struct {
 	ID         int64     `json:"id"`
 	Label      string    `json:"label"`
+	Device     string    `json:"device,omitempty"`
+	Sections   []int64   `json:"sections"`
 	CreatedAt  time.Time `json:"createdAt"`
 	LastSeenAt time.Time `json:"lastSeenAt,omitempty"`
 }
@@ -472,9 +478,89 @@ func (s *Server) listTokens(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]tokenView, 0, len(tokens))
 	for _, t := range tokens {
-		out = append(out, tokenView{ID: t.ID, Label: t.Label, CreatedAt: t.CreatedAt, LastSeenAt: t.LastSeenAt})
+		// One query per token, which is a handful of rows for a household's
+		// worth of devices and keeps the listing honest rather than clever.
+		sections, err := s.DB.TokenSections(r.Context(), t.ID)
+		if err != nil {
+			s.fail(w, "list token libraries", err)
+			return
+		}
+		if sections == nil {
+			sections = []int64{}
+		}
+		out = append(out, tokenView{
+			ID: t.ID, Label: t.Label, Device: t.Device, Sections: sections,
+			CreatedAt: t.CreatedAt, LastSeenAt: t.LastSeenAt,
+		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// updateToken narrows a credential to a set of libraries, or widens it back.
+//
+// An empty list means every library rather than none: a token that could reach
+// nothing is a revoked token with extra steps, and there is already a button
+// for that. The ids are checked against the libraries that exist, because a
+// stale id in this table would silently shrink what a device can see the next
+// time somebody looked at the list.
+func (s *Server) updateToken(w http.ResponseWriter, r *http.Request) {
+	id, ok := idFrom(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Sections []int64 `json:"sections"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+
+	exists, err := s.DB.TokenExists(r.Context(), id)
+	if err != nil {
+		s.fail(w, "read token", err)
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "no such token")
+		return
+	}
+
+	sections, err := s.DB.Sections(r.Context())
+	if err != nil {
+		s.fail(w, "list sections", err)
+		return
+	}
+	known := make(map[int64]bool, len(sections))
+	for _, section := range sections {
+		known[section.ID] = true
+	}
+	wanted := make([]int64, 0, len(body.Sections))
+	seen := make(map[int64]bool, len(body.Sections))
+	for _, want := range body.Sections {
+		if !known[want] {
+			writeError(w, http.StatusBadRequest, "no such library")
+			return
+		}
+		if seen[want] {
+			continue
+		}
+		seen[want] = true
+		wanted = append(wanted, want)
+	}
+	// Every library named is the same thing as naming none: stored as none, so
+	// adding a library later does not leave a device behind.
+	if len(wanted) == len(sections) {
+		wanted = nil
+	}
+
+	if err := s.DB.SetTokenSections(r.Context(), id, wanted); err != nil {
+		s.fail(w, "set token libraries", err)
+		return
+	}
+	if wanted == nil {
+		wanted = []int64{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sections": wanted})
 }
 
 func (s *Server) issueToken(w http.ResponseWriter, r *http.Request) {

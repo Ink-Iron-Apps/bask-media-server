@@ -56,7 +56,7 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, err := s.DB.Item(r.Context(), body.ItemID)
+	item, err := s.db(r.Context()).Item(r.Context(), body.ItemID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "no such item")
 		return
