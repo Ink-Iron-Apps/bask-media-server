@@ -1,0 +1,16 @@
+{
+  "note": "Captured from the real Worker (cloud/) so the two implementations cannot drift apart unnoticed. Regenerate with cloud/ running locally; nothing here is a live credential.",
+  "assertion": "eyJhbGciOiJFZERTQSIsInR5cCI6ImJhc2srandzIiwia2lkIjoiazEifQ.eyJpc3MiOiJodHRwczovL2FjY291bnQuYmFza21lZGlhLmFwcCIsInN1YiI6InBPNXdsUHhyTkRmS3ZFX3lZRUpiQWciLCJhdWQiOiJUVlQwd2o5OEgxZ05UOVhtWXlpQXNnIiwiZW1haWwiOiJyYWVAZXhhbXBsZS5jb20iLCJuYW1lIjoiUmFlIiwiaWF0IjoxNzk1Mjk1MzczLCJleHAiOjE3OTUyOTU2NzMsImp0aSI6ImF3d1Z4OGZNWjVLUXRzN2tmUHNMUWcifQ.NSo73Npd4ZHxvoN8c2890l3zt--bmIa2lt2qUJlGoXM8ghObHwv402v41ikrJ6aO-4mVA7A95HTgB4LsBTKHBA",
+  "keys": [
+    {
+      "kid": "k1",
+      "alg": "EdDSA",
+      "key": "TF00iWFYn5Y_rCptU5mR7qL6uQPHVU9DUGoLJ1TSIJA"
+    }
+  ],
+  "audience": "TVT0wj98H1gNT9XmYyiAsg",
+  "issuer": "https://account.baskmedia.app",
+  "subject": "pO5wlPxrNDfKvE_yYEJbAg",
+  "email": "rae@example.com",
+  "issued_at": 1795295373
+}

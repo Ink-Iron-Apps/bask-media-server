@@ -1,0 +1,41 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bask-cloud",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-08",
+
+  // The account service answers on its own hostname. Deliberately public:
+  // a client on somebody else's network has to reach this before it knows
+  // where any server is, so it cannot sit behind an SSO redirect. It holds
+  // its own accounts, so public is not the same as unauthenticated.
+  "routes": [{ "pattern": "account.baskmedia.app", "custom_domain": true }],
+
+  "vars": {
+    "PUBLIC_ORIGIN": "https://account.baskmedia.app",
+    "SIGNING_KEY_ID": "k1"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bask-cloud",
+      "database_id": "set-by-wrangler-d1-create"
+    }
+  ],
+
+  // Unauthenticated routes are limited per address and sign-in per account.
+  // Without this binding the service still runs, which is what lets a test
+  // and `wrangler dev` work; a deployment without it is unprotected.
+  "unsafe": {
+    "bindings": [
+      {
+        "name": "RATE_LIMIT",
+        "type": "ratelimit",
+        "namespace_id": "1",
+        "simple": { "limit": 30, "period": 60 }
+      }
+    ]
+  },
+
+  "observability": { "enabled": true }
+}

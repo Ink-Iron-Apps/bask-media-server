@@ -1,0 +1,16 @@
+{
+  "name": "bask-cloud",
+  "private": true,
+  "type": "module",
+  "description": "The Bask account service: accounts, servers, invitations and the assertions a server verifies.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "latest",
+    "vitest": "4.1.0",
+    "wrangler": "4.166.0"
+  }
+}
