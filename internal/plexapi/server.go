@@ -49,6 +49,11 @@ type Server struct {
 	// presenter reports nothing and nothing here can be terminated;
 	// playback positions are written either way.
 	Playing *nowplaying.Registry
+
+	// Fetcher searches a provider for subtitles a file does not have. Nil
+	// means this server does not offer that, which is also what no key
+	// looks like.
+	Fetcher *subtitles.Fetcher
 }
 
 type credKey struct{}
@@ -71,6 +76,10 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /library/metadata/{key}", s.metadata)
 	authed("GET /library/metadata/{key}/children", s.children)
 	authed("GET /library/metadata/{key}/extras", s.extrasOf)
+	// Subtitles from a provider: offered by GET, fetched by PUT, which is
+	// Plex's own arrangement and the one Bask already speaks.
+	authed("GET /library/metadata/{key}/subtitles", s.searchSubtitles)
+	authed("PUT /library/metadata/{key}/subtitles", s.fetchSubtitle)
 	authed("GET /library/parts/{id}", s.streamPart)
 	// Sidecar subtitles, which a client fetches by the key on the stream. The
 	// extension is part of the name a Plex client builds, and it is also how

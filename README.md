@@ -45,6 +45,10 @@ and the Plex vocabulary never reaches storage or scanning.
   Watching, and a player with Skip Intro
 - Conversion on the fly for a client that cannot play a file as it is, and
   direct play — the file itself, untouched — for every client that can
+- Searching OpenSubtitles for a subtitle a file does not have, matched by the
+  file's own hash so it cannot drift out of time, written beside the media
+  where the next scan finds it. Off until a key is saved: nothing about a
+  library leaves the machine before that
 - Subtitles drawn into the picture where a client cannot draw them itself: a
   PGS track off a Blu-ray is a sequence of images, and burning it in is the
   one thing a server can do that a client cannot

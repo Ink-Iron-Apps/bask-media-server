@@ -656,6 +656,11 @@ func (s *Server) readSettings(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "read settings", err)
 		return
 	}
+	subtitleKey, err := s.DB.ServerValue(r.Context(), store.KeyOpenSubtitles)
+	if err != nil {
+		s.fail(w, "read settings", err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":        s.friendlyName(r),
 		"nameDefault": s.Name,
@@ -666,16 +671,20 @@ func (s *Server) readSettings(w http.ResponseWriter, r *http.Request) {
 		// A key can also arrive on the command line or from the environment,
 		// which is what a server set up before this page existed looks like.
 		"tmdbKeyElsewhere": key == "" && s.Jobs.Can(r.Context(), jobs.KindEnrich) == nil,
-		"ffprobe":          s.Jobs.Prober != nil,
-		"ffmpeg":           s.Jobs.Printer != nil,
-		"sessionDays":      int(s.sessionTTL().Hours() / 24),
+		// The subtitle service, which is off until there is a key: nothing
+		// about this library reaches a third party before that.
+		"subtitleKeyStored": subtitleKey != "",
+		"ffprobe":           s.Jobs.Prober != nil,
+		"ffmpeg":            s.Jobs.Printer != nil,
+		"sessionDays":       int(s.sessionTTL().Hours() / 24),
 	})
 }
 
 func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name    *string `json:"name"`
-		TMDBKey *string `json:"tmdbKey"`
+		Name        *string `json:"name"`
+		TMDBKey     *string `json:"tmdbKey"`
+		SubtitleKey *string `json:"subtitleKey"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -697,6 +706,15 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 		// the file that holds every token hash, and encrypting it would mean a
 		// second secret kept next to the first.
 		if err := s.DB.SetServerValue(r.Context(), store.KeyTMDB, strings.TrimSpace(*body.TMDBKey)); err != nil {
+			s.fail(w, "set key", err)
+			return
+		}
+	}
+	if body.SubtitleKey != nil {
+		// Saving one turns subtitle searching on, and clearing it turns it
+		// off again: there is no separate switch, because a key with nothing
+		// using it is a worse thing to leave behind than none.
+		if err := s.DB.SetServerValue(r.Context(), store.KeyOpenSubtitles, strings.TrimSpace(*body.SubtitleKey)); err != nil {
 			s.fail(w, "set key", err)
 			return
 		}

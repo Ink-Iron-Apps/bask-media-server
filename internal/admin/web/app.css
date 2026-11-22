@@ -232,3 +232,6 @@ progress.bar::-moz-progress-bar { background: var(--accent); }
 .match .thumb { width: 60px; border-radius: 4px; background: #1b1b1b; }
 .match .grow { flex: 1; }
 .files { margin-top: 12px; word-break: break-all; }
+
+/* A field that holds a language code, not a sentence. */
+input.short { width: 6em; }

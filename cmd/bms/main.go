@@ -326,9 +326,21 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	}
 	playing := nowplaying.New(watching)
 
+	// One subtitle fetcher, shared. The key is read when it is needed rather
+	// than held, so saving one in the admin interface works without a
+	// restart — and an empty one means this server never asks anybody
+	// anything.
+	fetcher := &subtitles.Fetcher{
+		DB:  db,
+		Log: log,
+		Key: func(ctx context.Context) (string, error) {
+			return db.ServerValue(ctx, store.KeyOpenSubtitles)
+		},
+	}
+
 	api := &plexapi.Server{
 		Store: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version,
-		Artwork: images, Subtitles: converter, Playing: playing,
+		Artwork: images, Subtitles: converter, Playing: playing, Fetcher: fetcher,
 	}
 
 	// One listener for every surface. The Plex-compatible API owns the root,
@@ -344,7 +356,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 			// client a server like this one can actually be reached by.
 			emby := &jellyfin.Server{
 				Store: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version,
-				Artwork: images, Subtitles: converter, Playing: playing,
+				Artwork: images, Subtitles: converter, Playing: playing, Fetcher: fetcher,
 			}
 			if transcoder != nil {
 				emby.Transcoder = transcoder
@@ -375,6 +387,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 				Artwork:   images,
 				Started:   time.Now(),
 				Playing:   playing,
+				Fetcher:   fetcher,
 				// The same directory the passes write to, so the page lists
 				// what is actually there rather than where it would guess.
 				BackupDir:   cfg.backupDir,

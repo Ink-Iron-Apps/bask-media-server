@@ -73,6 +73,11 @@ type Server struct {
 	// presenter reports nothing, which is what it did before there was a
 	// page to report to — progress is still written either way.
 	Playing *nowplaying.Registry
+
+	// Fetcher searches a provider for subtitles a file does not have. Nil
+	// means this server does not offer that, which is also what no key looks
+	// like.
+	Fetcher *subtitles.Fetcher
 }
 
 // route is one pattern this presenter answers.
@@ -114,6 +119,9 @@ func (s *Server) routes() []route {
 		{"GET /Items/{item}/SpecialFeatures", s.specialFeatures, false},
 		{"GET /Users/{user}/Items/{item}/LocalTrailers", s.localTrailers, false},
 		{"GET /Items/{item}/LocalTrailers", s.localTrailers, false},
+		// Subtitles from a provider: Jellyfin calls it a remote search.
+		{"GET /Items/{item}/RemoteSearch/Subtitles/{language}", s.searchSubtitles, false},
+		{"POST /Items/{item}/RemoteSearch/Subtitles/{subtitle}", s.fetchSubtitle, false},
 		{"GET /Shows/{series}/Seasons", s.seasons, false},
 		{"GET /Shows/{series}/Episodes", s.episodes, false},
 		{"GET /Shows/NextUp", s.nextUp, false},
@@ -277,6 +285,7 @@ func normalisePath(next http.Handler) http.Handler {
 		"Sessions", "Capabilities", "Full", "Playing", "Progress", "Stopped", "Me",
 		"QuickConnect", "Enabled", "UserData", "PlayedItems", "UserItems",
 		"UserPlayedItems", "UserFavoriteItems", "DisplayPreferences", "ActiveEncodings",
+		"RemoteSearch",
 		"LocalTrailers", "SpecialFeatures", "Similar",
 	} {
 		known[strings.ToLower(segment)] = segment

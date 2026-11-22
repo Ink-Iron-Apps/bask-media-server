@@ -33,6 +33,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/jobs"
 	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/store"
+	"github.com/inknironapps/bask-media-server/internal/subtitles"
 )
 
 // cookieName holds the browser session. Scoped to /admin so it is not sent
@@ -77,6 +78,10 @@ type Server struct {
 	// Playing is the register of who is watching what. Nil means the page
 	// shows no streams and nothing can be stopped from here.
 	Playing *nowplaying.Registry
+
+	// Fetcher searches a provider for subtitles a file does not have. Nil
+	// means the page does not offer it.
+	Fetcher *subtitles.Fetcher
 
 	// BackupDir is where database copies are written and read back, and
 	// KeepBackups how many are kept. They mirror what the job runner was
@@ -158,6 +163,8 @@ func (s *Server) Handler() http.Handler {
 	authed("POST /admin/api/items/{id}/revert", s.revertItem)
 	authed("GET /admin/api/items/{id}/candidates", s.candidates)
 	authed("POST /admin/api/items/{id}/match", s.rematchItem)
+	authed("GET /admin/api/items/{id}/subtitles", s.findSubtitles)
+	authed("POST /admin/api/items/{id}/subtitles", s.fetchSubtitle)
 
 	authed("GET /admin/api/backups", s.listBackups)
 	authed("POST /admin/api/backups", s.startBackup)

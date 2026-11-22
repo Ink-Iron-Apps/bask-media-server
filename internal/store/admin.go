@@ -35,6 +35,10 @@ const (
 	// KeyTMDB is the metadata provider's key, stored so it survives a restart
 	// and can be set without one.
 	KeyTMDB = "tmdb_key"
+	// KeyOpenSubtitles is the subtitle service's key. Empty means subtitle
+	// searching is off, which is the default: nothing about a library
+	// reaches a third party until somebody puts a key here.
+	KeyOpenSubtitles = "opensubtitles_key"
 )
 
 // SessionTTL is how long a browser stays signed in without asking again.

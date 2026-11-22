@@ -47,6 +47,38 @@ func replaceSubtitlesTx(ctx context.Context, tx *sql.Tx, itemID, partID int64, f
 	return nil
 }
 
+// AddSubtitle records one subtitle beside what is already known, rather than
+// replacing the lot.
+//
+// For a subtitle that was fetched rather than scanned: the scan is still the
+// authority on what is on disk, and this writes a file that is now on disk,
+// so the next scan finds the same thing and leaves the row alone. Idempotent
+// on the identity index, so fetching the same subtitle twice is one row.
+func (d *DB) AddSubtitle(ctx context.Context, itemID, partID int64, sub domain.Subtitle) (*domain.Subtitle, error) {
+	if _, err := d.sql.ExecContext(ctx,
+		`INSERT INTO subtitles
+		   (item_id, part_id, external, stream_index, path, codec, language, title, forced, is_default, hearing)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(part_id, external, stream_index, path) DO UPDATE SET
+		   codec = excluded.codec,
+		   language = excluded.language,
+		   title = excluded.title,
+		   forced = excluded.forced,
+		   hearing = excluded.hearing`,
+		itemID, partID, sub.External, sub.StreamIndex, sub.Path, sub.Codec,
+		sub.Language, sub.Title, sub.Forced, sub.Default, sub.Hearing); err != nil {
+		return nil, fmt.Errorf("add subtitle: %w", err)
+	}
+
+	var id int64
+	if err := d.sql.QueryRowContext(ctx,
+		`SELECT id FROM subtitles WHERE part_id = ? AND external = ? AND stream_index = ? AND path = ?`,
+		partID, sub.External, sub.StreamIndex, sub.Path).Scan(&id); err != nil {
+		return nil, fmt.Errorf("add subtitle: %w", err)
+	}
+	return d.Subtitle(ctx, id)
+}
+
 const subtitleColumns = `id, item_id, part_id, external, stream_index, path, codec, language, title, forced, is_default, hearing`
 
 func scanSubtitle(row interface{ Scan(...any) error }) (domain.Subtitle, error) {

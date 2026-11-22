@@ -54,6 +54,11 @@ type container struct {
 	TerminationCode int    `xml:"terminationCode,attr,omitempty" json:"terminationCode,omitempty"`
 	TerminationText string `xml:"terminationText,attr,omitempty" json:"terminationText,omitempty"`
 
+	// Stream is only ever a list of subtitles on offer from a provider, which
+	// is the one answer on this surface whose rows are streams rather than
+	// items: see [Server.searchSubtitles].
+	Stream []stream `xml:"-" json:"Stream,omitempty"`
+
 	// Directory holds sections, shows and seasons; Metadata holds movies and
 	// episodes. In XML the elements are named per entry type, which is what
 	// the Elem field on entry does.
@@ -227,8 +232,17 @@ type stream struct {
 	HearingImpaired bool   `xml:"hearingImpaired,attr,omitempty" json:"hearingImpaired,omitempty"`
 	// Key is present only for a subtitle that is a file of its own, which is
 	// how a Plex client tells a sidecar from a stream in the container, and
-	// where it fetches the text from.
+	// where it fetches the text from. For a subtitle a provider is offering
+	// rather than one that exists, it is the handle to ask for.
 	Key string `xml:"key,attr,omitempty" json:"key,omitempty"`
+
+	// The rest are only set on a subtitle a provider is offering: who has it,
+	// how well it matches, and whether it was authored against this very
+	// file — which is the only one of these a viewer should trust.
+	ProviderTitle string  `xml:"providerTitle,attr,omitempty" json:"providerTitle,omitempty"`
+	Score         float64 `xml:"score,attr,omitempty" json:"score,omitempty"`
+	PerfectMatch  bool    `xml:"perfectMatch,attr,omitempty" json:"perfectMatch,omitempty"`
+	Downloaded    bool    `xml:"downloaded,attr,omitempty" json:"downloaded,omitempty"`
 }
 
 type location struct {
@@ -306,6 +320,11 @@ func encodeXML(w http.ResponseWriter, c container) error {
 	start := xml.StartElement{Name: xml.Name{Local: "MediaContainer"}, Attr: containerAttrs(c)}
 	if err := enc.EncodeToken(start); err != nil {
 		return err
+	}
+	for _, offered := range c.Stream {
+		if err := enc.EncodeElement(offered, xml.StartElement{Name: xml.Name{Local: "Stream"}}); err != nil {
+			return err
+		}
 	}
 	for _, group := range [][]entry{c.Directory, c.Metadata} {
 		for _, e := range group {

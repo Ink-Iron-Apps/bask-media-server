@@ -710,6 +710,8 @@ async function editItem(id) {
         ? el('div', { class: 'muted mono files' }, (detail.files || []).map((path) => el('div', { text: path })))
         : null),
 
+    subtitleCard(id, detail),
+
     el('div', { class: 'card' },
       el('h2', { text: 'Which one is it?' }),
       detail.canRematch
@@ -719,6 +721,67 @@ async function editItem(id) {
             el('button', { text: 'Search the provider', on: { click: searchProvider } })),
           matches)
         : el('p', { class: 'muted', text: detail.why || 'This item cannot be matched to a provider.' })));
+}
+
+// subtitleCard finds a subtitle for a film that has none.
+//
+// Only for the things that have a file: a series or a season has nothing to
+// match a subtitle against, and the hash of the file is what makes a match
+// worth having.
+function subtitleCard(id, detail) {
+  if (!(detail.files || []).length) return null;
+
+  const language = el('input', { value: 'en', spellcheck: 'false', class: 'short' });
+  const forced = el('input', { type: 'checkbox', id: 'sub-forced-' + id });
+  const hearing = el('input', { type: 'checkbox', id: 'sub-sdh-' + id });
+  const results = el('div', {});
+
+  const search = async () => {
+    fill(results, el('p', { class: 'muted', text: 'Asking OpenSubtitles…' }));
+    try {
+      const answer = await api('GET', '/items/' + id + '/subtitles?language='
+        + encodeURIComponent(language.value.trim() || 'en')
+        + (forced.checked ? '&forced=1' : '') + (hearing.checked ? '&hearingImpaired=1' : ''));
+      const found = (answer && answer.subtitles) || [];
+      fill(results, found.length
+        ? el('table', {}, el('tbody', {}, found.map((offer) => el('tr', {},
+          el('td', {},
+            el('strong', { text: offer.release || offer.name || 'A subtitle' }),
+            el('div', { class: 'muted', text: [
+              offer.exact ? 'Timed against this exact file' : 'For another release',
+              offer.language,
+              offer.forced ? 'forced' : '',
+              offer.hearingImpaired ? 'SDH' : '',
+              offer.downloads ? count(offer.downloads, 'download') : '',
+            ].filter(Boolean).join('  ·  ') })),
+          el('td', { class: 'right' }, el('button', {
+            class: offer.exact ? 'primary' : '',
+            text: 'Use this',
+            on: { click: () => useSubtitle(id, offer, language.value.trim() || 'en', forced.checked, hearing.checked) },
+          }))))))
+        : el('p', { class: 'muted', text: 'Nothing on offer for that.' }));
+    } catch (err) { failed(err); }
+  };
+
+  return el('div', { class: 'card' },
+    el('h2', { text: 'Subtitles' }),
+    el('p', { class: 'muted', text: 'A subtitle timed against this exact file cannot drift; one for another release can be a minute out by the end. The file is written beside the film, so the next scan finds it.' }),
+    el('div', { class: 'row' },
+      el('label', { text: 'Language' }), language,
+      forced, el('label', { for: 'sub-forced-' + id, text: 'forced' }),
+      hearing, el('label', { for: 'sub-sdh-' + id, text: 'for the hard of hearing' }),
+      el('button', { text: 'Search', on: { click: search } })),
+    results);
+}
+
+// useSubtitle fetches the one somebody picked.
+async function useSubtitle(id, offer, language, forced, hearing) {
+  try {
+    const saved = await api('POST', '/items/' + id + '/subtitles', {
+      handle: offer.handle, language, forced, hearingImpaired: hearing,
+    });
+    toast('Saved beside the film as ' + (saved.path || 'a sidecar') + '.');
+  } catch (err) { failed(err); }
 }
 
 // useMatch points the item at the entry somebody chose.
@@ -1127,6 +1190,10 @@ views.settings = async function (main) {
   const [settings, backups] = await Promise.all([api('GET', '/settings'), api('GET', '/backups')]);
   const name = el('input', { id: 'server-name', value: settings.name || '' });
   const key = el('input', { id: 'tmdb-key', type: 'password', placeholder: settings.tmdbKeyStored ? 'stored' : 'not set', spellcheck: 'false' });
+  const subtitleKey = el('input', {
+    id: 'subtitle-key', type: 'password',
+    placeholder: settings.subtitleKeyStored ? 'stored' : 'not set', spellcheck: 'false',
+  });
 
   const tools = [
     ['ffprobe', settings.ffprobe, 'Durations and chapter markers during a scan'],
@@ -1190,6 +1257,45 @@ views.settings = async function (main) {
                 try {
                   await api('PATCH', '/settings', { tmdbKey: '' });
                   toast('Forgotten.');
+                  render();
+                } catch (err) { failed(err); }
+              },
+            },
+          })
+          : null)),
+    el('div', { class: 'card' },
+      el('h2', { text: 'Subtitles' }),
+      el('label', { for: 'subtitle-key', text: 'OpenSubtitles API key' }), subtitleKey,
+      el('p', {
+        class: 'muted',
+        text: settings.subtitleKeyStored
+          ? 'A key is stored, so clients can search for subtitles a file does not have. Clearing it turns searching off.'
+          : 'Without a key, this server never searches for subtitles and nothing about this library leaves the machine. With one, a search sends the title and the file\'s hash.',
+      }),
+      el('div', { class: 'row' },
+        el('button', {
+          class: 'primary',
+          text: 'Save key',
+          on: {
+            click: async () => {
+              try {
+                await api('PATCH', '/settings', { subtitleKey: subtitleKey.value });
+                subtitleKey.value = '';
+                toast('Saved.');
+                render();
+              } catch (err) { failed(err); }
+            },
+          },
+        }),
+        settings.subtitleKeyStored
+          ? el('button', {
+            class: 'danger',
+            text: 'Forget the stored key',
+            on: {
+              click: async () => {
+                try {
+                  await api('PATCH', '/settings', { subtitleKey: '' });
+                  toast('Forgotten. Subtitle searching is off.');
                   render();
                 } catch (err) { failed(err); }
               },
