@@ -503,3 +503,63 @@ type Collection struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
+
+// Webhook is one place this server tells when something happens.
+//
+// The server has no way to push anything to a client, and a household that
+// wants a light to dim when a film starts, or a message when a new episode
+// lands, has nowhere to hang that behaviour. This is that hook: an address,
+// what to send it, and which events are worth waking it for.
+type Webhook struct {
+	ID  int64
+	URL string
+
+	// Format is how the body is shaped: Plain JSON for something that parses
+	// it, or a one-line message for a notification service.
+	Format WebhookFormat
+
+	// Events is what this destination is told about. Each entry is either an
+	// exact kind ("playback.start") or a family ("playback.*"). Empty means
+	// everything, which is what a fresh webhook gets.
+	Events []string
+
+	// Enabled is whether anything is sent. A destination that is failing is
+	// better switched off than deleted, because deleting it loses the URL.
+	Enabled bool
+
+	// HasToken and HasSecret report whether a bearer token and a signing
+	// secret have been set. The values themselves are never read back out of
+	// the store for display: they are credentials for somebody else's
+	// service, and a page that shows them is a page that leaks them.
+	HasToken  bool
+	HasSecret bool
+
+	CreatedAt time.Time
+
+	// What happened last time. Kept so a destination that quietly stopped
+	// working can be seen to have stopped, rather than being discovered
+	// months later by somebody wondering why their lights never dim.
+	LastAt     time.Time
+	LastStatus int
+	LastError  string
+	Failures   int
+}
+
+// WebhookFormat is the shape of what a webhook receives.
+type WebhookFormat string
+
+const (
+	// WebhookJSON posts a JSON object describing the event. For anything
+	// that parses it: Home Assistant, n8n, a script of your own.
+	WebhookJSON WebhookFormat = "json"
+
+	// WebhookNtfy posts the event's one-line message as plain text, with the
+	// title, tags and priority in headers. That is exactly what ntfy expects,
+	// so a topic URL needs no translation in between.
+	WebhookNtfy WebhookFormat = "ntfy"
+)
+
+// Valid reports whether a format is one this server knows how to send.
+func (f WebhookFormat) Valid() bool {
+	return f == WebhookJSON || f == WebhookNtfy
+}

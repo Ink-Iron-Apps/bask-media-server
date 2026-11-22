@@ -44,6 +44,33 @@ type Stopper interface {
 	StopKey(key string)
 }
 
+// ChangeKind is what happened to a stream.
+type ChangeKind string
+
+const (
+	// Started is a stream nobody had reported before.
+	Started ChangeKind = "started"
+	// Paused and Resumed are the same stream, reported either side of the
+	// button a viewer pressed.
+	Paused  ChangeKind = "paused"
+	Resumed ChangeKind = "resumed"
+	// Stopped is a stream that has ended, however it ended: the client said
+	// so, an administrator stopped it, or nobody reported it for long enough
+	// that it must be over.
+	Stopped ChangeKind = "stopped"
+)
+
+// Change is something that happened to a stream, for whoever wants telling.
+//
+// Reported rather than stored: this register's whole point is that it holds
+// only what is true now, and a change is true for an instant. The callback is
+// how a webhook, a log or anything else learns about the instant without this
+// package knowing any of them exist.
+type Change struct {
+	Kind   ChangeKind
+	Stream Stream
+}
+
 // Stream is one viewer watching one thing on one device.
 type Stream struct {
 	// Key identifies the stream across the requests that make it up. It is
@@ -86,7 +113,17 @@ type Stream struct {
 
 	Position time.Duration
 	Duration time.Duration
-	Paused   bool
+
+	// Paused is whether the viewer has stopped it where they are, and
+	// PausedKnown whether the caller is in a position to say.
+	//
+	// A request for bytes is not. A player goes on buffering while it is
+	// paused, so a file request that reported "not paused" would cancel out
+	// the progress report that said it was — and anybody listening for a
+	// pause would be told the film had been paused and resumed every ten
+	// seconds until somebody came back to it.
+	Paused      bool
+	PausedKnown bool
 
 	// Since is when this stream was first reported and Updated when it last
 	// was. Since survives every later report, so the page can say how long
@@ -106,9 +143,17 @@ type Registry struct {
 	idle    time.Duration
 	now     func() time.Time
 	stopper Stopper
+	changes func(Change)
 
 	mu      sync.Mutex
 	streams map[string]*Stream
+
+	// pending is changes noticed while the lock was held, waiting to be
+	// reported once it is not. Nothing is called with the mutex held: a
+	// listener that posts an HTTP request would otherwise stop every viewer
+	// on the server for as long as somebody else's web server took to
+	// answer.
+	pending []Change
 }
 
 // Options configure a registry.
@@ -123,6 +168,14 @@ type Options struct {
 
 	// Now is the clock, for tests.
 	Now func() time.Time
+
+	// Changes is called once for every start, pause, resume and stop. Nil
+	// means nobody is listening, which is the default and costs nothing.
+	//
+	// Called from whichever goroutine noticed, never with this register's
+	// lock held, and expected not to block: see nowplaying's own rule that a
+	// viewer waits for this server and not for anything downstream of it.
+	Changes func(Change)
 }
 
 // New prepares a registry.
@@ -135,7 +188,10 @@ func New(opts Options) *Registry {
 	if now == nil {
 		now = time.Now
 	}
-	return &Registry{idle: idle, now: now, stopper: opts.Transcoder, streams: map[string]*Stream{}}
+	return &Registry{
+		idle: idle, now: now, stopper: opts.Transcoder, changes: opts.Changes,
+		streams: map[string]*Stream{},
+	}
 }
 
 // Report records a stream, or updates one that is already known.
@@ -153,6 +209,10 @@ func (r *Registry) Report(in Stream) {
 	}
 	now := r.now()
 
+	// Declared before the unlock below, so it runs after it: changes are
+	// reported with the lock released.
+	defer r.flush()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.expireLocked(now)
@@ -163,11 +223,27 @@ func (r *Registry) Report(in Stream) {
 		fresh.Since = now
 		fresh.Updated = now
 		r.streams[in.Key] = &fresh
+		r.note(Started, fresh)
 		return
 	}
 
 	existing.Updated = now
-	existing.Paused = in.Paused
+	if in.PausedKnown && in.Paused != existing.Paused {
+		// The one transition worth telling anybody about. A client reports
+		// its state every few seconds, so this has to be the change rather
+		// than the state, or a paused film is a notification every ten
+		// seconds for as long as it stays paused.
+		kind := Resumed
+		if in.Paused {
+			kind = Paused
+		}
+		paused := *existing
+		paused.Paused = in.Paused
+		r.note(kind, paused)
+	}
+	if in.PausedKnown {
+		existing.Paused = in.Paused
+	}
 	if in.Position > 0 {
 		existing.Position = in.Position
 	}
@@ -179,6 +255,9 @@ func (r *Registry) Report(in Stream) {
 		// across an episode boundary by some clients, and showing the
 		// previous episode's title for the rest of the evening is worse than
 		// treating it as a new stream.
+		// Two changes, not one: whoever is listening was told something
+		// started, and is owed the stop before the next start.
+		r.note(Stopped, *existing)
 		existing.ItemID = in.ItemID
 		existing.Title = in.Title
 		existing.Subtitle = in.Subtitle
@@ -186,6 +265,7 @@ func (r *Registry) Report(in Stream) {
 		existing.Position = in.Position
 		existing.Duration = in.Duration
 		existing.Mode, existing.Why, existing.Session = in.Mode, in.Why, in.Session
+		r.note(Started, *existing)
 		return
 	}
 	if in.Title != "" {
@@ -227,8 +307,13 @@ func (r *Registry) Stopped(key string) {
 	if key == "" {
 		return
 	}
+	defer r.flush()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if stream, found := r.streams[key]; found && !stream.Terminated {
+		r.note(Stopped, *stream)
+	}
 	delete(r.streams, key)
 }
 
@@ -238,6 +323,7 @@ func (r *Registry) Stopped(key string) {
 // watching, whatever their client is still asking for.
 func (r *Registry) List() []Stream {
 	now := r.now()
+	defer r.flush()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.expireLocked(now)
@@ -261,6 +347,7 @@ func (r *Registry) List() []Stream {
 // Count is how many streams are playing, for the status line.
 func (r *Registry) Count() int {
 	now := r.now()
+	defer r.flush()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.expireLocked(now)
@@ -283,6 +370,7 @@ func (r *Registry) Count() int {
 // of one could never play anything.
 func (r *Registry) CountFor(userID int64, except string) int {
 	now := r.now()
+	defer r.flush()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.expireLocked(now)
@@ -317,8 +405,10 @@ func (r *Registry) Terminate(key, reason string) (Stream, bool) {
 	var copied Stream
 	if found {
 		copied = *stream
+		r.note(Stopped, copied)
 	}
 	r.mu.Unlock()
+	r.flush()
 
 	if !found {
 		return Stream{}, false
@@ -342,6 +432,7 @@ func (r *Registry) Stopping(key string) (string, bool) {
 		return "", false
 	}
 	now := r.now()
+	defer r.flush()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.expireLocked(now)
@@ -363,7 +454,36 @@ func (r *Registry) expireLocked(now time.Time) {
 	cutoff := now.Add(-r.idle)
 	for key, stream := range r.streams {
 		if stream.Updated.Before(cutoff) {
+			// A terminated stream was already reported as stopped when the
+			// latch was armed. Dropping it now is bookkeeping, not news.
+			if !stream.Terminated {
+				r.note(Stopped, *stream)
+			}
 			delete(r.streams, key)
 		}
+	}
+}
+
+// note remembers a change to report once the lock is released. The caller
+// holds the mutex; nothing here calls out.
+func (r *Registry) note(kind ChangeKind, stream Stream) {
+	if r.changes == nil {
+		return
+	}
+	r.pending = append(r.pending, Change{Kind: kind, Stream: stream})
+}
+
+// flush reports what note remembered. The caller must not hold the mutex.
+func (r *Registry) flush() {
+	if r.changes == nil {
+		return
+	}
+	r.mu.Lock()
+	pending := r.pending
+	r.pending = nil
+	r.mu.Unlock()
+
+	for _, change := range pending {
+		r.changes(change)
 	}
 }

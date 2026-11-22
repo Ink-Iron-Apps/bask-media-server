@@ -40,6 +40,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/subtitles"
 	"github.com/inknironapps/bask-media-server/internal/transcode"
 	"github.com/inknironapps/bask-media-server/internal/web"
+	"github.com/inknironapps/bask-media-server/internal/webhook"
 )
 
 // version is stamped by the build; a client shows it and the update path will
@@ -251,6 +252,24 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 		}
 	}
 
+	// One notifier, shared. Nothing is sent unless somebody has added a
+	// destination, and an event is queued rather than delivered inline: a
+	// viewer pressing play waits for this server, never for somebody else's
+	// home automation.
+	notifier := webhook.New(webhook.Options{
+		DB:  db,
+		Log: log,
+		Name: func() string {
+			// Read each time rather than held: the name is a setting that
+			// can change from the admin interface without a restart.
+			if stored, err := db.ServerValue(context.Background(), store.KeyFriendlyName); err == nil && stored != "" {
+				return stored
+			}
+			return cfg.name
+		},
+	})
+	defer notifier.Close()
+
 	runner := &jobs.Runner{
 		DB:          db,
 		Log:         log,
@@ -261,6 +280,25 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 		Workers:     cfg.detectJobs,
 		BackupDir:   cfg.backupDir,
 		KeepBackups: cfg.keepBackups,
+	}
+	// What a finished pass and a new item become. The mapping lives here
+	// rather than in either package, because the passes read the database the
+	// notifier reads and neither should have to import the other.
+	runner.Notify = func(notice jobs.Notice) {
+		switch notice.Kind {
+		case jobs.NoticeAdded:
+			if notice.Item != nil {
+				notifier.Send(webhook.NewItem(*notice.Item, notice.Section))
+			}
+		case jobs.NoticeDone:
+			notifier.Send(webhook.JobFinished(
+				string(notice.Job.Kind), notice.Job.Target, notice.Job.Note,
+				notice.Job.Elapsed(), nil))
+		case jobs.NoticeFailed:
+			notifier.Send(webhook.JobFinished(
+				string(notice.Job.Kind), notice.Job.Target, notice.Job.Note,
+				notice.Job.Elapsed(), notice.Err))
+		}
 	}
 	// Nothing started here outlives the process: rule 4 of the resource
 	// budget, and the reason a job is cancellable in the first place.
@@ -318,7 +356,13 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	// a household watching on three devices is one list and not three. It
 	// holds nothing across a restart by design: a stream is true only while
 	// it is happening.
-	watching := nowplaying.Options{}
+	watching := nowplaying.Options{
+		Changes: func(change nowplaying.Change) {
+			if event, ok := webhook.Playback(change); ok {
+				notifier.Send(event)
+			}
+		},
+	}
 	if transcoder != nil {
 		// Assigned only when there is one, because a nil manager in an
 		// interface field is not nil and the register would call it.
@@ -388,6 +432,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 				Started:   time.Now(),
 				Playing:   playing,
 				Fetcher:   fetcher,
+				Notifier:  notifier,
 				// The same directory the passes write to, so the page lists
 				// what is actually there rather than where it would guess.
 				BackupDir:   cfg.backupDir,

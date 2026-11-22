@@ -48,6 +48,13 @@ and the Plex vocabulary never reaches storage or scanning.
 - Backups of the database, taken while the server runs — nightly by default,
   on a button in the interface, kept to the newest seven and downloadable, so
   the one thing here that a scan cannot rebuild has copies
+- Webhooks: this server posts to an address of yours when something starts,
+  pauses, stops, arrives in the library, or when a background pass finishes or
+  fails. Either as a JSON object for something that parses it, or as one line
+  of text for a notification service like ntfy. Signed with a secret you set,
+  so a receiver on the open internet can tell a real event from anybody who
+  learned the address. Nothing about where a viewer is up to is ever sent: a
+  position report every ten seconds is not news
 - An admin web interface at `/admin`: libraries, scan and detection progress,
   accounts and tokens, served from the binary with nothing to install
 - A web interface for watching at `/web`: libraries, search, Continue

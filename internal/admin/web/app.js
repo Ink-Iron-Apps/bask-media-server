@@ -1273,7 +1273,9 @@ async function showTokens(user) {
 /* ---------- settings ---------- */
 
 views.settings = async function (main) {
-  const [settings, backups] = await Promise.all([api('GET', '/settings'), api('GET', '/backups')]);
+  const [settings, backups, hooks] = await Promise.all([
+    api('GET', '/settings'), api('GET', '/backups'), api('GET', '/webhooks'),
+  ]);
   const name = el('input', { id: 'server-name', value: settings.name || '' });
   const key = el('input', { id: 'tmdb-key', type: 'password', placeholder: settings.tmdbKeyStored ? 'stored' : 'not set', spellcheck: 'false' });
   const subtitleKey = el('input', {
@@ -1392,11 +1394,154 @@ views.settings = async function (main) {
       el('h2', { text: 'Tools found on this machine' }),
       el('table', {}, el('tbody', {}, tools)),
       el('p', { class: 'muted', text: 'Both are optional. Without them the library still scans, browses and plays; it has no durations, chapters or detected intros.' })),
+    webhookCard(hooks),
     backupCard(backups),
     el('div', { class: 'card' },
       el('h2', { text: 'This sign-in' }),
       el('p', { class: 'muted', text: 'A browser session lasts ' + settings.sessionDays + ' days and is separate from the tokens clients hold, so signing out here signs nothing else out.' })));
 };
+
+// webhookCard is where this server tells somewhere else what happened.
+//
+// The page never shows a token or a secret, only whether one is set: this is
+// the screen most likely to be shared, screenshotted or screen-recorded
+// during a support conversation, and those are credentials for somebody
+// else's service.
+function webhookCard(data) {
+  const hooks = (data && data.webhooks) || [];
+  const families = (data && data.families) || ['playback', 'library', 'job'];
+
+  const rows = hooks.map((hook) => {
+    const subscribed = hook.events || [];
+    const boxes = [];
+    const saveEvents = async () => {
+      const wanted = [];
+      for (const [family, node] of boxes) if (node.checked) wanted.push(family + '.*');
+      try {
+        // Everything ticked is stored as everything rather than as three
+        // families, so a family added in a later version still reaches a
+        // destination that asked for the lot.
+        await api('PATCH', '/webhooks/' + hook.id, {
+          events: wanted.length === families.length ? [] : wanted,
+        });
+        toast('Saved.');
+      } catch (err) { failed(err); render(); }
+    };
+    for (const family of families) {
+      const box = el('input', { type: 'checkbox' });
+      box.checked = subscribed.length === 0 || subscribed.indexOf(family + '.*') >= 0;
+      box.addEventListener('change', saveEvents);
+      boxes.push([family, box]);
+    }
+
+    const result = hook.lastAt
+      ? el('span', { class: 'badge ' + (hook.lastError ? 'failed' : 'done'),
+        text: hook.lastError ? (hook.lastStatus ? String(hook.lastStatus) : 'failed') : String(hook.lastStatus) })
+      : el('span', { class: 'muted', text: 'never sent' });
+
+    return el('tr', {},
+      el('th', {},
+        el('div', { class: 'mono', text: hook.url }),
+        el('div', { class: 'muted', text: hook.format === 'ntfy' ? 'one line of text, for a notification service' : 'a JSON object' }
+        )),
+      el('td', {}, el('div', { class: 'row' }, boxes.map(([family, box]) =>
+        el('label', { class: 'muted' }, box, ' ' + family)))),
+      el('td', {},
+        result,
+        hook.lastAt ? el('div', { class: 'muted', text: when(hook.lastAt) }) : null,
+        hook.lastError ? el('div', { class: 'muted', text: hook.lastError }) : null,
+        hook.failures > 1 ? el('div', { class: 'muted', text: hook.failures + ' failures in a row' }) : null,
+        hook.hasSecret ? el('div', { class: 'muted', text: 'signed' }) : null,
+        hook.hasToken ? el('div', { class: 'muted', text: 'sends a token' }) : null),
+      el('td', { class: 'right' }, el('div', { class: 'row actions' },
+        el('button', {
+          text: 'Test',
+          on: {
+            click: async () => {
+              try {
+                const sent = await api('POST', '/webhooks/' + hook.id + '/test', {});
+                if (sent.delivered) toast('Delivered, and it answered ' + sent.status + '.');
+                else toast('Not delivered: ' + (sent.error || 'no answer') + '.', true);
+                render();
+              } catch (err) { failed(err); }
+            },
+          },
+        }),
+        el('button', {
+          text: hook.enabled ? 'Switch off' : 'Switch on',
+          on: {
+            click: async () => {
+              try {
+                await api('PATCH', '/webhooks/' + hook.id, { enabled: !hook.enabled });
+                toast(hook.enabled ? 'Switched off. Nothing is sent to it.' : 'Switched on.');
+                render();
+              } catch (err) { failed(err); }
+            },
+          },
+        }),
+        el('button', {
+          class: 'danger',
+          text: 'Remove',
+          on: {
+            click: async () => {
+              if (!confirm('Remove ' + hook.url + '?\n\nIts address, token and secret are forgotten.')) return;
+              try {
+                await api('DELETE', '/webhooks/' + hook.id);
+                toast('Removed.');
+                render();
+              } catch (err) { failed(err); }
+            },
+          },
+        }))));
+  });
+
+  const url = el('input', { id: 'hook-url', placeholder: 'http://127.0.0.1:7810/media', spellcheck: 'false' });
+  const format = el('select', { id: 'hook-format' },
+    el('option', { value: 'json', text: 'JSON, for something that parses it' }),
+    el('option', { value: 'ntfy', text: 'One line of text, for ntfy' }));
+  const token = el('input', { id: 'hook-token', type: 'password', placeholder: 'only if the receiver wants one', spellcheck: 'false' });
+  const secret = el('input', { id: 'hook-secret', type: 'password', placeholder: 'only if you want the body signed', spellcheck: 'false' });
+
+  return el('div', { class: 'card' },
+    el('h2', { text: 'Webhooks' }),
+    el('p', { class: 'muted', text: 'This server posts to these addresses when something happens: a play, a pause, '
+      + 'a stop, a new item in the library, a background pass that finished or failed. Nothing is sent about where '
+      + 'anybody is up to — a position report every ten seconds is not news.' }),
+    rows.length
+      ? el('table', {}, el('tbody', {}, rows))
+      : el('p', { class: 'muted', text: 'Nothing is told anything yet.' }),
+    data && data.sending === false
+      ? el('p', { class: 'muted', text: 'This server was built without a notifier, so nothing is actually sent.' })
+      : null,
+    el('h3', { text: 'Add one' }),
+    el('label', { for: 'hook-url', text: 'Address' }), url,
+    el('label', { for: 'hook-format', text: 'Shape' }), format,
+    el('label', { for: 'hook-token', text: 'Bearer token' }), token,
+    el('label', { for: 'hook-secret', text: 'Signing secret' }), secret,
+    el('p', { class: 'muted', text: 'A new destination hears about everything; untick what it should not. '
+      + 'A secret is how a receiver on the open internet can tell a real event from anybody who learned the address: '
+      + 'the body arrives with an X-Bask-Signature header, which is HMAC-SHA256 of the body under that secret.' }),
+    el('div', { class: 'row' }, el('button', {
+      class: 'primary',
+      text: 'Add',
+      on: {
+        click: async () => {
+          if (!url.value.trim()) { toast('That needs an address.', true); return; }
+          try {
+            await api('POST', '/webhooks', {
+              url: url.value.trim(),
+              format: format.value,
+              token: token.value,
+              secret: secret.value,
+            });
+            url.value = ''; token.value = ''; secret.value = '';
+            toast('Added. Press Test to see whether it answers.');
+            render();
+          } catch (err) { failed(err); }
+        },
+      },
+    })));
+}
 
 // backupCard is the database's copies: what there is, and one button.
 //

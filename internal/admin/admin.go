@@ -34,6 +34,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/store"
 	"github.com/inknironapps/bask-media-server/internal/subtitles"
+	"github.com/inknironapps/bask-media-server/internal/webhook"
 )
 
 // cookieName holds the browser session. Scoped to /admin so it is not sent
@@ -82,6 +83,12 @@ type Server struct {
 	// Fetcher searches a provider for subtitles a file does not have. Nil
 	// means the page does not offer it.
 	Fetcher *subtitles.Fetcher
+
+	// Notifier delivers webhook events. Nil means destinations can still be
+	// listed and edited but nothing is sent, which is what a server built
+	// without one looks like — and the page says so rather than pretending
+	// the test button works.
+	Notifier *webhook.Notifier
 
 	// BackupDir is where database copies are written and read back, and
 	// KeepBackups how many are kept. They mirror what the job runner was
@@ -170,6 +177,12 @@ func (s *Server) Handler() http.Handler {
 	authed("POST /admin/api/backups", s.startBackup)
 	authed("GET /admin/api/backups/{name}", s.downloadBackup)
 	authed("DELETE /admin/api/backups/{name}", s.deleteBackup)
+
+	authed("GET /admin/api/webhooks", s.listWebhooks)
+	authed("POST /admin/api/webhooks", s.createWebhook)
+	authed("PATCH /admin/api/webhooks/{id}", s.updateWebhook)
+	authed("DELETE /admin/api/webhooks/{id}", s.deleteWebhook)
+	authed("POST /admin/api/webhooks/{id}/test", s.testWebhook)
 
 	authed("GET /admin/api/settings", s.readSettings)
 	authed("PATCH /admin/api/settings", s.writeSettings)

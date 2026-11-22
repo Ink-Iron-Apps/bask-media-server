@@ -97,7 +97,9 @@ func playingOf(r *http.Request, item *domain.Item, body report) nowplaying.Strea
 		Title:    item.Title,
 		Position: durationOfTicks(body.PositionTicks),
 		Duration: item.Duration,
-		Paused:   body.IsPaused,
+		// A progress report is the one request that knows.
+		Paused:      body.IsPaused,
+		PausedKnown: true,
 	}
 }
 

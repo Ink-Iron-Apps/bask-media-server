@@ -494,6 +494,36 @@ var migrations = []string{
 	// with an expiry rather than a flag so an evening's unlock does not
 	// become a permanent one: whoever typed the PIN was unlocking tonight.
 	`ALTER TABLE sessions ADD COLUMN unlocked_until INTEGER NOT NULL DEFAULT 0`,
+
+	// Where to tell when something happens.
+	//
+	// The server cannot push anything to a client, so anything that wants to
+	// react to a play or a new episode has to be told over HTTP. One row is
+	// one destination: an address, the shape to send it in, and which events
+	// it cares about.
+	//
+	// token and secret are stored as they were given, because they have to be
+	// sent: a bearer token the receiver checks, and a secret the signature is
+	// computed with. They are credentials for somebody else's service, so
+	// nothing reads them back out for display.
+	//
+	// last_status, last_error and failures are the only history kept. A log
+	// of every delivery would grow without bound for no one's benefit; what
+	// an operator needs is whether this destination is working now.
+	`CREATE TABLE webhooks (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		url         TEXT NOT NULL,
+		format      TEXT NOT NULL DEFAULT 'json',
+		events      TEXT NOT NULL DEFAULT '',
+		token       TEXT NOT NULL DEFAULT '',
+		secret      TEXT NOT NULL DEFAULT '',
+		enabled     INTEGER NOT NULL DEFAULT 1,
+		created_at  INTEGER NOT NULL,
+		last_at     INTEGER NOT NULL DEFAULT 0,
+		last_status INTEGER NOT NULL DEFAULT 0,
+		last_error  TEXT NOT NULL DEFAULT '',
+		failures    INTEGER NOT NULL DEFAULT 0
+	)`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

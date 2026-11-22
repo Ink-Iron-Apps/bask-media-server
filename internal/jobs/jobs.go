@@ -154,6 +154,15 @@ type Runner struct {
 	// History is how many finished jobs are remembered. Zero means 20.
 	History int
 
+	// Notify is told when a pass ends and when a scan found something new.
+	// Nil means nobody is listening.
+	//
+	// A callback rather than this package building webhook events itself,
+	// because the notifier reads the same database these passes write and one
+	// importing the other would be a cycle the first time either grew.
+	// Called from the goroutine that ran the pass, and expected not to block.
+	Notify func(Notice)
+
 	mu      sync.Mutex
 	next    int64
 	entries []*entry // newest first
@@ -216,6 +225,44 @@ func (r *Runner) Can(ctx context.Context, kind Kind) error {
 	_, _, err := r.prepare(ctx, kind, 0)
 	return err
 }
+
+// NoticeKind is what a notice is about.
+type NoticeKind string
+
+const (
+	// NoticeDone and NoticeFailed are a pass that has ended.
+	NoticeDone   NoticeKind = "done"
+	NoticeFailed NoticeKind = "failed"
+
+	// NoticeAdded is one thing a scan found that was not in the library
+	// before.
+	NoticeAdded NoticeKind = "added"
+)
+
+// Notice is something worth telling somebody about.
+type Notice struct {
+	Kind NoticeKind
+
+	// Job is the pass this is about, finished for a done or failed notice
+	// and still running for an added one.
+	Job Job
+
+	// Err is why a pass failed, and nil otherwise.
+	Err error
+
+	// Item and Section are what a scan found and which library it landed in,
+	// set only on an added notice.
+	Item    *domain.Item
+	Section string
+}
+
+// announceLimit is how many new items a scan names one by one.
+//
+// A scan that found four new episodes should say which four. A first scan of a
+// ten-thousand-film library should not send ten thousand notifications to
+// somebody's phone, and the number in the finished-pass notice tells them what
+// happened anyway.
+const announceLimit = 25
 
 // report is how a pass tells the runner where it is.
 type report func(note string, done, total int)
@@ -477,7 +524,6 @@ func (r *Runner) update(e *entry, note string, done, total int) {
 
 func (r *Runner) finish(e *entry, err error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	e.job.Finished = time.Now().UTC()
 	switch {
 	case err == nil:
@@ -490,6 +536,68 @@ func (r *Runner) finish(e *entry, err error) {
 		e.job.Error = err.Error()
 		r.logger().Error("job failed", "kind", string(e.job.Kind), "error", err)
 	}
+	finished := e.job
+	r.mu.Unlock()
+
+	// Outside the lock, and not for a pass somebody cancelled: they know
+	// they cancelled it.
+	switch finished.State {
+	case StateDone:
+		if finished.Kind == KindScan {
+			r.announce(finished)
+		}
+		r.notify(Notice{Kind: NoticeDone, Job: finished})
+	case StateFailed:
+		r.notify(Notice{Kind: NoticeFailed, Job: finished, Err: err})
+	}
+}
+
+// announce names what a finished scan added.
+//
+// Here rather than inside the scan itself for two reasons: this is where the
+// job and its start time are both in hand, and the question "what is new" is
+// one query against added_at rather than a count threaded through the
+// scanner's worker pool and its write batches.
+//
+// Its own context, because the job's was cancelled the moment the pass
+// returned. Short, because a library that cannot answer this in five seconds
+// has a bigger problem than a missed notification.
+func (r *Runner) announce(job Job) {
+	if r.Notify == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	added, err := r.DB.AddedSince(ctx, job.Started, announceLimit+1)
+	if err != nil {
+		r.logger().Error("could not read what a scan added", "error", err)
+		return
+	}
+	if len(added) == 0 || len(added) > announceLimit {
+		return
+	}
+
+	names := map[int64]string{}
+	if sections, err := r.DB.Sections(ctx); err == nil {
+		for _, section := range sections {
+			names[section.ID] = section.Title
+		}
+	}
+	for _, item := range added {
+		r.notify(Notice{
+			Kind: NoticeAdded, Job: job,
+			Item: &item, Section: names[item.SectionID],
+		})
+	}
+}
+
+// notify hands a notice on, if anybody is listening.
+func (r *Runner) notify(notice Notice) {
+	if r.Notify == nil {
+		return
+	}
+	r.Notify(notice)
 }
 
 // trim keeps the history bounded, which is rule 3: a list that only ever grows

@@ -476,7 +476,8 @@ func (s *Server) timeline(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.report(r, nowplaying.Stream{
 			Key: key, ItemID: id, Position: p.Offset, Duration: p.Duration,
-			Paused: q.Get("state") == "paused",
+			// The timeline is the one request that knows.
+			Paused: q.Get("state") == "paused", PausedKnown: true,
 		})
 	}
 
