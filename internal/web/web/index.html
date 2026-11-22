@@ -32,6 +32,9 @@
     </form>
     <div class="who">
       <a id="to-admin" href="/admin/" class="muted" hidden>Admin</a>
+      <!-- Only for an account with a rating ceiling, and only where a PIN
+           exists to lift it with. -->
+      <button id="unlock" class="link" hidden></button>
       <span id="who" class="muted"></span>
       <button id="signout" class="link">Sign out</button>
     </div>

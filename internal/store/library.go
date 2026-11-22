@@ -55,7 +55,9 @@ func (d *DB) CreateSection(ctx context.Context, title string, kind domain.Sectio
 // Sections lists every library, oldest first so a client's section order is
 // stable across restarts.
 func (d *DB) Sections(ctx context.Context) ([]domain.Section, error) {
-	only, args := d.only("id")
+	// Sections only: a library has no age rating of its own, and the items
+	// inside it are filtered when they are asked for.
+	only, args := d.onlySections("id")
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT id, title, kind, roots, scanned_at, created_at, updated_at
 		   FROM sections WHERE 1 = 1`+only+` ORDER BY id`, args...)
@@ -108,7 +110,7 @@ func (d *DB) MarkSectionScanned(ctx context.Context, id int64, at time.Time) err
 	return nil
 }
 
-const itemColumns = `id, section_id, kind, parent_id, title, sort_title, year, idx, disc, summary, duration_ms, added_at, updated_at, provider_id, poster_key, art_key, metadata_at, taken_at, performer, locked, extra`
+const itemColumns = `id, section_id, kind, parent_id, title, sort_title, year, idx, disc, summary, duration_ms, added_at, updated_at, provider_id, poster_key, art_key, metadata_at, taken_at, performer, locked, extra, rating, rating_age`
 
 func scanItem(rows interface{ Scan(...any) error }) (domain.Item, error) {
 	var (
@@ -123,7 +125,7 @@ func scanItem(rows interface{ Scan(...any) error }) (domain.Item, error) {
 	if err := rows.Scan(&it.ID, &it.SectionID, &kind, &parent, &it.Title, &it.SortTitle,
 		&it.Year, &it.Index, &it.Disc, &it.Summary, &durationMS, &addedAt, &updatedAt,
 		&it.ProviderID, &it.PosterKey, &it.ArtKey, &metadataAt, &takenAt, &it.Performer,
-		&locked, &extra); err != nil {
+		&locked, &extra, &it.Rating, &it.RatingAge); err != nil {
 		return domain.Item{}, err
 	}
 	it.Locked = locked != 0
@@ -153,18 +155,24 @@ func (d *DB) SectionItems(ctx context.Context, sectionID int64, kind domain.Kind
 	if !d.canSee(sectionID) {
 		return nil, 0, nil
 	}
+	// The library is already known to be allowed; the rating still has to be
+	// applied to what is inside it.
+	rated, ceiling := d.onlyRated("section_id")
+
 	var total int
 	if err := d.sql.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM items WHERE section_id = ? AND kind = ? AND parent_id IS NULL`,
-		sectionID, string(kind)).Scan(&total); err != nil {
+		`SELECT COUNT(*) FROM items WHERE section_id = ? AND kind = ? AND parent_id IS NULL`+rated,
+		append([]any{sectionID, string(kind)}, ceiling...)...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count section items: %w", err)
 	}
 
 	offset, limit := page.Window(500)
+	args := append([]any{sectionID, string(kind)}, ceiling...)
+	args = append(args, limit, offset)
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT `+itemColumns+` FROM items WHERE section_id = ? AND kind = ? AND parent_id IS NULL
+		`SELECT `+itemColumns+` FROM items WHERE section_id = ? AND kind = ? AND parent_id IS NULL`+rated+`
 		 ORDER BY sort_title, year LIMIT ? OFFSET ?`,
-		sectionID, string(kind), limit, offset)
+		args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list section items: %w", err)
 	}
@@ -543,10 +551,13 @@ func (d *DB) SectionItemsOfKind(ctx context.Context, sectionID int64, kind domai
 	if limit <= 0 || limit > 2000 {
 		limit = 1000
 	}
+	rated, ceiling := d.onlyRated("section_id")
+	args := append([]any{sectionID, string(kind)}, ceiling...)
+	args = append(args, limit)
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT `+itemColumns+` FROM items WHERE section_id = ? AND kind = ?
+		`SELECT `+itemColumns+` FROM items WHERE section_id = ? AND kind = ?`+rated+`
 		 ORDER BY sort_title, disc, idx, taken_at LIMIT ?`,
-		sectionID, string(kind), limit)
+		args...)
 	if err != nil {
 		return nil, fmt.Errorf("list %s: %w", kind, err)
 	}

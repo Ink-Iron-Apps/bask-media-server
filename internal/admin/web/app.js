@@ -987,6 +987,7 @@ views.users = async function (main) {
     el('td', { class: 'muted', text: when(user.createdAt) }),
     el('td', { class: 'right' }, el('div', { class: 'row actions' },
       el('button', { text: 'Tokens', on: { click: () => showTokens(user) } }),
+      el('button', { text: 'Limits', on: { click: () => editLimits(user) } }),
       el('button', {
         text: user.admin ? 'Make viewer' : 'Make administrator',
         on: {
@@ -1073,6 +1074,91 @@ function showSecret(token, note) {
       }),
       el('button', { text: 'Done', on: { click: () => render() } }))));
   box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// editLimits is what an account may watch, and how much of the server it may
+// take.
+//
+// All of it on the account rather than on the device, because every one of
+// these is about a person: a child is a child on the television and on the
+// tablet.
+function editLimits(user) {
+  const ceiling = el('select', { id: 'ceiling-' + user.id },
+    el('option', { value: '-1', text: 'No limit' }),
+    ...[0, 7, 8, 12, 13, 14, 15, 16, 17, 18].map((age) => el('option', {
+      value: String(age),
+      text: age === 0 ? 'Rated for everyone' : 'Rated ' + age + ' and under',
+    })));
+  ceiling.value = String(user.ceiling);
+
+  const unrated = el('input', { type: 'checkbox', id: 'unrated-' + user.id });
+  unrated.checked = !!user.allowUnrated;
+
+  const streams = el('input', { type: 'number', min: '0', value: String(user.maxStreams || 0), class: 'short' });
+  const bitrate = el('input', {
+    type: 'number', min: '0', class: 'short',
+    value: String(Math.round((user.maxBitRate || 0) / 1000000)),
+  });
+  const pin = el('input', { type: 'password', id: 'pin-' + user.id, placeholder: user.hasPin ? 'set' : 'not set', class: 'short' });
+
+  const card = el('div', { class: 'card' },
+    el('h2', { text: 'What ' + user.username + ' may watch' }),
+    el('label', { for: 'ceiling-' + user.id, text: 'Highest rating' }), ceiling,
+    el('div', { class: 'row' }, unrated,
+      el('label', { for: 'unrated-' + user.id, text: 'Also show anything nobody has rated' })),
+    el('p', { class: 'muted', text: 'Ratings come from the metadata pass, so an item it has not reached yet has none. Leaving the box ticked keeps a half-enriched library watchable; unticking it is what makes a restricted account predictable.' }),
+
+    el('h2', { text: 'How much of the server' }),
+    el('div', { class: 'row' }, el('label', { text: 'Streams at once' }), streams,
+      el('span', { class: 'muted', text: '0 is no limit' })),
+    el('div', { class: 'row' }, el('label', { text: 'Megabits per second' }), bitrate,
+      el('span', { class: 'muted', text: '0 is no limit' })),
+    el('p', { class: 'muted', text: 'A bandwidth limit converts a stream down to fit rather than refusing it. A stream limit refuses: there is no smaller version of a third film at once.' }),
+
+    el('h2', { text: 'PIN' }),
+    el('label', { for: 'pin-' + user.id, text: 'Four digits or more' }), pin,
+    el('p', { class: 'muted', text: 'Typed in the watching interface to lift the rating limit for a few hours. Leave the box empty to keep the PIN that is set; clear it with the button.' }),
+
+    el('div', { class: 'row' },
+      el('button', {
+        class: 'primary',
+        text: 'Save',
+        on: {
+          click: async () => {
+            const body = {
+              ceiling: Number(ceiling.value),
+              allowUnrated: unrated.checked,
+              maxStreams: Math.max(0, Number(streams.value) || 0),
+              maxBitRate: Math.max(0, Math.round((Number(bitrate.value) || 0) * 1000000)),
+            };
+            if (pin.value.trim() !== '') body.pin = pin.value.trim();
+            try {
+              await api('PATCH', '/users/' + user.id, body);
+              toast('Saved.');
+              render();
+            } catch (err) { failed(err); }
+          },
+        },
+      }),
+      user.hasPin
+        ? el('button', {
+          class: 'danger',
+          text: 'Clear the PIN',
+          on: {
+            click: async () => {
+              try {
+                await api('PATCH', '/users/' + user.id, { pin: '' });
+                toast('Cleared. The limit can no longer be lifted from the watching interface.');
+                render();
+              } catch (err) { failed(err); }
+            },
+          },
+        })
+        : null,
+      el('button', { text: 'Cancel', on: { click: () => render() } })));
+
+  const main = document.getElementById('main');
+  fill(main, el('div', { class: 'head' }, el('h1', { text: 'Users' })), card);
 }
 
 // libraryPicker is the row of checkboxes that decides which libraries a

@@ -46,6 +46,11 @@ type item struct {
 	IndexNumber       *int `json:"IndexNumber,omitempty"`
 	ParentIndexNumber *int `json:"ParentIndexNumber,omitempty"`
 
+	// OfficialRating is the content rating as the board wrote it, which is
+	// what a client draws beside the title and what its own parental
+	// controls read.
+	OfficialRating string `json:"OfficialRating,omitempty"`
+
 	ProductionYear int    `json:"ProductionYear,omitempty"`
 	Overview       string `json:"Overview,omitempty"`
 	PremiereDate   string `json:"PremiereDate,omitempty"`
@@ -294,6 +299,7 @@ func (s *Server) render(it domain.Item, rel related, progress domain.Progress) i
 		RunTimeTicks:   ticks(it.Duration),
 		LocationType:   "FileSystem",
 	}
+	out.OfficialRating = it.Rating
 	if it.Kind == domain.KindSeason && out.Name == "" {
 		out.Name = "Season " + strconv.Itoa(it.Index)
 	}

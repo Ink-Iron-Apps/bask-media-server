@@ -344,6 +344,9 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	if s.refused(w, key) {
 		return
 	}
+	if s.tooManyStreams(w, r, key) {
+		return
+	}
 	// Reported from the file request as well as from the progress report,
 	// because a client appears on the page the moment it starts reading
 	// rather than when it first says where it has got to.
@@ -389,7 +392,9 @@ func (s *Server) playbackInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	want := wishFrom(r)
+	// Capped by what this account is allowed before anything is decided, so
+	// the answer a client is given already fits.
+	want := wishFrom(r).capped(credFrom(r.Context()))
 	play := newPlaySession(found.ID)
 	streams := s.streamsOf(r.Context(), *found)
 	sources := make([]mediaSource, 0, len(found.Parts))

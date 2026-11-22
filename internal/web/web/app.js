@@ -102,6 +102,40 @@ function showApp(me) {
   document.getElementById('who').textContent = me && me.username ? me.username : '';
   // The way back to administration, for the account that has it.
   document.getElementById('to-admin').hidden = !(me && me.admin);
+  drawLock(me);
+}
+
+// drawLock is the control that lifts a rating ceiling for an evening.
+//
+// Drawn only for an account that has a ceiling, and only where a PIN exists
+// to lift it with: a button that cannot work is worse than no button, and an
+// account with no restriction has nothing to unlock.
+function drawLock(me) {
+  const button = document.getElementById('unlock');
+  if (!me || me.ceiling == null || !me.canUnlock) {
+    button.hidden = true;
+    return;
+  }
+  button.hidden = false;
+  button.textContent = me.unlocked ? 'Lock' : 'Unlock';
+  button.onclick = async () => {
+    try {
+      if (me.unlocked) {
+        await api('DELETE', '/unlock');
+        toast('Locked.');
+      } else {
+        const pin = prompt('PIN');
+        if (pin === null) return;
+        await api('POST', '/unlock', { pin });
+        toast('Unlocked for a few hours.');
+      }
+      // Everything on the page was filtered by the ceiling, so the page is
+      // drawn again rather than patched.
+      const fresh = await api('GET', '/session');
+      drawLock(fresh);
+      render();
+    } catch (err) { failed(err); }
+  };
 }
 
 document.getElementById('signin-form').addEventListener('submit', async (event) => {
@@ -201,6 +235,7 @@ async function render() {
     if (hash.startsWith('#/playlist/')) return await playlistView(Number(hash.slice(11)));
     if (hash.startsWith('#/collection/')) return await collectionView(Number(hash.slice(13)));
     if (hash === '#/favourites') return await favouritesView();
+    if (hash === '#/watchlist') return await watchlistView();
     return await homeView();
   } catch (err) {
     fill(main(), el('p', { class: 'error', text: err.message }));
@@ -227,18 +262,27 @@ async function homeView() {
 
   // Asked for together rather than one after another: three small queries
   // that do not depend on each other should not be three round trips.
-  const [starred, lists, groups] = await Promise.all([
+  const [starred, lists, groups, wanted] = await Promise.all([
     api('GET', '/favourites?size=12').catch(() => ({ items: [] })),
     api('GET', '/playlists').catch(() => ({ playlists: [] })),
     api('GET', '/collections').catch(() => ({ collections: [] })),
+    api('GET', '/watchlist?size=12').catch(() => ({ items: [] })),
   ]);
   const favourites = starred.items || [];
   const playlists = lists.playlists || [];
   const collections = groups.collections || [];
+  const watchlist = wanted.items || [];
 
   fill(main(),
     resume.length ? el('h2', { text: 'Where you left off' }) : null,
     resume.length ? grid(resume) : null,
+
+    // Above favourites, because a watchlist is what somebody is choosing
+    // from tonight and a favourite is what they have already seen.
+    watchlist.length ? el('h2', {},
+      'Your watchlist',
+      el('a', { class: 'more', href: '#/watchlist', text: 'All' })) : null,
+    watchlist.length ? grid(watchlist) : null,
 
     favourites.length ? el('h2', {},
       'Favourites',
@@ -262,6 +306,15 @@ async function homeView() {
       ? el('div', { class: 'row' }, (home.sections || []).map((section) =>
         el('a', { class: 'button', href: '#/library/' + section.id, text: section.title })))
       : el('p', { class: 'empty', text: 'No libraries yet. Whoever runs this server adds them in the admin interface.' }));
+}
+
+async function watchlistView() {
+  const page = await api('GET', '/watchlist?size=200');
+  const items = page.items || [];
+  fill(main(),
+    el('h1', { text: 'Your watchlist' }),
+    items.length ? grid(items)
+      : el('p', { class: 'empty', text: 'Nothing on it yet. The button is on a film or an episode page.' }));
 }
 
 async function favouritesView() {
@@ -343,6 +396,27 @@ function starButton(item) {
       const reply = await api(on ? 'DELETE' : 'POST', '/favourites/' + item.id);
       on = !!reply.favourite;
       button.textContent = on ? '★' : '☆';
+    } catch (err) { failed(err); }
+  });
+  return button;
+}
+
+// watchlistButton is "I mean to watch this", pressed and unpressed.
+//
+// A watchlist is a playlist with a reserved name, so this button writes
+// something every surface already shows: the list is on the television too.
+function watchlistButton(item) {
+  let on = !!item.watchlist;
+  const button = el('button', {
+    class: 'ghost',
+    title: 'Watchlist',
+    text: on ? 'On your watchlist' : 'Add to watchlist',
+  });
+  button.addEventListener('click', async () => {
+    try {
+      const reply = await api(on ? 'DELETE' : 'POST', '/watchlist/' + item.id);
+      on = !!reply.watchlist;
+      button.textContent = on ? 'On your watchlist' : 'Add to watchlist';
     } catch (err) { failed(err); }
   });
   return button;
@@ -460,6 +534,7 @@ async function itemView(id) {
     actions.append(el('a', { class: 'button', href: '#/item/' + detail.parent.id, text: '‹ ' + detail.parent.title }));
   }
   actions.append(starButton(item));
+  if (parts.length) actions.append(watchlistButton(item));
   if (parts.length) actions.append(addToPlaylistButton(item));
 
   // The trailer goes beside Play, because that is what somebody deciding

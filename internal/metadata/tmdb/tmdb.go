@@ -126,13 +126,17 @@ func (c *Client) Movie(ctx context.Context, title string, year int) (metadata.Ma
 	}
 
 	first := out.Results[0]
+	id := strconv.FormatInt(first.ID, 10)
 	return metadata.Match{
-		ProviderID:  strconv.FormatInt(first.ID, 10),
+		ProviderID:  id,
 		Title:       first.Title,
 		Year:        yearOf(first.ReleaseDate),
 		Summary:     first.Overview,
 		PosterURL:   imageURL(posterBase, first.PosterPath),
 		BackdropURL: imageURL(backdropBase, first.BackdropPath),
+		// One more request, because the search endpoint does not carry a
+		// certification and a rating ceiling is worth nothing without one.
+		Rating: c.movieRating(ctx, id),
 	}, nil
 }
 
@@ -158,13 +162,15 @@ func (c *Client) Show(ctx context.Context, title string, year int) (metadata.Mat
 	}
 
 	first := out.Results[0]
+	id := strconv.FormatInt(first.ID, 10)
 	return metadata.Match{
-		ProviderID:  strconv.FormatInt(first.ID, 10),
+		ProviderID:  id,
 		Title:       first.Name,
 		Year:        yearOf(first.FirstAirDate),
 		Summary:     first.Overview,
 		PosterURL:   imageURL(posterBase, first.PosterPath),
 		BackdropURL: imageURL(backdropBase, first.BackdropPath),
+		Rating:      c.showRating(ctx, id),
 	}, nil
 }
 

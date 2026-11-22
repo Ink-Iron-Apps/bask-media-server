@@ -274,6 +274,29 @@ func (r *Registry) Count() int {
 	return n
 }
 
+// CountFor is how many streams this account is playing, not counting one it
+// is about to start again.
+//
+// For the cap on how many things one account may play at once. The key is
+// excluded because a client re-reading its own playlist or renegotiating the
+// same stream is not a second stream, and counting it as one would mean a cap
+// of one could never play anything.
+func (r *Registry) CountFor(userID int64, except string) int {
+	now := r.now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.expireLocked(now)
+
+	n := 0
+	for key, stream := range r.streams {
+		if stream.Terminated || stream.UserID != userID || key == except {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 // Terminate stops a stream and arms the latch.
 //
 // The order matters. The latch is set first, so a request that arrives while

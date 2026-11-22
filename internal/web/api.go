@@ -28,6 +28,14 @@ type itemView struct {
 	Disc     int    `json:"disc,omitempty"`
 	Summary  string `json:"summary,omitempty"`
 
+	// Rating is the content rating as the board wrote it, for the line under
+	// a title.
+	Rating string `json:"rating,omitempty"`
+
+	// Watchlist is whether this account means to watch it, so the button is
+	// drawn in the state it is in.
+	Watchlist bool `json:"watchlist,omitempty"`
+
 	DurationMS int64 `json:"durationMs,omitempty"`
 	Poster     bool  `json:"poster"`
 	Art        bool  `json:"art"`
@@ -79,6 +87,12 @@ func (s *Server) views(ctx context.Context, items []domain.Item, userID int64) (
 	if err != nil {
 		return nil, err
 	}
+	// And one for the watchlist, for the same reason: a grid of forty
+	// posters draws forty buttons and must not ask forty times.
+	wanted, err := s.db(ctx).WatchlistSet(ctx, userID, ids)
+	if err != nil {
+		return nil, err
+	}
 
 	parents := map[int64]*domain.Item{}
 	parent := func(id int64) *domain.Item {
@@ -97,9 +111,10 @@ func (s *Server) views(ctx context.Context, items []domain.Item, userID int64) (
 	for _, it := range items {
 		view := itemView{
 			ID: it.ID, Kind: string(it.Kind), Title: it.Title, Year: it.Year,
-			Index: it.Index, Disc: it.Disc, Summary: it.Summary,
+			Index: it.Index, Disc: it.Disc, Summary: it.Summary, Rating: it.Rating,
 			DurationMS: it.Duration.Milliseconds(),
 			Favourite:  favourites[it.ID],
+			Watchlist:  wanted[it.ID],
 			// A photograph and an album of them have no poster in the cache:
 			// the picture itself is the thumbnail, made on request.
 			Poster: it.PosterKey != "" || it.Kind == domain.KindPhoto || it.Kind == domain.KindPhotoAlbum,

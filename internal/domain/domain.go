@@ -195,6 +195,13 @@ type Item struct {
 	// KindExtra, and empty for everything else.
 	Extra ExtraKind
 
+	// Rating is the content rating as the board that gave it writes it —
+	// "PG-13", "15", "TV-MA" — and RatingAge the age it stands for, which is
+	// what a restriction compares against. [UnknownAge] means nobody has
+	// said, which is every item until a metadata pass reaches it.
+	Rating    string
+	RatingAge int
+
 	// Parts are the files behind a playable item. A movie or episode normally
 	// has exactly one; more than one means multiple versions of the same thing.
 	Parts []Part
@@ -288,6 +295,26 @@ type Credential struct {
 
 	// Sections is what it may reach when Restricted. Meaningless otherwise.
 	Sections []int64
+
+	// Ceiling is the highest age rating this credential may see, -1 for no
+	// limit, and AllowUnrated whether the things nobody has rated are
+	// allowed through. Both come from the account: a rating is about who is
+	// watching rather than about which device they are on.
+	Ceiling      int
+	AllowUnrated bool
+
+	// MaxStreams is how many things this account may play at once and
+	// MaxBitRate the most it may be sent, in bits per second. Zero for no
+	// limit. On the account rather than the device for the same reason the
+	// ceiling is: both are about a person and what a household has agreed
+	// they may take of a machine everybody shares.
+	MaxStreams int
+	MaxBitRate int64
+
+	// Unlocked means a PIN was presented, so this credential's rating
+	// ceiling does not apply for now. Set by the surface that took the PIN,
+	// never stored.
+	Unlocked bool
 }
 
 // Progress is one user's position in one item.

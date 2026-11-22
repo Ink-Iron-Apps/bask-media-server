@@ -47,6 +47,73 @@ func (s *Server) setFavourite(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"favourite": favourite})
 }
 
+/* ---------- the watchlist ---------- */
+
+// The things somebody means to watch, which is a playlist with a reserved
+// name: see [store.WatchlistTitle]. Every surface lists playlists, so a
+// watchlist built this way is already on the television.
+
+func (s *Server) watchlist(w http.ResponseWriter, r *http.Request) {
+	user := userFrom(r.Context())
+	list, err := s.db(r.Context()).WatchlistIfAny(r.Context(), user.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		// Nothing on it, and nothing made: an account that has never used it
+		// has no empty playlist cluttering its lists.
+		writeJSON(w, http.StatusOK, map[string]any{"items": []itemView{}, "total": 0})
+		return
+	}
+	if err != nil {
+		s.fail(w, "read watchlist", err)
+		return
+	}
+
+	entries, total, err := s.db(r.Context()).PlaylistEntries(r.Context(), user.ID, list.ID, pageFrom(r))
+	if err != nil {
+		s.fail(w, "read watchlist", err)
+		return
+	}
+	items := make([]domain.Item, 0, len(entries))
+	for _, entry := range entries {
+		items = append(items, entry.Item)
+	}
+	views, err := s.views(r.Context(), items, user.ID)
+	if err != nil {
+		s.fail(w, "read progress", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": views, "total": total})
+}
+
+// setWatchlist is the button, pressed and unpressed, at one path by method.
+func (s *Server) setWatchlist(w http.ResponseWriter, r *http.Request) {
+	user := userFrom(r.Context())
+	id, ok := idFrom(w, r)
+	if !ok {
+		return
+	}
+	wanted := r.Method == http.MethodPost
+
+	// Through the scoped handle: an item this account cannot see cannot be
+	// put on a list by naming it.
+	if wanted {
+		if _, err := s.db(r.Context()).Item(r.Context(), id); errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "no such item")
+			return
+		} else if err != nil {
+			s.fail(w, "read item", err)
+			return
+		}
+		if _, err := s.db(r.Context()).AddToWatchlist(r.Context(), user.ID, id); err != nil {
+			s.fail(w, "add to watchlist", err)
+			return
+		}
+	} else if _, err := s.db(r.Context()).RemoveFromWatchlist(r.Context(), user.ID, id); err != nil {
+		s.fail(w, "remove from watchlist", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"watchlist": wanted})
+}
+
 /* ---------- playlists ---------- */
 
 type playlistView struct {

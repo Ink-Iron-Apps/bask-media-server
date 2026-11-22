@@ -558,6 +558,9 @@ func (s *Server) streamPart(w http.ResponseWriter, r *http.Request) {
 	if s.refused(w, key) {
 		return
 	}
+	if s.tooManyStreams(w, r, key) {
+		return
+	}
 	// Reported from here as well as from the timeline, so a client appears on
 	// the page as soon as it starts reading rather than when it first says
 	// where it has got to.
@@ -870,18 +873,19 @@ func (s *Server) renderItem(
 	itemSubtitles []domain.Subtitle,
 ) entry {
 	e := entry{
-		Elem:      elementFor(it.Kind),
-		RatingKey: strconv.FormatInt(it.ID, 10),
-		Key:       keyFor(it.ID),
-		Type:      plexType(it.Kind),
-		Title:     it.Title,
-		Summary:   it.Summary,
-		Year:      it.Year,
-		Index:     it.Index,
-		Duration:  it.Duration.Milliseconds(),
-		AddedAt:   millisOf(it.AddedAt),
-		UpdatedAt: millisOf(it.UpdatedAt),
-		GUID:      "bms://" + string(it.Kind) + "/" + strconv.FormatInt(it.ID, 10),
+		Elem:          elementFor(it.Kind),
+		RatingKey:     strconv.FormatInt(it.ID, 10),
+		Key:           keyFor(it.ID),
+		Type:          plexType(it.Kind),
+		Title:         it.Title,
+		Summary:       it.Summary,
+		Year:          it.Year,
+		Index:         it.Index,
+		Duration:      it.Duration.Milliseconds(),
+		AddedAt:       millisOf(it.AddedAt),
+		UpdatedAt:     millisOf(it.UpdatedAt),
+		GUID:          "bms://" + string(it.Kind) + "/" + strconv.FormatInt(it.ID, 10),
+		ContentRating: it.Rating,
 	}
 	if isContainer(it.Kind) {
 		// A container's key is its children, which is how a client knows to

@@ -458,6 +458,42 @@ var migrations = []string{
 	// does here is fix an item, and a half-locked row is a rule nobody can
 	// predict from the page.
 	`ALTER TABLE items ADD COLUMN locked INTEGER NOT NULL DEFAULT 0`,
+
+	// What an item is rated, and the age that rating stands for.
+	//
+	// Two columns because they answer two questions: the label is what a
+	// client shows ("PG-13", "15"), and the age is what a restriction
+	// compares against — one number, so a ceiling works across the half
+	// dozen national systems a mixed library carries. -1 is "nobody has
+	// said", which is every item until a metadata pass reaches it.
+	`ALTER TABLE items ADD COLUMN rating TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE items ADD COLUMN rating_age INTEGER NOT NULL DEFAULT -1`,
+	`CREATE INDEX items_rating ON items(rating_age)`,
+
+	// What an account may watch, and how much of the server it may use.
+	//
+	// max_rating_age is a ceiling in years and -1 means none, which is what
+	// every account has until somebody says otherwise. allow_unrated
+	// decides what happens to the things nobody has rated: allowed, which
+	// keeps a half-enriched library watchable, or hidden, which is what
+	// somebody who wants a child's account to be predictable asks for.
+	//
+	// pin_hash is how a restriction is lifted for an evening without the
+	// administrator being in the room. max_streams and max_bitrate are what
+	// one account may take of a machine the whole household shares; zero
+	// means no limit.
+	`ALTER TABLE users ADD COLUMN max_rating_age INTEGER NOT NULL DEFAULT -1`,
+	`ALTER TABLE users ADD COLUMN allow_unrated INTEGER NOT NULL DEFAULT 1`,
+	`ALTER TABLE users ADD COLUMN pin_hash BLOB`,
+	`ALTER TABLE users ADD COLUMN max_streams INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE users ADD COLUMN max_bitrate INTEGER NOT NULL DEFAULT 0`,
+
+	// When a rating ceiling was lifted with a PIN, and until when.
+	//
+	// On the session rather than in memory so it survives a page reload, and
+	// with an expiry rather than a flag so an evening's unlock does not
+	// become a permanent one: whoever typed the PIN was unlocking tonight.
+	`ALTER TABLE sessions ADD COLUMN unlocked_until INTEGER NOT NULL DEFAULT 0`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

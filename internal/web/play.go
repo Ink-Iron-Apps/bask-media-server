@@ -84,6 +84,9 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 	if s.refused(w, key) {
 		return
 	}
+	if s.tooManyStreams(w, r, key) {
+		return
+	}
 
 	direct := map[string]any{
 		"mode":    string(playback.ModeDirect),
@@ -141,6 +144,19 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 		Audio:      body.Capabilities.Audio,
 		MaxHeight:  body.Capabilities.MaxHeight,
 	}
+	// What this account is allowed, folded into what the browser asked for:
+	// a file above the cap is converted down rather than refused, which is
+	// what somebody on a slow line actually wants.
+	if cred := credFrom(r.Context()); cred != nil && cred.MaxBitRate > 0 {
+		caps.MaxBitRate = cred.MaxBitRate
+	}
+	// A container that declares no bit rate is most of Matroska. The size
+	// over the duration is the honest substitute, and it is what somebody
+	// means by "this file is too big for this link" — the same substitute
+	// the Jellyfin surface makes, for the same reason.
+	if info.BitRate == 0 && part.Size > 0 && duration(item, info) > 0 {
+		caps.BitRate = int64(float64(part.Size*8) / duration(item, info).Seconds())
+	}
 	plan := playback.Decide(info, part.Container, caps)
 	if plan.Mode == playback.ModeDirect && burn == nil {
 		s.playingDirect(r, key, item)
@@ -173,15 +189,11 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	duration := item.Duration
-	if duration <= 0 {
-		duration = info.Duration
-	}
 	session, err := s.Transcoder.Start(transcode.Request{
 		Key:      sessionKey(part.ID, plan),
 		Path:     part.Path,
 		Plan:     plan,
-		Duration: duration,
+		Duration: duration(item, info),
 		StartAt:  time.Duration(body.StartMS) * time.Millisecond,
 	})
 	if errors.Is(err, transcode.ErrBusy) {
@@ -195,7 +207,7 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.report(r, nowplaying.Stream{
-		Key: key, ItemID: item.ID, Title: item.Title, Duration: duration,
+		Key: key, ItemID: item.ID, Title: item.Title, Duration: duration(item, info),
 		Mode: string(plan.Mode), Why: plan.Why, Session: session.ID,
 	})
 
@@ -208,6 +220,15 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 		"startMs": body.StartMS,
 		"hls":     true,
 	})
+}
+
+// duration is how long the thing is: what the scan measured, or what the
+// probe just said.
+func duration(item *domain.Item, info ffprobe.Info) time.Duration {
+	if item.Duration > 0 {
+		return item.Duration
+	}
+	return info.Duration
 }
 
 // playingDirect records a stream that is the file itself.

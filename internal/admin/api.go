@@ -318,6 +318,14 @@ type userView struct {
 	// Sections is the libraries this account may see, empty meaning all of
 	// them. A device can be narrowed further but never past this.
 	Sections []int64 `json:"sections"`
+
+	// What this account may watch and how much of the server it may use.
+	// Ceiling is an age and -1 means no limit; the caps are zero for none.
+	Ceiling      int   `json:"ceiling"`
+	AllowUnrated bool  `json:"allowUnrated"`
+	MaxStreams   int   `json:"maxStreams"`
+	MaxBitRate   int64 `json:"maxBitRate"`
+	HasPIN       bool  `json:"hasPin"`
 }
 
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
@@ -343,9 +351,17 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		if sections == nil {
 			sections = []int64{}
 		}
+		limits, err := s.DB.UserLimits(r.Context(), u.ID)
+		if err != nil {
+			s.fail(w, "read account limits", err)
+			return
+		}
 		out = append(out, userView{
 			ID: u.ID, Username: u.Username, Admin: u.Admin, CreatedAt: u.CreatedAt,
 			Tokens: len(tokens), Self: me != nil && me.ID == u.ID, Sections: sections,
+			Ceiling: limits.Ceiling, AllowUnrated: limits.AllowUnrated,
+			MaxStreams: limits.MaxStreams, MaxBitRate: limits.MaxBitRate,
+			HasPIN: limits.HasPIN,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -393,11 +409,21 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Admin    *bool    `json:"admin"`
 		Sections *[]int64 `json:"sections"`
+
+		// What this account may watch, and how much of the server it may
+		// use. A field that was not sent is one nobody touched.
+		Ceiling      *int    `json:"ceiling"`
+		AllowUnrated *bool   `json:"allowUnrated"`
+		MaxStreams   *int    `json:"maxStreams"`
+		MaxBitRate   *int64  `json:"maxBitRate"`
+		PIN          *string `json:"pin"`
 	}
 	if !decode(w, r, &body) {
 		return
 	}
-	if body.Admin == nil && body.Sections == nil {
+	if body.Admin == nil && body.Sections == nil && body.Ceiling == nil &&
+		body.AllowUnrated == nil && body.MaxStreams == nil && body.MaxBitRate == nil &&
+		body.PIN == nil {
 		writeError(w, http.StatusBadRequest, "nothing to change")
 		return
 	}
@@ -428,6 +454,39 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.DB.SetUserSections(r.Context(), id, wanted); err != nil {
 			s.fail(w, "set account libraries", err)
+			return
+		}
+	}
+	if body.Ceiling != nil || body.AllowUnrated != nil || body.MaxStreams != nil || body.MaxBitRate != nil {
+		// Read, changed and written, so a request that sets one of these
+		// does not clear the others: there is one row and four fields on it.
+		limits, err := s.DB.UserLimits(r.Context(), id)
+		if err != nil {
+			s.fail(w, "read account limits", err)
+			return
+		}
+		if body.Ceiling != nil {
+			limits.Ceiling = *body.Ceiling
+		}
+		if body.AllowUnrated != nil {
+			limits.AllowUnrated = *body.AllowUnrated
+		}
+		if body.MaxStreams != nil {
+			limits.MaxStreams = *body.MaxStreams
+		}
+		if body.MaxBitRate != nil {
+			limits.MaxBitRate = *body.MaxBitRate
+		}
+		if err := s.DB.SetUserLimits(r.Context(), id, limits); err != nil {
+			s.fail(w, "set account limits", err)
+			return
+		}
+	}
+	if body.PIN != nil {
+		if err := s.DB.SetUserPIN(r.Context(), id, *body.PIN); err != nil {
+			// The only failure here is a PIN that is too short, which is the
+			// person's to fix rather than the server's.
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}

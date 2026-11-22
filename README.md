@@ -18,6 +18,15 @@ and the Plex vocabulary never reaches storage or scanning.
 - Local accounts and tokens; the first run prints an admin token once
 - Libraries per account and per device: an account is given some of the
   libraries, and one of its devices can be narrowed further still
+- Parental controls: an age rating ceiling per account, read from the
+  certifications a provider carries so one number works across PG-13, 15,
+  FSK 16 and TV-MA at once, with a PIN that lifts it for an evening in the
+  browser
+- Per-account limits on how much of the server one person may take: how many
+  streams at once, and how many megabits — the bandwidth limit converts a
+  stream down to fit rather than refusing it
+- A watchlist, which is a playlist with a reserved name, so it is on the
+  television and in Plex without either of them learning anything new
 - Favourites, playlists and collections, on both APIs and in the browser
 - Two cuts of a film as one film with two versions, named so a client can
   offer the choice

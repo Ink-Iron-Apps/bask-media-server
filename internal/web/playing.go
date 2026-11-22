@@ -103,3 +103,22 @@ func addressOf(r *http.Request) string {
 	}
 	return r.RemoteAddr
 }
+
+// tooManyStreams reports whether this account is already playing as much as
+// it is allowed, and answers the page if so.
+//
+// Counted from the register of what is playing now, so a stream that ended
+// without saying so stops counting at the idle deadline rather than using up
+// a cap for ever.
+func (s *Server) tooManyStreams(w http.ResponseWriter, r *http.Request, key string) bool {
+	cred := credFrom(r.Context())
+	if cred == nil || cred.MaxStreams <= 0 || s.Playing == nil {
+		return false
+	}
+	if s.Playing.CountFor(cred.User.ID, key) < cred.MaxStreams {
+		return false
+	}
+	writeError(w, http.StatusTooManyRequests,
+		"this account is already watching as much as it is allowed to at once")
+	return true
+}

@@ -99,6 +99,12 @@ func (e *Enricher) Run(ctx context.Context) (Result, error) {
 	if err := e.DB.InheritArtwork(ctx); err != nil {
 		return result, err
 	}
+	// A provider rates a series, not every episode of it. Without this a
+	// rating ceiling would hide a show and show every episode inside it,
+	// which is the whole restriction defeated by opening a folder.
+	if err := e.DB.InheritRatings(ctx); err != nil {
+		return result, err
+	}
 	if e.Artwork != nil {
 		freed, err := e.Artwork.Sweep()
 		if err != nil {
@@ -163,6 +169,15 @@ func (e *Enricher) one(ctx context.Context, item domain.Item) (matched bool, ima
 
 	if err := e.DB.SaveMetadata(ctx, item.ID, match.ProviderID, match.Summary, posterKey, artKey); err != nil {
 		return false, images, err
+	}
+	// The rating is written separately because it is written as two things —
+	// the label a client shows and the age a restriction compares against —
+	// and only when the provider had one: an empty rating must not erase a
+	// rating that is already there.
+	if match.Rating != "" {
+		if err := e.DB.SetRating(ctx, item.ID, match.Rating); err != nil {
+			return false, images, err
+		}
 	}
 	return true, images, nil
 }

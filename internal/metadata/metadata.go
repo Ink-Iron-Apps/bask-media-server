@@ -27,6 +27,12 @@ type Match struct {
 	Summary     string
 	PosterURL   string
 	BackdropURL string
+
+	// Rating is the content rating as the board that gave it writes it:
+	// "PG-13", "15", "TV-MA". Empty when the provider has none, which is a
+	// fact rather than a failure — plenty of films were never submitted to a
+	// board anywhere.
+	Rating string
 }
 
 // Provider answers questions about movies and shows.

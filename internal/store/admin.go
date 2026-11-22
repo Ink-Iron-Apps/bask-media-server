@@ -91,11 +91,18 @@ func (d *DB) SessionCredential(ctx context.Context, secret string) (*domain.Cred
 		u                    domain.User
 		sessionID, tokenID   int64
 		createdAt, expiresAt int64
+		ceiling              int
+		allowUnrated         bool
+		maxStreams           int
+		maxBitRate           int64
+		unlockedUntil        int64
 	)
 	err := d.sql.QueryRowContext(ctx,
-		`SELECT s.id, s.token_id, s.expires_at, u.id, u.username, u.admin, u.created_at
+		`SELECT s.id, s.token_id, s.expires_at, s.unlocked_until, u.id, u.username, u.admin, u.created_at,
+		        u.max_rating_age, u.allow_unrated, u.max_streams, u.max_bitrate
 		   FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.hash = ?`, sum[:]).
-		Scan(&sessionID, &tokenID, &expiresAt, &u.ID, &u.Username, &u.Admin, &createdAt)
+		Scan(&sessionID, &tokenID, &expiresAt, &unlockedUntil, &u.ID, &u.Username, &u.Admin, &createdAt,
+			&ceiling, &allowUnrated, &maxStreams, &maxBitRate)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -125,6 +132,11 @@ func (d *DB) SessionCredential(ctx context.Context, secret string) (*domain.Cred
 	sections, restricted := narrow(account, granted)
 	cred := &domain.Credential{
 		User: u, TokenID: tokenID, Restricted: restricted, Sections: sections,
+		Ceiling: ceiling, AllowUnrated: allowUnrated,
+		MaxStreams: maxStreams, MaxBitRate: maxBitRate,
+		// An unlock that has run out is simply not an unlock. Read rather
+		// than swept, so nothing has to remember to clear it.
+		Unlocked: unlockedUntil > 0 && time.Now().UTC().Before(fromMillis(unlockedUntil)),
 	}
 
 	_, _ = d.sql.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id = ?`,
@@ -482,4 +494,47 @@ func (d *DB) SectionStats(ctx context.Context) (map[int64]SectionStats, error) {
 		out[id] = stats
 	}
 	return out, rows.Err()
+}
+
+// UnlockDuration is how long a PIN lifts a rating ceiling for.
+//
+// An evening rather than for ever: whoever typed the PIN was unlocking
+// tonight, and a restriction that stays lifted until somebody remembers to
+// put it back is not a restriction.
+const UnlockDuration = 4 * time.Hour
+
+// UnlockSession lifts the rating ceiling on one browser session.
+//
+// The PIN is checked by the caller, which is the surface that took it: this
+// records that it was given. Returns when the unlock runs out, so the page
+// can say.
+func (d *DB) UnlockSession(ctx context.Context, secret string) (time.Time, error) {
+	if secret == "" {
+		return time.Time{}, ErrNotFound
+	}
+	sum := sha256.Sum256([]byte(secret))
+	until := time.Now().UTC().Add(UnlockDuration)
+	res, err := d.sql.ExecContext(ctx,
+		`UPDATE sessions SET unlocked_until = ? WHERE hash = ?`, millis(until), sum[:])
+	if err != nil {
+		return time.Time{}, fmt.Errorf("unlock session: %w", err)
+	}
+	if affected, err := res.RowsAffected(); err == nil && affected == 0 {
+		return time.Time{}, ErrNotFound
+	}
+	return until, nil
+}
+
+// LockSession puts the ceiling back, for somebody who wants it back before
+// the unlock runs out.
+func (d *DB) LockSession(ctx context.Context, secret string) error {
+	if secret == "" {
+		return ErrNotFound
+	}
+	sum := sha256.Sum256([]byte(secret))
+	if _, err := d.sql.ExecContext(ctx,
+		`UPDATE sessions SET unlocked_until = 0 WHERE hash = ?`, sum[:]); err != nil {
+		return fmt.Errorf("lock session: %w", err)
+	}
+	return nil
 }

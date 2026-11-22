@@ -92,23 +92,26 @@ type entry struct {
 	ParentRatingKey      string `xml:"parentRatingKey,attr,omitempty" json:"parentRatingKey,omitempty"`
 	GrandparentRatingKey string `xml:"grandparentRatingKey,attr,omitempty" json:"grandparentRatingKey,omitempty"`
 	GUID                 string `xml:"guid,attr,omitempty" json:"guid,omitempty"`
-	Summary              string `xml:"summary,attr,omitempty" json:"summary,omitempty"`
-	Index                int    `xml:"index,attr,omitempty" json:"index,omitempty"`
-	ParentIndex          int    `xml:"parentIndex,attr,omitempty" json:"parentIndex,omitempty"`
-	Year                 int    `xml:"year,attr,omitempty" json:"year,omitempty"`
-	Duration             int64  `xml:"duration,attr,omitempty" json:"duration,omitempty"`
-	ViewOffset           int64  `xml:"viewOffset,attr,omitempty" json:"viewOffset,omitempty"`
-	ViewCount            int    `xml:"viewCount,attr,omitempty" json:"viewCount,omitempty"`
-	LastViewedAt         int64  `xml:"lastViewedAt,attr,omitempty" json:"lastViewedAt,omitempty"`
-	AddedAt              int64  `xml:"addedAt,attr,omitempty" json:"addedAt,omitempty"`
-	UpdatedAt            int64  `xml:"updatedAt,attr,omitempty" json:"updatedAt,omitempty"`
-	Thumb                string `xml:"thumb,attr,omitempty" json:"thumb,omitempty"`
-	Art                  string `xml:"art,attr,omitempty" json:"art,omitempty"`
-	ParentTitle          string `xml:"parentTitle,attr,omitempty" json:"parentTitle,omitempty"`
-	GrandparentTitle     string `xml:"grandparentTitle,attr,omitempty" json:"grandparentTitle,omitempty"`
-	ParentKey            string `xml:"parentKey,attr,omitempty" json:"parentKey,omitempty"`
-	ParentThumb          string `xml:"parentThumb,attr,omitempty" json:"parentThumb,omitempty"`
-	GrandparentThumb     string `xml:"grandparentThumb,attr,omitempty" json:"grandparentThumb,omitempty"`
+	// ContentRating is the rating as the board wrote it. Plex clients draw
+	// it beside the title and some of them filter on it.
+	ContentRating    string `xml:"contentRating,attr,omitempty" json:"contentRating,omitempty"`
+	Summary          string `xml:"summary,attr,omitempty" json:"summary,omitempty"`
+	Index            int    `xml:"index,attr,omitempty" json:"index,omitempty"`
+	ParentIndex      int    `xml:"parentIndex,attr,omitempty" json:"parentIndex,omitempty"`
+	Year             int    `xml:"year,attr,omitempty" json:"year,omitempty"`
+	Duration         int64  `xml:"duration,attr,omitempty" json:"duration,omitempty"`
+	ViewOffset       int64  `xml:"viewOffset,attr,omitempty" json:"viewOffset,omitempty"`
+	ViewCount        int    `xml:"viewCount,attr,omitempty" json:"viewCount,omitempty"`
+	LastViewedAt     int64  `xml:"lastViewedAt,attr,omitempty" json:"lastViewedAt,omitempty"`
+	AddedAt          int64  `xml:"addedAt,attr,omitempty" json:"addedAt,omitempty"`
+	UpdatedAt        int64  `xml:"updatedAt,attr,omitempty" json:"updatedAt,omitempty"`
+	Thumb            string `xml:"thumb,attr,omitempty" json:"thumb,omitempty"`
+	Art              string `xml:"art,attr,omitempty" json:"art,omitempty"`
+	ParentTitle      string `xml:"parentTitle,attr,omitempty" json:"parentTitle,omitempty"`
+	GrandparentTitle string `xml:"grandparentTitle,attr,omitempty" json:"grandparentTitle,omitempty"`
+	ParentKey        string `xml:"parentKey,attr,omitempty" json:"parentKey,omitempty"`
+	ParentThumb      string `xml:"parentThumb,attr,omitempty" json:"parentThumb,omitempty"`
+	GrandparentThumb string `xml:"grandparentThumb,attr,omitempty" json:"grandparentThumb,omitempty"`
 
 	// OriginalTitle is who performs this track when that is not the album's
 	// artist, which is the useful half of a row on a compilation. Plex puts

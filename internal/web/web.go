@@ -99,6 +99,8 @@ func (s *Server) Handler() http.Handler {
 	}
 
 	watcher("GET /web/api/session", s.whoami)
+	watcher("POST /web/api/unlock", s.unlock)
+	watcher("DELETE /web/api/unlock", s.lock)
 	watcher("GET /web/api/home", s.home)
 	watcher("GET /web/api/sections/{id}", s.section)
 	watcher("GET /web/api/items/{id}", s.item)
@@ -110,6 +112,10 @@ func (s *Server) Handler() http.Handler {
 	watcher("GET /web/api/favourites", s.favourites)
 	watcher("POST /web/api/favourites/{id}", s.setFavourite)
 	watcher("DELETE /web/api/favourites/{id}", s.setFavourite)
+
+	watcher("GET /web/api/watchlist", s.watchlist)
+	watcher("POST /web/api/watchlist/{id}", s.setWatchlist)
+	watcher("DELETE /web/api/watchlist/{id}", s.setWatchlist)
 
 	watcher("GET /web/api/playlists", s.playlists)
 	watcher("POST /web/api/playlists", s.createPlaylist)
@@ -236,8 +242,19 @@ func (s *Server) signOut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
+	cred := credFrom(r.Context())
 	user := userFrom(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"username": user.Username, "admin": user.Admin})
+	out := map[string]any{"username": user.Username, "admin": user.Admin}
+	if cred != nil && cred.Ceiling >= 0 {
+		// The page draws the lock only for an account that has a ceiling,
+		// and only offers to lift it where there is a PIN to lift it with.
+		out["ceiling"] = cred.Ceiling
+		out["unlocked"] = cred.Unlocked
+		if limits, err := s.Store.UserLimits(r.Context(), user.ID); err == nil {
+			out["canUnlock"] = limits.HasPIN
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) clearCookie(w http.ResponseWriter, r *http.Request) {

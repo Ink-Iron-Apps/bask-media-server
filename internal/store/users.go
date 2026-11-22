@@ -80,14 +80,20 @@ func (d *DB) Credential(ctx context.Context, token string) (*domain.Credential, 
 	sum := sha256.Sum256([]byte(token))
 
 	var (
-		u         domain.User
-		tokenID   int64
-		createdAt int64
+		u            domain.User
+		tokenID      int64
+		createdAt    int64
+		ceiling      int
+		allowUnrated bool
+		maxStreams   int
+		maxBitRate   int64
 	)
 	err := d.sql.QueryRowContext(ctx,
-		`SELECT t.id, u.id, u.username, u.admin, u.created_at
+		`SELECT t.id, u.id, u.username, u.admin, u.created_at,
+		        u.max_rating_age, u.allow_unrated, u.max_streams, u.max_bitrate
 		   FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.hash = ?`, sum[:]).
-		Scan(&tokenID, &u.ID, &u.Username, &u.Admin, &createdAt)
+		Scan(&tokenID, &u.ID, &u.Username, &u.Admin, &createdAt,
+			&ceiling, &allowUnrated, &maxStreams, &maxBitRate)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -114,6 +120,8 @@ func (d *DB) Credential(ctx context.Context, token string) (*domain.Credential, 
 		millis(time.Now().UTC()), tokenID)
 	return &domain.Credential{
 		User: u, TokenID: tokenID, Restricted: restricted, Sections: sections,
+		Ceiling: ceiling, AllowUnrated: allowUnrated,
+		MaxStreams: maxStreams, MaxBitRate: maxBitRate,
 	}, nil
 }
 

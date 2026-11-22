@@ -102,3 +102,22 @@ func addressOf(r *http.Request) string {
 	}
 	return r.RemoteAddr
 }
+
+// tooManyStreams reports whether this account is already playing as much as
+// it is allowed, and answers the client if so.
+//
+// A refusal rather than a smaller stream, because this surface has no
+// conversion to offer: a Plex client is handed the file or nothing.
+func (s *Server) tooManyStreams(w http.ResponseWriter, r *http.Request, key string) bool {
+	cred := credFrom(r.Context())
+	if cred == nil || cred.MaxStreams <= 0 || s.Playing == nil {
+		return false
+	}
+	if s.Playing.CountFor(cred.User.ID, key) < cred.MaxStreams {
+		return false
+	}
+	w.Header().Set("Retry-After", "30")
+	http.Error(w, "this account is already watching as much as it is allowed to at once",
+		http.StatusTooManyRequests)
+	return true
+}

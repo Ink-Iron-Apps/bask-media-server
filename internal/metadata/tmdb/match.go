@@ -132,12 +132,22 @@ func (c *Client) byID(ctx context.Context, prefix, providerID string) (metadata.
 	if name == "" {
 		name, released = out.Name, out.FirstAirDate
 	}
+	id := strconv.FormatInt(out.ID, 10)
+	rating := ""
+	// Which endpoint to ask depends on what was fetched, and the caller
+	// already said by choosing a prefix.
+	if prefix == "/movie/" {
+		rating = c.movieRating(ctx, id)
+	} else {
+		rating = c.showRating(ctx, id)
+	}
 	return metadata.Match{
-		ProviderID:  strconv.FormatInt(out.ID, 10),
+		ProviderID:  id,
 		Title:       name,
 		Year:        yearOf(released),
 		Summary:     out.Overview,
 		PosterURL:   imageURL(posterBase, out.PosterPath),
 		BackdropURL: imageURL(backdropBase, out.BackdropPath),
+		Rating:      rating,
 	}, nil
 }

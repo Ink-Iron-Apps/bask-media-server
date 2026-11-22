@@ -434,6 +434,9 @@ func (s *Server) sessionFor(w http.ResponseWriter, r *http.Request) (*transcode.
 	if s.refused(w, streamKey(r, id)) {
 		return nil, false
 	}
+	if s.tooManyStreams(w, r, streamKey(r, id)) {
+		return nil, false
+	}
 	found, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
@@ -459,7 +462,7 @@ func (s *Server) sessionFor(w http.ResponseWriter, r *http.Request) (*transcode.
 		}
 	}
 
-	plan := wirePlan(r)
+	plan := cappedPlan(wirePlan(r), credFrom(r.Context()))
 	// A subtitle the client cannot render itself is drawn into the picture
 	// here, which is the one thing a server can do that a client cannot.
 	plan.Burn = s.burnFrom(r, *found)

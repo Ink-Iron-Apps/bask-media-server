@@ -29,21 +29,66 @@ func (d *DB) Visible(sections []int64) *DB {
 	scoped := *d
 	ids := make([]int64, len(sections))
 	copy(ids, sections)
-	scoped.visible = &visibility{sections: ids}
+	scoped.visible = &visibility{sections: ids, sectioned: true, ceiling: NoCeiling, unrated: true}
 	return &scoped
 }
 
-// visibility is the set of libraries a handle may see. A nil *visibility is
-// an unrestricted handle; a non-nil one with no sections sees nothing.
-type visibility struct{ sections []int64 }
+// NoCeiling means no age rating is too high for this handle, which is what
+// every unrestricted account has.
+const NoCeiling = -1
 
-// restricted reports whether this handle has a library set at all.
+// Rated returns a handle that may see only what is rated for this age.
+//
+// ceiling is an age in years and [NoCeiling] means no limit. unrated decides
+// what happens to the things nobody has rated: allowed, which is the honest
+// default for a library whose metadata pass has not reached everything yet,
+// or hidden, which is what somebody who wants a child's account to be
+// predictable asks for.
+//
+// Chained onto [DB.Visible] rather than replacing it, because the two
+// restrictions are independent: an account can be limited to one library, to
+// a rating, to both, or to neither.
+func (d *DB) Rated(ceiling int, unrated bool) *DB {
+	scoped := *d
+	if d.visible != nil {
+		copied := *d.visible
+		scoped.visible = &copied
+	} else {
+		scoped.visible = &visibility{ceiling: NoCeiling, unrated: true}
+	}
+	scoped.visible.ceiling, scoped.visible.unrated = ceiling, unrated
+	return &scoped
+}
+
+// visibility is what a handle may see: a set of libraries, an age rating
+// ceiling, or both. A nil *visibility is an unrestricted handle.
+type visibility struct {
+	// sections are the libraries, and sectioned says whether that list
+	// applies at all: an empty list with sectioned set sees no library,
+	// which is not the same as no library restriction.
+	sections  []int64
+	sectioned bool
+
+	// ceiling is the highest age rating this handle may see, [NoCeiling] for
+	// no limit, and unrated says whether the things with no rating are
+	// allowed through.
+	ceiling int
+	unrated bool
+}
+
+// restricted reports whether this handle is narrowed at all.
 func (d *DB) restricted() bool { return d.visible != nil }
 
+// sectioned reports whether a library restriction applies.
+func (d *DB) sectioned() bool { return d.visible != nil && d.visible.sectioned }
+
+// rated reports whether an age rating ceiling applies.
+func (d *DB) rated() bool { return d.visible != nil && d.visible.ceiling >= 0 }
+
 // canSee reports whether a library is within this handle's set. True for every
-// library on an unrestricted handle.
+// library on a handle with no library restriction.
 func (d *DB) canSee(sectionID int64) bool {
-	if !d.restricted() {
+	if !d.sectioned() {
 		return true
 	}
 	for _, id := range d.visible.sections {
@@ -65,7 +110,16 @@ func (d *DB) canSee(sectionID int64) bool {
 // column is the expression holding the section, qualified where the query
 // joins: `section_id` in a plain query, `episode.section_id` in a join.
 func (d *DB) only(column string) (string, []any) {
-	if !d.restricted() {
+	fragment, args := d.onlySections(column)
+	rating, rated := d.onlyRated(column)
+	return fragment + rating, append(args, rated...)
+}
+
+// onlySections is the library half of the restriction, for the few queries
+// that are not about items at all: a library has no age rating, and asking
+// for one would be a column that is not there.
+func (d *DB) onlySections(column string) (string, []any) {
+	if !d.sectioned() {
 		return "", nil
 	}
 	if len(d.visible.sections) == 0 {
@@ -77,6 +131,30 @@ func (d *DB) only(column string) (string, []any) {
 	}
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
 	return " AND " + column + " IN (" + placeholders + ")", args
+}
+
+// onlyRated is the age rating half.
+//
+// The column is derived from the section column so the predicate lands on the
+// same table in a join: `section_id` is the items table itself, and
+// `episode.section_id` is the items table under that alias. Written this way
+// because the alternative is a second argument at every call site, and a call
+// site that passes the wrong one is a rating ceiling that silently does
+// nothing.
+func (d *DB) onlyRated(column string) (string, []any) {
+	if !d.rated() {
+		return "", nil
+	}
+	rating := "rating_age"
+	if dot := strings.LastIndex(column, "."); dot >= 0 {
+		rating = column[:dot+1] + "rating_age"
+	}
+	if d.visible.unrated {
+		// An unrated item is allowed through: a library whose metadata pass
+		// has not reached everything yet is still watchable.
+		return " AND (" + rating + " <= ? OR " + rating + " < 0)", []any{d.visible.ceiling}
+	}
+	return " AND (" + rating + " >= 0 AND " + rating + " <= ?)", []any{d.visible.ceiling}
 }
 
 // UserSections lists the libraries an account is restricted to. An empty
@@ -223,10 +301,20 @@ func (d *DB) NoteTokenDevice(ctx context.Context, tokenID int64, device string) 
 // that allows nothing, which [narrow] can produce and which must not be read
 // as allowing everything.
 func (d *DB) scopedFor(cred *domain.Credential) *DB {
-	if cred == nil || !cred.Restricted {
+	if cred == nil {
 		return d
 	}
-	return d.Visible(cred.Sections)
+	scoped := d
+	if cred.Restricted {
+		scoped = scoped.Visible(cred.Sections)
+	}
+	// A ceiling that has been unlocked with a PIN does not apply: that is
+	// what the PIN is for, and the surface that took it is the only thing
+	// that knows it was given.
+	if cred.Ceiling >= 0 && !cred.Unlocked {
+		scoped = scoped.Rated(cred.Ceiling, cred.AllowUnrated)
+	}
+	return scoped
 }
 
 // Scoped is scopedFor under a name a handler can read: the database as this
