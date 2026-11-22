@@ -524,6 +524,48 @@ var migrations = []string{
 		last_error  TEXT NOT NULL DEFAULT '',
 		failures    INTEGER NOT NULL DEFAULT 0
 	)`,
+	// What was watched, by whom, on what, for how long.
+	//
+	// Every column that names something is written here as well as pointed
+	// at: the title, the viewer's name, the device. A log that joined the
+	// library would become unreadable exactly when it is most wanted —
+	// after a film was removed, an account deleted, a title corrected — and
+	// "something, by someone, in March" is not an answer. The ids are kept
+	// beside the names so a row can still be followed to what it was about
+	// while that still exists, and give way rather than take the row with
+	// them when it does not.
+	//
+	// ended_at is always set, and is the last moment the stream was known to
+	// be playing rather than the moment it stopped. complete says which of
+	// those it is: a stream the server watched end, or one it lost to a
+	// restart. That way a crash costs a minute of one row and never leaves
+	// an open one to be swept up later.
+	`CREATE TABLE history (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+		user_name   TEXT NOT NULL DEFAULT '',
+		item_id     INTEGER REFERENCES items(id) ON DELETE SET NULL,
+		title       TEXT NOT NULL DEFAULT '',
+		subtitle    TEXT NOT NULL DEFAULT '',
+		kind        TEXT NOT NULL DEFAULT '',
+		surface     TEXT NOT NULL DEFAULT '',
+		client      TEXT NOT NULL DEFAULT '',
+		device      TEXT NOT NULL DEFAULT '',
+		address     TEXT NOT NULL DEFAULT '',
+		mode        TEXT NOT NULL DEFAULT '',
+		reason      TEXT NOT NULL DEFAULT '',
+		started_at  INTEGER NOT NULL,
+		ended_at    INTEGER NOT NULL,
+		paused_ms   INTEGER NOT NULL DEFAULT 0,
+		position_ms INTEGER NOT NULL DEFAULT 0,
+		duration_ms INTEGER NOT NULL DEFAULT 0,
+		complete    INTEGER NOT NULL DEFAULT 0
+	)`,
+	// The three ways history is ever read: newest first, one viewer's, and
+	// one thing's.
+	`CREATE INDEX history_started ON history(started_at DESC)`,
+	`CREATE INDEX history_user ON history(user_id, started_at DESC)`,
+	`CREATE INDEX history_item ON history(item_id, started_at DESC)`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

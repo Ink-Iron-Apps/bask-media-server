@@ -1270,6 +1270,131 @@ async function showTokens(user) {
   } catch (err) { failed(err); }
 }
 
+/* ---------- history ---------- */
+
+// The activity log: who watched what, when, and for how long.
+//
+// Administrator only, like everything else here, and worth saying why: Now
+// Playing shows what is happening while it happens, which anybody in the
+// house could see by walking into the room. This answers what somebody
+// watched three Tuesdays ago, which they could not — so it sits behind the
+// same sign-in as the accounts, and has a button that forgets it.
+let historyWindow = 30;
+let historyStart = 0;
+
+views.history = async function (main) {
+  const draw = async () => {
+    const page = await api('GET', '/history?days=' + historyWindow + '&start=' + historyStart);
+    const watches = (page && page.watches) || [];
+    const size = (page && page.size) || 50;
+    const total = (page && page.total) || 0;
+
+    const windows = [[7, 'Last week'], [30, 'Last month'], [90, 'Last three months'], [0, 'Everything']];
+    const pick = el('select', { id: 'history-window' },
+      windows.map(([days, label]) => el('option', { value: days, text: label, selected: days === historyWindow })));
+    pick.addEventListener('change', async () => {
+      historyWindow = Number(pick.value);
+      historyStart = 0;
+      await draw();
+    });
+
+    const rows = watches.map((watch) => el('tr', {},
+      el('th', {},
+        el('div', { text: watch.title + (watch.subtitle ? ' — ' + watch.subtitle : '') }),
+        el('div', { class: 'muted', text: watch.user + ' · ' + (watch.device || watch.client || 'somewhere') })),
+      el('td', {},
+        el('div', { text: duration(watch.watched) }),
+        watch.paused ? el('div', { class: 'muted', text: duration(watch.paused) + ' paused' }) : null,
+        watch.length && watch.position
+          ? el('div', { class: 'muted', text: 'got to ' + duration(watch.position) + ' of ' + duration(watch.length) })
+          : null),
+      el('td', {},
+        el('div', { class: 'muted', text: when(watch.started) }),
+        el('div', { class: 'muted', text: new Date(watch.started).toLocaleString() })),
+      el('td', {},
+        watch.mode ? el('span', { class: 'badge ' + (watch.mode === 'direct' ? 'done' : 'running'), text: watch.mode }) : null,
+        watch.surface ? el('div', { class: 'muted', text: watch.surface }) : null,
+        watch.reason ? el('div', { class: 'muted', text: watch.reason }) : null,
+        !watch.complete ? el('div', { class: 'muted', text: 'the server never saw this stop' }) : null)));
+
+    const older = el('button', {
+      text: 'Older',
+      disabled: historyStart + size >= total,
+      on: { click: async () => { historyStart += size; await draw(); } },
+    });
+    const newer = el('button', {
+      text: 'Newer',
+      disabled: historyStart === 0,
+      on: { click: async () => { historyStart = Math.max(0, historyStart - size); await draw(); } },
+    });
+
+    fill(main,
+      el('div', { class: 'head' }, el('h1', { text: 'History' }), el('div', { class: 'row' }, pick)),
+      totalsCard(page),
+      el('div', { class: 'card' },
+        el('h2', { text: count(total, 'watch', 'watches') }),
+        rows.length
+          ? el('table', {}, el('tbody', {}, rows))
+          : el('p', { class: 'muted', text: 'Nothing has been watched in this window.' }),
+        total > size
+          ? el('div', { class: 'row' }, newer, older,
+            el('span', { class: 'muted', text: (historyStart + 1) + '–' + Math.min(historyStart + size, total) + ' of ' + total }))
+          : null),
+      forgetCard(draw));
+  };
+  await draw();
+};
+
+// totalsCard is the two questions a page of rows cannot answer: who watches
+// the most of this server, and what gets watched on it.
+function totalsCard(page) {
+  const viewers = (page && page.viewers) || [];
+  const titles = (page && page.titles) || [];
+  if (!viewers.length && !titles.length) return null;
+
+  const table = (rows) => el('table', {}, el('tbody', {}, rows.map((row) => el('tr', {},
+    el('th', { text: row.name }),
+    el('td', { class: 'muted', text: count(row.plays, 'play') }),
+    el('td', { class: 'muted', text: duration(row.watched) })))));
+
+  return el('div', { class: 'card' },
+    el('h2', { text: 'In this window' }),
+    el('h3', { text: 'By viewer' }),
+    viewers.length ? table(viewers) : el('p', { class: 'muted', text: 'Nobody.' }),
+    el('h3', { text: 'Most watched' }),
+    titles.length ? table(titles) : el('p', { class: 'muted', text: 'Nothing.' }));
+}
+
+// forgetCard is the delete. A record of who watched what is the most personal
+// thing this server holds, and getting rid of it should not mean opening the
+// database.
+function forgetCard(draw) {
+  const forget = async (olderThan, confirmation) => {
+    if (!confirm(confirmation)) return;
+    try {
+      const gone = await api('DELETE', '/history' + (olderThan ? '?olderThan=' + olderThan : ''));
+      toast('Forgot ' + count(gone.removed, 'watch', 'watches') + '.');
+      historyStart = 0;
+      await draw();
+    } catch (err) { failed(err); }
+  };
+
+  return el('div', { class: 'card' },
+    el('h2', { text: 'Forgetting' }),
+    el('p', { class: 'muted', text: 'The log is kept until somebody says otherwise. A row is small — a few '
+      + 'hundred bytes — so a household watching ten things a day writes under a megabyte a year.' }),
+    el('div', { class: 'row' },
+      el('button', {
+        text: 'Forget anything older than 90 days',
+        on: { click: () => forget(90, 'Forget everything watched more than 90 days ago?\n\nThis cannot be undone.') },
+      }),
+      el('button', {
+        class: 'danger',
+        text: 'Forget everything',
+        on: { click: () => forget(0, 'Forget the whole activity log?\n\nThis cannot be undone. Watched state, resume positions and playlists are not affected.') },
+      })));
+}
+
 /* ---------- settings ---------- */
 
 views.settings = async function (main) {

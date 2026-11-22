@@ -31,6 +31,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/enrich"
 	"github.com/inknironapps/bask-media-server/internal/ffprobe"
 	"github.com/inknironapps/bask-media-server/internal/fingerprint"
+	"github.com/inknironapps/bask-media-server/internal/history"
 	"github.com/inknironapps/bask-media-server/internal/jellyfin"
 	"github.com/inknironapps/bask-media-server/internal/jobs"
 	"github.com/inknironapps/bask-media-server/internal/nowplaying"
@@ -356,8 +357,17 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	// a household watching on three devices is one list and not three. It
 	// holds nothing across a restart by design: a stream is true only while
 	// it is happening.
+	// One recorder, which is the register's memory. The register holds what
+	// is true now and throws it away; this writes down what happened.
+	recorder := history.New(history.Options{DB: db, Log: log})
+
 	watching := nowplaying.Options{
 		Changes: func(change nowplaying.Change) {
+			// The log first, then the notification. A record of the evening
+			// is worth more than a message about it, and the two are
+			// independent: a webhook nobody configured costs nothing here,
+			// and a destination that is down cannot stop the log.
+			recorder.Record(change)
 			if event, ok := webhook.Playback(change); ok {
 				notifier.Send(event)
 			}
@@ -486,6 +496,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	}()
 
 	go reportMemory(ctx, log)
+	go recordOnSchedule(ctx, recorder, playing)
 	if cfg.backupEvery > 0 {
 		log.Info("the database will be copied on a timer",
 			"every", cfg.backupEvery, "keep", cfg.keepBackups)
@@ -497,6 +508,10 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 		return err
 	case <-ctx.Done():
 		log.Info("shutting down")
+		// What was playing, written down before the process goes. The rows
+		// stay marked incomplete on purpose: these streams did not end, the
+		// server did.
+		recorder.Flush(playing.List())
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
@@ -596,6 +611,30 @@ func backupOnSchedule(ctx context.Context, runner *jobs.Runner, every time.Durat
 				// failure: the next tick will do it.
 				log.Warn("could not start the scheduled backup", "error", err)
 			}
+		}
+	}
+}
+
+// historyBeat is how often an open row in the log is brought up to date.
+//
+// A row's length would otherwise be fixed at the moment the stream started
+// and corrected only when it ended, so a machine that lost power mid-film
+// would record a film that lasted no time at all. A minute is what that
+// failure costs, against one small write a minute per stream.
+const historyBeat = time.Minute
+
+// recordOnSchedule keeps the activity log's open rows honest.
+func recordOnSchedule(ctx context.Context, recorder *history.Recorder, playing *nowplaying.Registry) {
+	ticker := time.NewTicker(historyBeat)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// List expires streams nobody has reported, which is what turns
+			// a television switched off at the wall into a closed row.
+			recorder.Sweep(playing.List())
 		}
 	}
 }

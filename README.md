@@ -48,6 +48,14 @@ and the Plex vocabulary never reaches storage or scanning.
 - Backups of the database, taken while the server runs — nightly by default,
   on a button in the interface, kept to the newest seven and downloadable, so
   the one thing here that a scan cannot rebuild has copies
+- An activity log: who watched what, when, on which device, for how long, and
+  what this server had to do to serve it. Opened when a stream starts and kept
+  up to date while it runs, so a machine that loses power still has the film;
+  the titles and names are written into each row, so the log stays readable
+  after a film is deleted or an account removed. Watched is not position: a
+  skip to the last ten minutes is a two-hour position and ten minutes
+  watched, and time spent paused is subtracted. Administrator only, with one
+  button that forgets it
 - Webhooks: this server posts to an address of yours when something starts,
   pauses, stops, arrives in the library, or when a background pass finishes or
   fails. Either as a JSON object for something that parses it, or as one line

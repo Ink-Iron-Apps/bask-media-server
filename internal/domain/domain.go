@@ -563,3 +563,87 @@ const (
 func (f WebhookFormat) Valid() bool {
 	return f == WebhookJSON || f == WebhookNtfy
 }
+
+// Watch is one thing somebody watched, once, on one device.
+//
+// Written when it starts, kept up to date while it runs, closed when it ends.
+// The names are stored beside the identifiers rather than read through them:
+// this is a record of what happened, and what happened does not change
+// because a film was later deleted or an account renamed.
+type Watch struct {
+	ID int64
+
+	// UserID and ItemID are zero where the account or the item has since
+	// been removed. Name, Title and Subtitle are what they were called at
+	// the time and are always there.
+	UserID int64
+	Name   string
+	ItemID int64
+	Title  string
+
+	// Subtitle is the line under the title: an episode's name under its
+	// show, a track's album.
+	Subtitle string
+	Kind     Kind
+
+	// Surface is which protocol the client was speaking, and Client, Device
+	// and Address how it described itself. Reported by the client, so true
+	// only in the sense that it is what was said.
+	Surface string
+	Client  string
+	Device  string
+	Address string
+
+	// Mode is direct, remux or transcode: what this server had to do to
+	// serve it. The answer to "why was the machine hot on Tuesday".
+	Mode string
+
+	// Reason is why a stream ended where somebody ended it, and empty where
+	// it simply finished.
+	Reason string
+
+	Started time.Time
+
+	// Ended is when the stream stopped, or the last moment it was known to
+	// be playing where the server never saw it stop. Complete says which.
+	Ended    time.Time
+	Complete bool
+
+	// Paused is how much of the time between Started and Ended the viewer
+	// had it paused, so Watched can be the part they were actually there
+	// for.
+	Paused time.Duration
+
+	// Position is how far in they had got, and Length how long the thing is.
+	// Both are what the client last reported.
+	Position time.Duration
+	Length   time.Duration
+}
+
+// Watched is how long somebody actually watched: the time the stream was
+// open, less the time it sat paused.
+//
+// Not the position, which is where they got to. Somebody who skips to the
+// last ten minutes of a film has a position of two hours and watched ten
+// minutes, and both facts are worth having.
+func (w Watch) Watched() time.Duration {
+	watched := w.Ended.Sub(w.Started) - w.Paused
+	if watched < 0 {
+		return 0
+	}
+	return watched
+}
+
+// WatchTotal is what one viewer, or one title, added up to over a window.
+type WatchTotal struct {
+	// UserID and Name identify a viewer's total; Title and ItemID a title's.
+	// Each total is one or the other, depending on which question was asked.
+	UserID int64
+	Name   string
+	ItemID int64
+	Title  string
+
+	// Plays is how many separate streams, and Watched their total length.
+	Plays   int
+	Watched time.Duration
+}

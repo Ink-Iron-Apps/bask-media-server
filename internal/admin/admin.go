@@ -178,6 +178,9 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /admin/api/backups/{name}", s.downloadBackup)
 	authed("DELETE /admin/api/backups/{name}", s.deleteBackup)
 
+	authed("GET /admin/api/history", s.listHistory)
+	authed("DELETE /admin/api/history", s.forgetHistory)
+
 	authed("GET /admin/api/webhooks", s.listWebhooks)
 	authed("POST /admin/api/webhooks", s.createWebhook)
 	authed("PATCH /admin/api/webhooks/{id}", s.updateWebhook)
