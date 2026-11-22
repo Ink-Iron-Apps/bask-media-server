@@ -132,9 +132,10 @@ type entry struct {
 	// offered a list of films.
 	PlaylistKind string `xml:"playlistType,attr,omitempty" json:"playlistType,omitempty"`
 
-	// Smart says a playlist is built from a rule rather than by hand. Always
-	// false here, and sent because a client that reads no value at all treats
-	// some playlists as unopenable.
+	// Smart says a list is built from rules rather than by hand. Always false
+	// for a playlist, which is only ever arranged by somebody, and true for a
+	// collection that fills itself. Sent either way, because a client that
+	// reads no value at all treats some lists as unopenable.
 	Smart bool `xml:"smart,attr" json:"smart"`
 
 	// PlaylistItemID identifies one line of a playlist rather than the thing

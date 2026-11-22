@@ -161,6 +161,8 @@ func (s *Server) Handler() http.Handler {
 
 	authed("GET /admin/api/collections", s.listCollections)
 	authed("POST /admin/api/collections", s.createCollection)
+	authed("GET /admin/api/collections/fields", s.vocabulary)
+	authed("POST /admin/api/collections/preview", s.previewRules)
 	authed("GET /admin/api/collections/{id}", s.readCollection)
 	authed("PATCH /admin/api/collections/{id}", s.updateCollection)
 	authed("DELETE /admin/api/collections/{id}", s.deleteCollection)

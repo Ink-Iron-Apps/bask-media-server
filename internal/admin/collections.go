@@ -1,7 +1,10 @@
 package admin
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -23,6 +26,13 @@ type collectionView struct {
 	Summary string           `json:"summary"`
 	Held    int              `json:"held"`
 	Items   []collectionItem `json:"items,omitempty"`
+
+	// Rules is the question a smart collection asks, and null for one
+	// somebody filled by hand. Unreadable says the stored rules could not be
+	// parsed, so it holds nothing until they are replaced — the page says so
+	// rather than showing an ordinary empty collection.
+	Rules      *domain.Smart `json:"rules"`
+	Unreadable bool          `json:"unreadable,omitempty"`
 }
 
 type collectionItem struct {
@@ -41,7 +51,10 @@ func (s *Server) listCollections(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]collectionView, 0, len(all))
 	for _, c := range all {
-		out = append(out, collectionView{ID: c.ID, Title: c.Title, Summary: c.Summary, Held: c.Held})
+		out = append(out, collectionView{
+			ID: c.ID, Title: c.Title, Summary: c.Summary, Held: c.Held,
+			Rules: c.Smart, Unreadable: c.Unreadable,
+		})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -53,7 +66,12 @@ func (s *Server) readCollection(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	found, err := s.DB.AnyCollection(r.Context(), id)
+	// The administrator's own handle, so a watch rule in a smart collection
+	// is answered by somebody: "unwatched" has no meaning without an account
+	// to have not watched it, and the page says whose view this is.
+	db := s.viewing(r)
+
+	found, err := db.AnyCollection(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "no such collection")
 		return
@@ -63,7 +81,7 @@ func (s *Server) readCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, _, err := s.DB.CollectionItems(r.Context(), id, store.Page{Size: 500})
+	items, _, err := db.CollectionItems(r.Context(), id, store.Page{Size: 500})
 	if err != nil {
 		s.fail(w, "read collection", err)
 		return
@@ -74,7 +92,10 @@ func (s *Server) readCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	view := collectionView{ID: found.ID, Title: found.Title, Summary: found.Summary, Held: found.Held}
+	view := collectionView{
+		ID: found.ID, Title: found.Title, Summary: found.Summary, Held: found.Held,
+		Rules: found.Smart, Unreadable: found.Unreadable,
+	}
 	for _, item := range items {
 		view.Items = append(view.Items, collectionItem{
 			ID: item.ID, Title: item.Title, Year: item.Year,
@@ -111,11 +132,18 @@ func (s *Server) updateCollection(w http.ResponseWriter, r *http.Request) {
 		Title   *string  `json:"title"`
 		Summary *string  `json:"summary"`
 		Items   *[]int64 `json:"items"`
+
+		// Raw, because three things have to be told apart and two of them
+		// are the same in Go: no rules key at all (leave it as it is), a
+		// rules key holding null (make it hand-picked again), and a rule set
+		// (make it smart). A *domain.Smart cannot say which of the first two
+		// arrived.
+		Rules json.RawMessage `json:"rules"`
 	}
 	if !decode(w, r, &body) {
 		return
 	}
-	if body.Title == nil && body.Summary == nil && body.Items == nil {
+	if body.Title == nil && body.Summary == nil && body.Items == nil && body.Rules == nil {
 		writeError(w, http.StatusBadRequest, "nothing to change")
 		return
 	}
@@ -143,13 +171,122 @@ func (s *Server) updateCollection(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Rules before items, so one request can make a collection hand-picked
+	// again and fill it in the same breath.
+	if body.Rules != nil {
+		rules, err := readRules(body.Rules)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.DB.SetCollectionRules(r.Context(), id, rules); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "no such collection")
+				return
+			}
+			// Every other failure here is a rule set the server will not
+			// have, which is the client's to fix and not a fault.
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	if body.Items != nil {
-		if err := s.DB.SetCollectionItems(r.Context(), id, *body.Items); err != nil {
+		err := s.DB.SetCollectionItems(r.Context(), id, *body.Items)
+		if errors.Is(err, store.ErrSmartCollection) {
+			writeError(w, http.StatusConflict,
+				"this collection is filled by its rules — remove them to pick films by hand")
+			return
+		}
+		if err != nil {
 			s.fail(w, "set collection", err)
 			return
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// readRules turns the rules field of a request into a rule set: nil for an
+// explicit null, which is how a collection goes back to being hand-picked.
+func readRules(raw json.RawMessage) (*domain.Smart, error) {
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return nil, nil
+	}
+	var rules domain.Smart
+	if err := json.Unmarshal(raw, &rules); err != nil {
+		return nil, fmt.Errorf("those rules are not a rule set: %w", err)
+	}
+	if err := store.ValidateSmart(rules); err != nil {
+		return nil, err
+	}
+	return &rules, nil
+}
+
+// vocabulary tells the editor what it may offer: the fields, how each one may
+// be compared, and the orders a collection can be shown in.
+//
+// Served rather than written into the page, because the server is what has to
+// be able to answer the question. An editor carrying its own copy agrees with
+// this one until somebody adds a field, and then offers a rule that will not
+// save.
+func (s *Server) vocabulary(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, struct {
+		Fields  []store.SmartFieldInfo `json:"fields"`
+		Sorts   []domain.SmartSort     `json:"sorts"`
+		Matches []domain.SmartMatch    `json:"matches"`
+	}{store.SmartFields(), store.SmartSorts(), store.SmartMatches()})
+}
+
+// previewRules answers a rule set without storing it, so somebody can see
+// what their question matches before committing to it.
+//
+// A rule set the server will not have comes back as 400 with the reason,
+// which is the same answer saving it would give: the editor can show one
+// message for both.
+func (s *Server) previewRules(w http.ResponseWriter, r *http.Request) {
+	var rules domain.Smart
+	if !decode(w, r, &rules) {
+		return
+	}
+
+	db := s.viewing(r)
+	items, held, err := db.SmartPreview(r.Context(), rules, store.Page{Size: previewSize})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.fail(w, "preview rules", err)
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	named, err := s.libraryNames(r)
+	if err != nil {
+		s.fail(w, "list sections", err)
+		return
+	}
+
+	view := collectionView{Held: held, Rules: &rules}
+	for _, item := range items {
+		view.Items = append(view.Items, collectionItem{
+			ID: item.ID, Title: item.Title, Year: item.Year,
+			Kind: string(item.Kind), Library: named[item.SectionID],
+		})
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// previewSize is how much of the answer the editor is shown. Enough to see
+// that the rules do what somebody meant, and short of sending a library down
+// a wire on every keystroke — the count beside it is the whole answer.
+const previewSize = 60
+
+// viewing is the administrator's own handle: unrestricted, because this
+// interface is, and carrying their account so watch-state rules mean
+// something. The page says whose watch state it is showing.
+func (s *Server) viewing(r *http.Request) *store.DB {
+	if user := sessionUser(r.Context()); user != nil {
+		return s.DB.Viewer(user.ID)
+	}
+	return s.DB
 }
 
 func (s *Server) deleteCollection(w http.ResponseWriter, r *http.Request) {

@@ -528,17 +528,39 @@ func (d *DB) listCollections(ctx context.Context, occupied bool) ([]domain.Colle
 	if err != nil {
 		return nil, fmt.Errorf("list collections: %w", err)
 	}
-	defer rows.Close()
 
-	var out []domain.Collection
+	var found []domain.Collection
 	for rows.Next() {
 		c, err := scanCollection(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
+		}
+		found = append(found, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// A smart collection's count is its rules asked of the library, which is
+	// a query of its own and cannot be folded into the listing above. One
+	// extra statement per smart collection, and a household has a handful.
+	var out []domain.Collection
+	for _, c := range found {
+		if c.Smart != nil {
+			held, err := d.smartCount(ctx, *c.Smart)
+			if err != nil {
+				return nil, err
+			}
+			c.Held = held
+		}
+		if occupied && c.Held == 0 {
+			continue
 		}
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Collection reads one a viewer may have, or ErrNotFound when this handle may
@@ -564,7 +586,135 @@ func (d *DB) readCollection(ctx context.Context, id int64, occupied bool) (*doma
 	if err != nil {
 		return nil, err
 	}
+	if occupied && c.Unreadable {
+		// Rules nobody can read hold nothing, and a collection holding
+		// nothing is not offered to a viewer. The editor asks with
+		// [DB.AnyCollection] and is told, which is the only place the fault
+		// can be repaired.
+		return nil, ErrNotFound
+	}
+	if c.Smart != nil {
+		held, err := d.smartCount(ctx, *c.Smart)
+		if err != nil {
+			return nil, err
+		}
+		c.Held = held
+		// The HAVING cannot do this one: a smart collection's count is not
+		// known until its rules have been asked, which is after the row came
+		// back. A viewer must not be shown an empty shelf, and a shelf that
+		// is empty only because the libraries behind it are hidden must not
+		// announce that it exists.
+		if occupied && held == 0 {
+			return nil, ErrNotFound
+		}
+	}
 	return &c, nil
+}
+
+// smartCount is how many items a rule set currently matches, as this handle
+// may see them and capped by the rule set's own limit.
+func (d *DB) smartCount(ctx context.Context, s domain.Smart) (int, error) {
+	rules := compileSmart(s, d.viewer)
+	only, scope := d.only("i.section_id")
+
+	args := append([]any{}, scope...)
+	args = append(args, rules.args...)
+	var total int
+	if err := d.sql.QueryRowContext(ctx,
+		`SELECT COUNT(*) `+smartBase+only+rules.where, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("count smart collection: %w", err)
+	}
+	if rules.limit > 0 && total > rules.limit {
+		total = rules.limit
+	}
+	return total, nil
+}
+
+// smartItems is the page a smart collection shows: the rules asked of the
+// library, in the order the rules name.
+func (d *DB) smartItems(ctx context.Context, s domain.Smart, page Page) ([]domain.Item, int, error) {
+	total, err := d.smartCount(ctx, s)
+	if err != nil {
+		return nil, 0, err
+	}
+	rules := compileSmart(s, d.viewer)
+
+	offset, limit := page.Window(500)
+	// The limit is part of the collection, not of the request: a collection
+	// of the ten newest films has ten, and a client asking for five hundred
+	// gets ten. Clamping here rather than in the SQL keeps one statement
+	// doing one thing.
+	if rules.limit > 0 {
+		if offset >= rules.limit {
+			return nil, total, nil
+		}
+		if offset+limit > rules.limit {
+			limit = rules.limit - offset
+		}
+	}
+
+	only, scope := d.only("i.section_id")
+	args := append([]any{}, scope...)
+	args = append(args, rules.args...)
+	args = append(args, limit, offset)
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT `+prefixed("i", itemColumns)+` `+smartBase+only+rules.where+`
+		 ORDER BY `+rules.order+` LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list smart collection: %w", err)
+	}
+	defer rows.Close()
+
+	items, err := d.collect(ctx, rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+// SetCollectionRules turns a collection into a smart one, or back.
+//
+// A nil rule set makes it hand-picked again and leaves it empty, because the
+// rules were its contents and there is nothing else to fall back to. Turning
+// one smart clears whatever was picked by hand for the same reason in reverse:
+// two sources of membership, one of which is ignored, is a collection that
+// cannot be reasoned about.
+func (d *DB) SetCollectionRules(ctx context.Context, id int64, s *domain.Smart) error {
+	if s != nil {
+		if err := ValidateSmart(*s); err != nil {
+			return err
+		}
+	}
+	stored, err := marshalSmart(s)
+	if err != nil {
+		return err
+	}
+
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("set rules: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE collections SET rules = ?, updated_at = ? WHERE id = ?`,
+		stored, millis(time.Now().UTC()), id)
+	if err != nil {
+		return fmt.Errorf("set rules: %w", err)
+	}
+	if err := affected(res, "collection"); err != nil {
+		return err
+	}
+	if stored != "" {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM collection_items WHERE collection_id = ?`, id); err != nil {
+			return fmt.Errorf("set rules: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("set rules: %w", err)
+	}
+	return nil
 }
 
 // collectionQuery builds the one statement every reader here uses.
@@ -578,10 +728,14 @@ func collectionQuery(d *DB, where string, occupied bool) string {
 	only, _ := d.only("i.section_id")
 	having := ""
 	if occupied {
-		having = " HAVING held > 0"
+		// A smart collection has no rows in collection_items at all, so its
+		// count here is always nought: it survives the HAVING on its rules
+		// and is counted afterwards, by asking them. Dropping it here would
+		// hide every smart collection from every viewer.
+		having = " HAVING held > 0 OR c.rules <> ''"
 	}
 	return `SELECT c.id, c.title, c.sort_title, c.summary, c.poster_key, c.created_at, c.updated_at,
-	               COUNT(i.id) AS held
+	               COUNT(i.id) AS held, c.rules
 	          FROM collections c
 	          LEFT JOIN collection_items ci ON ci.collection_id = c.id
 	          LEFT JOIN items i ON i.id = ci.item_id` + only + `
@@ -599,15 +753,18 @@ func scanCollection(row interface{ Scan(...any) error }) (domain.Collection, err
 	var (
 		c                    domain.Collection
 		createdAt, updatedAt int64
+		rules                string
 	)
 	if err := row.Scan(&c.ID, &c.Title, &c.SortTitle, &c.Summary, &c.PosterKey,
-		&createdAt, &updatedAt, &c.Held); err != nil {
+		&createdAt, &updatedAt, &c.Held, &rules); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.Collection{}, err
 		}
 		return domain.Collection{}, fmt.Errorf("scan collection: %w", err)
 	}
 	c.CreatedAt, c.UpdatedAt = fromMillis(createdAt), fromMillis(updatedAt)
+	smart, readable := parseSmart(rules)
+	c.Smart, c.Unreadable = smart, !readable
 	return c, nil
 }
 
@@ -641,6 +798,14 @@ func (d *DB) DeleteCollection(ctx context.Context, id int64) error {
 // the list it is showing, and an append would make saving twice a way to
 // duplicate everything.
 func (d *DB) SetCollectionItems(ctx context.Context, id int64, itemIDs []int64) error {
+	smart, err := d.rulesOf(ctx, id)
+	if err != nil {
+		return err
+	}
+	if smart != nil {
+		return ErrSmartCollection
+	}
+
 	tx, err := d.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("set collection: %w", err)
@@ -669,8 +834,21 @@ func (d *DB) SetCollectionItems(ctx context.Context, id int64, itemIDs []int64) 
 	return nil
 }
 
-// CollectionItems lists what is in one, in the order it was arranged.
+// CollectionItems lists what is in one: the order it was arranged in for a
+// hand-picked collection, and what its rules currently match for a smart one.
+//
+// One function for both because every surface asks the same question of a
+// collection — what is in it — and which kind it is is this package's business
+// rather than three clients'.
 func (d *DB) CollectionItems(ctx context.Context, id int64, page Page) ([]domain.Item, int, error) {
+	smart, err := d.rulesOf(ctx, id)
+	if err != nil {
+		return nil, 0, err
+	}
+	if smart != nil {
+		return d.smartItems(ctx, *smart, page)
+	}
+
 	only, scope := d.only("i.section_id")
 
 	var total int
@@ -701,8 +879,38 @@ func (d *DB) CollectionItems(ctx context.Context, id int64, page Page) ([]domain
 	return items, total, nil
 }
 
+// rulesOf reads one collection's rule set: nil for a hand-picked one, and nil
+// for one whose rules cannot be read, which then holds nothing rather than
+// everything. ErrNotFound when there is no such collection at all.
+//
+// Deliberately not the handle's restricted read: this answers "how is this
+// collection filled", which is a property of the collection and the same for
+// everybody. What a given viewer may see of it is decided by the query the
+// answer leads to.
+func (d *DB) rulesOf(ctx context.Context, id int64) (*domain.Smart, error) {
+	var stored string
+	err := d.sql.QueryRowContext(ctx,
+		`SELECT rules FROM collections WHERE id = ?`, id).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read collection: %w", err)
+	}
+	smart, readable := parseSmart(stored)
+	if !readable {
+		return nil, nil
+	}
+	return smart, nil
+}
+
 // CollectionsOf reports which collections each of these items belongs to, so
 // a film can say "part of this" without a query per row.
+//
+// Smart collections are asked separately and one at a time, because their
+// membership is not stored anywhere to be joined against: each one's rules
+// are asked of exactly these items. A household has a handful of them, which
+// is a handful of statements for a page of sixty films.
 func (d *DB) CollectionsOf(ctx context.Context, itemIDs []int64) (map[int64][]domain.Collection, error) {
 	if len(itemIDs) == 0 {
 		return nil, nil
@@ -727,12 +935,53 @@ func (d *DB) CollectionsOf(ctx context.Context, itemIDs []int64) (map[int64][]do
 		)
 		if err := rows.Scan(&itemID, &c.ID, &c.Title, &c.SortTitle, &c.Summary, &c.PosterKey,
 			&createdAt, &updatedAt, &c.Held); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("scan collection: %w", err)
 		}
 		c.CreatedAt, c.UpdatedAt = fromMillis(createdAt), fromMillis(updatedAt)
 		out[itemID] = append(out[itemID], c)
 	}
-	return out, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := d.smartMembership(ctx, itemIDs, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// smartMembership adds the smart collections these items fall into.
+func (d *DB) smartMembership(ctx context.Context, itemIDs []int64, out map[int64][]domain.Collection) error {
+	smart, err := d.smartCollections(ctx)
+	if err != nil {
+		return err
+	}
+	placeholders, ids := inClause(itemIDs)
+	for _, c := range smart {
+		rules := compileSmart(*c.Smart, d.viewer)
+		args := append([]any{}, ids...)
+		args = append(args, rules.args...)
+		rows, err := d.sql.QueryContext(ctx,
+			`SELECT i.id `+smartBase+` AND i.id IN (`+placeholders+`)`+rules.where, args...)
+		if err != nil {
+			return fmt.Errorf("read smart collection: %w", err)
+		}
+		for rows.Next() {
+			var itemID int64
+			if err := rows.Scan(&itemID); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan smart collection: %w", err)
+			}
+			out[itemID] = append(out[itemID], c)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 /* ---------- shared ---------- */
@@ -834,4 +1083,33 @@ func (d *DB) attachParts(ctx context.Context, items []domain.Item) error {
 		}
 	}
 	return nil
+}
+
+// smartCollections reads the rule-driven collections and nothing else, with
+// no count: the caller here is asking which of them an item falls into, and
+// counting what else is in them would be a query per collection for an answer
+// nobody asked for. Held is nought for the same reason it is in
+// [DB.CollectionsOf], which is this function's only caller.
+func (d *DB) smartCollections(ctx context.Context) ([]domain.Collection, error) {
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT c.id, c.title, c.sort_title, c.summary, c.poster_key,
+		        c.created_at, c.updated_at, 0 AS held, c.rules
+		   FROM collections c WHERE c.rules <> '' ORDER BY c.sort_title, c.id`)
+	if err != nil {
+		return nil, fmt.Errorf("list smart collections: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.Collection
+	for rows.Next() {
+		c, err := scanCollection(rows)
+		if err != nil {
+			return nil, err
+		}
+		if c.Smart == nil {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }

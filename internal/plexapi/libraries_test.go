@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/plexapi"
 	"github.com/inknironapps/bask-media-server/internal/store"
 )
@@ -299,6 +300,53 @@ func TestAPlexCollectionAppearsUnderItsLibrary(t *testing.T) {
 	inside := get(t, srv, token, "/library/collections/"+itoa(made.ID)+"/children")
 	items, _ := inside["Metadata"].([]any)
 	if len(items) != 1 {
+		t.Fatalf("inside the collection: %v", inside)
+	}
+}
+
+// A collection filled by rules says so, because Plex clients read that field
+// to decide whether they may rearrange it — and this server would refuse the
+// rearrangement.
+func TestAPlexCollectionSaysWhetherItFillsItself(t *testing.T) {
+	srv, token, db := library(t)
+	ctx := context.Background()
+
+	sections, err := db.Sections(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var movies int64
+	for _, section := range sections {
+		if section.Title == "Movies" {
+			movies = section.ID
+		}
+	}
+
+	made, err := db.CreateCollection(ctx, "Every film", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetCollectionRules(ctx, made.ID, &domain.Smart{
+		Rules: []domain.SmartRule{{Field: domain.SmartKind, Op: domain.SmartIs, Value: string(domain.KindMovie)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	under := get(t, srv, token, "/library/sections/"+itoa(movies)+"/collections")
+	rows, _ := under["Directory"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("collections under the films library: %v", under)
+	}
+	row, _ := rows[0].(map[string]any)
+	if row["smart"] != true {
+		t.Fatalf("a rule-driven collection reported smart = %v", row["smart"])
+	}
+	if n, _ := row["childCount"].(float64); int(n) == 0 {
+		t.Fatalf("it holds nothing: %v", row)
+	}
+
+	inside := get(t, srv, token, "/library/collections/"+itoa(made.ID)+"/children")
+	if items, _ := inside["Metadata"].([]any); len(items) == 0 {
 		t.Fatalf("inside the collection: %v", inside)
 	}
 }

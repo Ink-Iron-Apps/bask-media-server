@@ -499,10 +499,127 @@ type Collection struct {
 	PosterKey string
 	// Held is how many of its items the asker may see, which is not
 	// necessarily how many are in it.
-	Held      int
+	Held int
+
+	// Smart is the rule set that decides what is in it, and nil for a
+	// collection somebody filled by hand. A smart collection has no stored
+	// membership at all: it is a question asked of the library every time
+	// somebody opens it, which is the whole point — a film that arrives
+	// tonight is in "Unwatched science fiction" tonight, with nobody
+	// remembering to put it there.
+	Smart *Smart
+
+	// Unreadable means this collection has rules the server could not parse,
+	// so it holds nothing until they are fixed. One corrupt row must not
+	// take a listing down with it, and silently showing it as an ordinary
+	// empty collection would hide the fault from the only person who can
+	// repair it.
+	Unreadable bool
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
+
+// Smart is what a smart collection asks of the library.
+//
+// The JSON tags are deliberate and they are the same shape in three places:
+// the rules column, the administration API and the editor that writes them.
+// One shape rather than three, because a rule set that means one thing on the
+// wire and another in the database is a bug nobody can see.
+type Smart struct {
+	// Match decides whether an item has to satisfy every rule or any one of
+	// them. Empty reads as SmartAll, so a rule set with no opinion behaves
+	// like the one somebody would have written.
+	Match SmartMatch `json:"match,omitempty"`
+
+	Rules []SmartRule `json:"rules"`
+
+	// Sort is the order the collection is shown in, and Desc reverses it.
+	// A collection nobody arranged by hand still has to come out in some
+	// order, and "whatever the database felt like" is not an order.
+	Sort SmartSort `json:"sort,omitempty"`
+	Desc bool      `json:"desc,omitempty"`
+
+	// Limit caps how many it holds, counted after the sort, and zero means
+	// no cap. This is what makes "the ten most recently added films" a
+	// collection rather than a library.
+	Limit int `json:"limit,omitempty"`
+}
+
+// SmartMatch is whether every rule has to hold or only one of them.
+type SmartMatch string
+
+const (
+	SmartAll SmartMatch = "all"
+	SmartAny SmartMatch = "any"
+)
+
+// SmartSort is the order a smart collection comes out in.
+type SmartSort string
+
+const (
+	SmartByTitle    SmartSort = "title"
+	SmartByYear     SmartSort = "year"
+	SmartByAdded    SmartSort = "added"
+	SmartByDuration SmartSort = "duration"
+)
+
+// SmartRule is one condition: a field of an item, a comparison, and what to
+// compare it against.
+//
+// Value is a string whatever the field holds, because that is what arrives
+// from a form and what goes into a JSON column, and the server turns it into
+// a number or an identifier when it compiles the rule. The alternative is a
+// field of four optional types, three of which are always empty.
+type SmartRule struct {
+	Field SmartField `json:"field"`
+	Op    SmartOp    `json:"op"`
+	Value string     `json:"value,omitempty"`
+}
+
+// SmartField is what a rule looks at. The server owns the list of fields and
+// which comparisons each one allows — see the store, which is where the rule
+// becomes SQL.
+type SmartField string
+
+const (
+	SmartLibrary     SmartField = "library"
+	SmartKind        SmartField = "kind"
+	SmartTitle       SmartField = "title"
+	SmartSummary     SmartField = "summary"
+	SmartPerformer   SmartField = "performer"
+	SmartYear        SmartField = "year"
+	SmartCertificate SmartField = "certificate"
+	SmartAge         SmartField = "age"
+	SmartAdded       SmartField = "added"
+	SmartDuration    SmartField = "duration"
+	SmartResolution  SmartField = "resolution"
+	SmartContainer   SmartField = "container"
+	SmartEdition     SmartField = "edition"
+	SmartWatched     SmartField = "watched"
+)
+
+// SmartOp is how a field is compared.
+type SmartOp string
+
+const (
+	SmartIs       SmartOp = "is"
+	SmartIsNot    SmartOp = "isnot"
+	SmartContains SmartOp = "contains"
+	SmartStarts   SmartOp = "starts"
+	SmartBefore   SmartOp = "before"
+	SmartAfter    SmartOp = "after"
+	SmartAtLeast  SmartOp = "atleast"
+	SmartAtMost   SmartOp = "atmost"
+	SmartWithin   SmartOp = "within"
+
+	// The three states of having seen something, which are three operators
+	// rather than one field because "partly watched" is not the negation of
+	// anything.
+	SmartYes    SmartOp = "yes"
+	SmartNo     SmartOp = "no"
+	SmartPartly SmartOp = "partly"
+)
 
 // Webhook is one place this server tells when something happens.
 //

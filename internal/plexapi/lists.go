@@ -334,6 +334,11 @@ func collectionEntry(c domain.Collection, section int64, held int) entry {
 		LibrarySectionID: section,
 		AddedAt:          millisOf(c.CreatedAt),
 		UpdatedAt:        millisOf(c.UpdatedAt),
+		// Plex uses this to decide whether a client may rearrange what is in
+		// a collection, and a collection filled by rules may not be: the
+		// server would refuse it, so the honest answer here saves a client
+		// from offering the move at all.
+		Smart: c.Smart != nil,
 	}
 }
 

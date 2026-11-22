@@ -292,8 +292,9 @@ func (d *DB) NoteTokenDevice(ctx context.Context, tokenID int64, device string) 
 		`UPDATE tokens SET device = ? WHERE id = ? AND device <> ?`, device, tokenID, device)
 }
 
-// scopedFor turns a credential into the handle its requests should run on:
-// the unrestricted handle when nobody narrowed it, and a scoped one otherwise.
+// scopedFor turns a credential into the handle its requests should run on: as
+// narrow as the credential says, and carrying the account it belongs to so a
+// query that needs somebody's opinion — watch state, at present — has one.
 //
 // The one place that policy is written down. Every surface that authenticates
 // a credential calls this rather than deciding for itself, so there is no
@@ -304,7 +305,7 @@ func (d *DB) scopedFor(cred *domain.Credential) *DB {
 	if cred == nil {
 		return d
 	}
-	scoped := d
+	scoped := d.Viewer(cred.User.ID)
 	if cred.Restricted {
 		scoped = scoped.Visible(cred.Sections)
 	}
@@ -320,3 +321,15 @@ func (d *DB) scopedFor(cred *domain.Credential) *DB {
 // Scoped is scopedFor under a name a handler can read: the database as this
 // credential may see it.
 func (d *DB) Scoped(cred *domain.Credential) *DB { return d.scopedFor(cred) }
+
+// Viewer returns a handle that reads watch state as this account sees it.
+//
+// Separate from [DB.Visible] and [DB.Rated] because it is not a restriction:
+// it narrows nothing and hides nothing. It answers a different question —
+// "watched by whom" — which only a smart collection's watch rules ask, and
+// which has no answer at all on a handle nobody authenticated.
+func (d *DB) Viewer(userID int64) *DB {
+	scoped := *d
+	scoped.viewer = userID
+	return &scoped
+}

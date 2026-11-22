@@ -371,15 +371,17 @@ func (s *Scanner) toFound(ctx context.Context, section domain.Section, f found) 
 	}
 
 	var (
-		duration  time.Duration
-		chapters  []domain.Chapter
-		subtitles []domain.Subtitle
-		probed    bool
+		duration      time.Duration
+		chapters      []domain.Chapter
+		subtitles     []domain.Subtitle
+		width, height int
+		probed        bool
 	)
 	if s.Prober != nil {
 		if info, err := s.Prober.Probe(ctx, f.path); err == nil {
 			duration, chapters, probed = info.Duration, info.Chapters, true
 			subtitles = embeddedSubtitles(info)
+			width, height = pictureSize(info)
 		} else if s.Log != nil {
 			s.Log.Debug("could not probe", "path", f.path, "error", err)
 		}
@@ -410,6 +412,8 @@ func (s *Scanner) toFound(ctx context.Context, section domain.Section, f found) 
 		Duration:   duration,
 		Chapters:   chapters,
 		Subtitles:  subtitles,
+		Width:      width,
+		Height:     height,
 	}
 	switch {
 	case f.extra != nil:
@@ -446,6 +450,24 @@ func (s *Scanner) toFound(ctx context.Context, section domain.Section, f found) 
 		return store.Found{}, false
 	}
 	return out, true
+}
+
+// pictureSize is how big the picture in a video file is, from the first video
+// stream that declares it.
+//
+// The first rather than the largest, because the first video stream is the
+// film and a later one is a thumbnail or a cover image embedded in the
+// container — which is exactly the picture nobody means by "is this 4K".
+func pictureSize(info ffprobe.Info) (width, height int) {
+	for _, stream := range info.Streams {
+		if stream.Type != "video" {
+			continue
+		}
+		if stream.Width > 0 && stream.Height > 0 {
+			return stream.Width, stream.Height
+		}
+	}
+	return 0, 0
 }
 
 // trackFound turns one music file into a row.

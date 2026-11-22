@@ -27,6 +27,12 @@ import (
 // database/sql to tell "no such item" from a real failure.
 var ErrNotFound = errors.New("not found")
 
+// ErrSmartCollection is what a caller gets for trying to put an item into a
+// collection whose contents come from its rules. Not a refusal of permission:
+// the request has nowhere to go, because a smart collection stores no
+// membership to add to.
+var ErrSmartCollection = errors.New("a smart collection's contents come from its rules")
+
 // DB is a handle on the library database.
 //
 // A handle can be narrowed to a subset of the libraries with [DB.Visible],
@@ -37,6 +43,13 @@ type DB struct {
 	sql     *sql.DB
 	path    string
 	visible *visibility
+
+	// viewer is whose opinion this handle reads where a query needs one —
+	// at present only a smart collection's watch-state rules, which mean
+	// nothing without somebody to have watched. Zero is nobody, which reads
+	// as having watched nothing rather than as an error: a surface with no
+	// account behind it still has to be able to list a collection.
+	viewer int64
 }
 
 // Open opens or creates the database at path and brings the schema up to date.
@@ -566,6 +579,16 @@ var migrations = []string{
 	`CREATE INDEX history_started ON history(started_at DESC)`,
 	`CREATE INDEX history_user ON history(user_id, started_at DESC)`,
 	`CREATE INDEX history_item ON history(item_id, started_at DESC)`,
+
+	// What a smart collection asks of the library, as JSON, and empty for a
+	// collection somebody filled by hand.
+	//
+	// One column rather than a flag and a rule table. A flag can disagree
+	// with the rules it describes, and a rule table buys nothing: the rules
+	// are only ever read and written whole, by the editor that wrote them.
+	// Empty or not is the whole of the distinction between the two kinds of
+	// collection, and a smart one has no rows in collection_items at all.
+	`ALTER TABLE collections ADD COLUMN rules TEXT NOT NULL DEFAULT ''`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

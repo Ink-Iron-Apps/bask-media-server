@@ -829,6 +829,8 @@ views.collections = async function (main) {
 
   const rows = all.map((c) => el('tr', {},
     el('td', {}, el('strong', { text: c.title }),
+      c.rules ? el('span', { class: 'badge', text: ' by rules' }) : null,
+      c.unreadable ? el('span', { class: 'badge failed', text: ' rules unreadable' }) : null,
       c.summary ? el('div', { class: 'muted', text: c.summary }) : null),
     el('td', { class: 'muted', text: count(c.held, 'item') }),
     el('td', { class: 'right' }, el('div', { class: 'row actions' },
@@ -850,7 +852,7 @@ views.collections = async function (main) {
 
   fill(main,
     el('div', { class: 'head' }, el('div', {}, el('h1', { text: 'Collections' }),
-      el('p', { class: 'muted', text: 'Groupings the whole household sees: a trilogy, a director, a Christmas shelf. A collection holding nothing a device may see is hidden from that device entirely.' }))),
+      el('p', { class: 'muted', text: 'Groupings the whole household sees: a trilogy, a director, a Christmas shelf. Pick what goes in by hand, or give it rules and let it fill itself. A collection holding nothing a device may see is hidden from that device entirely.' }))),
     el('div', { class: 'card' }, all.length
       ? el('table', {}, el('tbody', {}, rows))
       : el('p', { class: 'muted', text: 'No collections yet.' })),
@@ -871,107 +873,310 @@ views.collections = async function (main) {
       }))));
 };
 
-// editCollection is the picker: what is in it, in order, and a search to add
-// more. Nothing is saved until Save, because a half-built list is somebody
-// mid-thought rather than an instruction.
+// editCollection edits one collection, which is two editors sharing a name
+// and a Save button.
+//
+// A collection is either picked by hand or filled by rules, never both, so
+// this shows one or the other with a way across. Nothing is saved until Save,
+// including the change from one kind to the other: a half-built rule set is
+// somebody mid-thought rather than an instruction.
 async function editCollection(id) {
   try {
-    const collection = await api('GET', '/collections/' + id);
-    const chosen = (collection.items || []).slice();
+    const [collection, vocabulary, libraries] = await Promise.all([
+      api('GET', '/collections/' + id),
+      api('GET', '/collections/fields'),
+      api('GET', '/sections'),
+    ]);
+
+    // A copy, so abandoning the page abandons the edit.
+    let rules = collection.rules ? JSON.parse(JSON.stringify(collection.rules)) : null;
+    const chosen = rules ? [] : (collection.items || []).slice();
     const name = el('input', { value: collection.title });
     const summary = el('input', { value: collection.summary || '' });
-    const search = el('input', { placeholder: 'Search the library' });
-    const results = el('div', { class: 'row wrap' });
-    const list = el('tbody', {});
 
     const label = (item) =>
       item.title + (item.year ? ' (' + item.year + ')' : '') + ' · ' + item.library;
 
-    const drawChosen = () => {
-      fill(list, chosen.map((item, index) => el('tr', {},
-        el('td', { class: 'muted', text: String(index + 1) }),
-        el('td', { text: label(item) }),
-        el('td', { class: 'right' }, el('div', { class: 'row actions' },
-          el('button', {
-            text: '↑',
-            on: { click: () => { if (index > 0) { chosen.splice(index - 1, 0, chosen.splice(index, 1)[0]); drawChosen(); } } },
-          }),
-          el('button', {
-            text: '↓',
-            on: { click: () => { if (index < chosen.length - 1) { chosen.splice(index + 1, 0, chosen.splice(index, 1)[0]); drawChosen(); } } },
-          }),
-          el('button', {
-            class: 'danger',
-            text: 'Remove',
-            on: { click: () => { chosen.splice(index, 1); drawChosen(); } },
-          }))))));
-      if (chosen.length === 0) {
-        fill(list, el('tr', {}, el('td', { class: 'muted', text: 'Nothing in it yet.' })));
-      }
-    };
-    drawChosen();
-
-    let searching = null;
-    const runSearch = async () => {
-      const term = search.value.trim();
-      if (!term) { fill(results); return; }
-      clearTimeout(searching);
-      searching = setTimeout(async () => {
-        try {
-          const found = (await api('GET', '/items?q=' + encodeURIComponent(term))) || [];
-          fill(results, found.map((item) => el('button', {
-            text: label(item),
-            on: {
-              click: () => {
-                if (chosen.some((already) => already.id === item.id)) {
-                  toast('Already in it.');
-                  return;
-                }
-                chosen.push(item);
-                drawChosen();
-              },
-            },
-          })));
-          if (found.length === 0) fill(results, el('span', { class: 'muted', text: 'Nothing matched.' }));
-        } catch (err) { failed(err); }
-      }, 200);
-    };
-    search.addEventListener('input', runSearch);
-
     const main = document.getElementById('main');
-    fill(main,
-      el('div', { class: 'head' }, el('div', {}, el('h1', { text: collection.title }),
-        el('p', { class: 'muted', text: 'The order here is the order a client shows them in.' })),
-        el('button', { text: 'Back to collections', on: { click: () => render() } })),
-      el('div', { class: 'card' },
-        el('label', { text: 'Name' }), name,
-        el('label', { text: 'Summary' }), summary),
-      el('div', { class: 'card' },
-        el('h2', { text: 'In this collection' }),
-        el('table', {}, list)),
-      el('div', { class: 'card' },
-        el('h2', { text: 'Add something' }),
-        el('label', { text: 'Search' }), search,
-        results),
-      el('div', { class: 'card' },
-        el('div', { class: 'row' }, el('button', {
-          class: 'primary',
-          text: 'Save',
+
+    const save = async () => {
+      try {
+        const body = { title: name.value, summary: summary.value, rules: rules };
+        // Only a hand-picked collection sends a list. A smart one has no
+        // stored membership, and sending one would be refused.
+        if (!rules) body.items = chosen.map((item) => item.id);
+        await api('PATCH', '/collections/' + id, body);
+        toast('Saved.');
+        render();
+      } catch (err) { failed(err); }
+    };
+
+    const draw = () => {
+      fill(main,
+        el('div', { class: 'head' }, el('div', {}, el('h1', { text: collection.title }),
+          el('p', { class: 'muted', text: rules
+            ? 'This one fills itself: everything in the library that answers the rules below, in the order they name.'
+            : 'The order here is the order a client shows them in.' })),
+          el('button', { text: 'Back to collections', on: { click: () => render() } })),
+        el('div', { class: 'card' },
+          el('label', { text: 'Name' }), name,
+          el('label', { text: 'Summary' }), summary),
+        collection.unreadable && !rules
+          ? el('div', { class: 'card' },
+              el('h2', { text: 'These rules could not be read' }),
+              el('p', { class: 'muted', text: 'Something stored rules this build of the server cannot parse, so the collection holds nothing. Build them again below, or pick films by hand instead.' }))
+          : null,
+        rules ? rulesCard(rules, vocabulary, libraries, label, () => { rules = null; draw(); })
+              : handCard(chosen, label, () => { rules = { match: 'all', rules: [], sort: 'title' }; draw(); }),
+        el('div', { class: 'card' },
+          el('div', { class: 'row' }, el('button', { class: 'primary', text: 'Save', on: { click: save } }))));
+    };
+    draw();
+  } catch (err) { failed(err); }
+}
+
+// handCard is the original picker: what is in it, in order, and a search to
+// add more.
+function handCard(chosen, label, turnSmart) {
+  const list = el('tbody', {});
+  const search = el('input', { placeholder: 'Search the library' });
+  const results = el('div', { class: 'row wrap' });
+
+  const drawChosen = () => {
+    fill(list, chosen.map((item, index) => el('tr', {},
+      el('td', { class: 'muted', text: String(index + 1) }),
+      el('td', { text: label(item) }),
+      el('td', { class: 'right' }, el('div', { class: 'row actions' },
+        el('button', {
+          text: '↑',
+          on: { click: () => { if (index > 0) { chosen.splice(index - 1, 0, chosen.splice(index, 1)[0]); drawChosen(); } } },
+        }),
+        el('button', {
+          text: '↓',
+          on: { click: () => { if (index < chosen.length - 1) { chosen.splice(index + 1, 0, chosen.splice(index, 1)[0]); drawChosen(); } } },
+        }),
+        el('button', {
+          class: 'danger',
+          text: 'Remove',
+          on: { click: () => { chosen.splice(index, 1); drawChosen(); } },
+        }))))));
+    if (chosen.length === 0) {
+      fill(list, el('tr', {}, el('td', { class: 'muted', text: 'Nothing in it yet.' })));
+    }
+  };
+  drawChosen();
+
+  let searching = null;
+  search.addEventListener('input', () => {
+    const term = search.value.trim();
+    if (!term) { fill(results); return; }
+    clearTimeout(searching);
+    searching = setTimeout(async () => {
+      try {
+        const found = (await api('GET', '/items?q=' + encodeURIComponent(term))) || [];
+        fill(results, found.map((item) => el('button', {
+          text: label(item),
           on: {
-            click: async () => {
-              try {
-                await api('PATCH', '/collections/' + id, {
-                  title: name.value,
-                  summary: summary.value,
-                  items: chosen.map((item) => item.id),
-                });
-                toast('Saved.');
-                render();
-              } catch (err) { failed(err); }
+            click: () => {
+              if (chosen.some((already) => already.id === item.id)) {
+                toast('Already in it.');
+                return;
+              }
+              chosen.push(item);
+              drawChosen();
             },
           },
-        }))));
-  } catch (err) { failed(err); }
+        })));
+        if (found.length === 0) fill(results, el('span', { class: 'muted', text: 'Nothing matched.' }));
+      } catch (err) { failed(err); }
+    }, 200);
+  });
+
+  return [
+    el('div', { class: 'card' },
+      el('h2', { text: 'In this collection' }),
+      el('table', {}, list)),
+    el('div', { class: 'card' },
+      el('h2', { text: 'Add something' }),
+      el('label', { text: 'Search' }), search,
+      results),
+    el('div', { class: 'card' },
+      el('h2', { text: 'Or let it fill itself' }),
+      el('p', { class: 'muted', text: 'Rules instead of a list: everything unwatched in one library, everything added this month, every film over two hours. A collection filled by rules keeps no list of its own, so whatever is picked here goes when you save.' }),
+      el('div', { class: 'row' }, el('button', { text: 'Use rules instead', on: { click: turnSmart } }))),
+  ];
+}
+
+/* ---------- the rule builder ---------- */
+
+// What each comparison is called. The server owns which ones a field allows;
+// what they are called in English is this page's business, and the words
+// differ by what the field holds — "is before" reads wrong about a number of
+// days ago.
+const OP_WORDS = {
+  is: 'is', isnot: 'is not', contains: 'contains', starts: 'starts with',
+  before: 'is before', after: 'is after', atleast: 'is at least', atmost: 'is at most',
+  within: 'within the last', yes: 'all the way through', no: 'not at all',
+  partly: 'part of the way through',
+};
+const DAY_WORDS = { within: 'within the last', before: 'longer ago than' };
+const KIND_WORDS = {
+  movie: 'Film', show: 'Series', album: 'Album', artist: 'Artist', photoalbum: 'Photo album',
+};
+const SORT_WORDS = {
+  title: 'Title', year: 'Year', added: 'When it was added', duration: 'Length',
+};
+const UNITS = { days: 'days', minutes: 'minutes' };
+
+function opWord(spec, op) {
+  if (spec.value === 'days' && DAY_WORDS[op]) return DAY_WORDS[op];
+  return OP_WORDS[op] || op;
+}
+
+// rulesCard is the question: the conditions, how to read them, the order, and
+// what the library says the answer is right now.
+function rulesCard(rules, vocabulary, libraries, label, turnHand) {
+  const fields = vocabulary.fields || [];
+  const specOf = (field) => fields.find((f) => f.field === field) || fields[0];
+  const body = el('div', {});
+  const answer = el('div', {});
+
+  let pending = null;
+  const ask = () => {
+    clearTimeout(pending);
+    pending = setTimeout(async () => {
+      try {
+        const got = await api('POST', '/collections/preview', rules);
+        const held = got.held || 0;
+        fill(answer,
+          el('p', {}, el('strong', {
+            text: held === 1 ? '1 item matches' : count(held, 'item') + ' match',
+          }), rules.limit ? el('span', { class: 'muted', text: ' · capped at ' + rules.limit } ) : null),
+          (got.items || []).length
+            ? el('table', {}, el('tbody', {}, (got.items || []).map((item) =>
+                el('tr', {}, el('td', { text: label(item) })))))
+            : el('p', { class: 'muted', text: 'Nothing in the library answers this yet.' }));
+      } catch (err) {
+        // Shown here rather than as a toast: this fires on every keystroke,
+        // and a half-typed rule is not worth shouting about.
+        fill(answer, el('p', { class: 'muted', text: err.message }));
+      }
+    }, 250);
+  };
+
+  const value = (rule, spec) => {
+    switch (spec.value) {
+      case 'none':
+        return null;
+      case 'library': {
+        const pick = el('select', {}, libraries.map((lib) =>
+          el('option', { value: String(lib.id), text: lib.title, selected: String(lib.id) === String(rule.value) })));
+        if (!rule.value && libraries.length) { rule.value = String(libraries[0].id); pick.value = rule.value; }
+        pick.addEventListener('change', () => { rule.value = pick.value; ask(); });
+        return pick;
+      }
+      case 'choice': {
+        const pick = el('select', {}, (spec.choices || []).map((choice) =>
+          el('option', { value: choice, text: KIND_WORDS[choice] || choice, selected: choice === rule.value })));
+        if (!rule.value && (spec.choices || []).length) { rule.value = spec.choices[0]; pick.value = rule.value; }
+        pick.addEventListener('change', () => { rule.value = pick.value; ask(); });
+        return pick;
+      }
+      case 'number': case 'days': case 'minutes': {
+        const box = el('input', { type: 'number', min: '0', value: rule.value || '' });
+        box.addEventListener('input', () => { rule.value = box.value; ask(); });
+        return UNITS[spec.value] ? [box, el('span', { class: 'muted', text: UNITS[spec.value] })] : box;
+      }
+      default: {
+        const box = el('input', { value: rule.value || '', placeholder: spec.field === 'certificate' ? 'PG, 15, or empty for unrated' : '' });
+        box.addEventListener('input', () => { rule.value = box.value; ask(); });
+        return box;
+      }
+    }
+  };
+
+  const draw = () => {
+    const rows = (rules.rules || []).map((rule, index) => {
+      const spec = specOf(rule.field);
+      const field = el('select', {}, fields.map((f) =>
+        el('option', { value: f.field, text: f.label, selected: f.field === rule.field })));
+      field.addEventListener('change', () => {
+        const next = specOf(field.value);
+        rule.field = next.field;
+        rule.op = next.ops[0];
+        rule.value = '';
+        draw();
+      });
+
+      const op = el('select', {}, (spec.ops || []).map((o) =>
+        el('option', { value: o, text: opWord(spec, o), selected: o === rule.op })));
+      op.addEventListener('change', () => { rule.op = op.value; draw(); });
+
+      return el('tr', {},
+        el('td', {}, field),
+        el('td', {}, op),
+        el('td', {}, value(rule, spec)),
+        el('td', { class: 'right' }, el('button', {
+          class: 'danger',
+          text: 'Remove',
+          on: { click: () => { rules.rules.splice(index, 1); draw(); } },
+        })));
+    });
+
+    const match = el('select', {}, (vocabulary.matches || ['all', 'any']).map((m) =>
+      el('option', { value: m, text: m === 'any' ? 'any one of these' : 'all of these', selected: m === (rules.match || 'all') })));
+    match.addEventListener('change', () => { rules.match = match.value; draw(); });
+
+    const sort = el('select', {}, (vocabulary.sorts || []).map((s) =>
+      el('option', { value: s, text: SORT_WORDS[s] || s, selected: s === (rules.sort || 'title') })));
+    sort.addEventListener('change', () => { rules.sort = sort.value; draw(); });
+
+    const backwards = el('input', { type: 'checkbox' });
+    backwards.checked = !!rules.desc;
+    backwards.addEventListener('change', () => { rules.desc = backwards.checked; draw(); });
+
+    const cap = el('input', { type: 'number', min: '0', value: rules.limit ? String(rules.limit) : '' });
+    cap.addEventListener('input', () => { rules.limit = Number(cap.value) || 0; ask(); });
+
+    fill(body,
+      el('div', { class: 'row' },
+        el('span', { class: 'muted', text: 'An item belongs here when it answers' }), match),
+      rows.length
+        ? el('table', {}, el('tbody', {}, rows))
+        : el('p', { class: 'muted', text: 'No rules yet, which means the whole library. Add one, or set a limit and an order to make a shelf of it.' }),
+      el('div', { class: 'row' }, el('button', {
+        text: 'Add a rule',
+        on: {
+          click: () => {
+            const first = fields[0];
+            rules.rules = rules.rules || [];
+            rules.rules.push({ field: first.field, op: first.ops[0], value: '' });
+            draw();
+          },
+        },
+      })),
+      el('div', { class: 'row' },
+        el('span', { class: 'muted', text: 'In order of' }), sort,
+        el('label', { class: 'row' }, backwards, el('span', { text: 'backwards' })),
+        el('span', { class: 'muted', text: 'keeping at most' }), cap,
+        el('span', { class: 'muted', text: '(blank for all of them)' })));
+    ask();
+  };
+  draw();
+
+  return [
+    el('div', { class: 'card' },
+      el('h2', { text: 'Rules' }),
+      body),
+    el('div', { class: 'card' },
+      el('h2', { text: 'What that matches now' }),
+      el('p', { class: 'muted', text: 'The whole library, as you see it: a viewer sees only the part of this their libraries and age rating allow. Watched and unwatched are answered for your own account, and every account answers them for itself — so a collection of unwatched films genuinely holds different films for different people.' }),
+      answer),
+    el('div', { class: 'card' },
+      el('h2', { text: 'Or pick films by hand' }),
+      el('p', { class: 'muted', text: 'The rules go and the collection becomes an ordinary list, empty to start with.' }),
+      el('div', { class: 'row' }, el('button', { text: 'Pick by hand instead', on: { click: turnHand } }))),
+  ];
 }
 
 /* ---------- users ---------- */
