@@ -15,6 +15,7 @@ import (
 
 	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/ffprobe"
+	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/playback"
 	"github.com/inknironapps/bask-media-server/internal/serve"
 	"github.com/inknironapps/bask-media-server/internal/store"
@@ -426,6 +427,11 @@ func (s *Server) sessionFor(w http.ResponseWriter, r *http.Request) (*transcode.
 		http.Error(w, "bad item", http.StatusBadRequest)
 		return nil, false
 	}
+	// A client whose stream was stopped does not get another encoder started
+	// for it by asking again.
+	if s.refused(w, streamKey(r, id)) {
+		return nil, false
+	}
 	found, err := s.db(r.Context()).Item(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		http.Error(w, "no such item", http.StatusNotFound)
@@ -470,7 +476,36 @@ func (s *Server) sessionFor(w http.ResponseWriter, r *http.Request) (*transcode.
 		s.fail(w, "start transcoding", err)
 		return nil, false
 	}
+
+	plan := wirePlan(r)
+	s.report(r, nowplaying.Stream{
+		Key: streamKey(r, id), ItemID: id, Title: found.Title,
+		Duration: found.Duration, Mode: string(plan.Mode),
+		Why:     transcodeWhy(plan),
+		Session: session.ID,
+	})
 	return session, true
+}
+
+// transcodeWhy is what to tell an operator about a conversion the client
+// asked for.
+//
+// The client's request is all there is to go on here: it named the codecs it
+// wanted, and did not say why. That is still the useful line on a status
+// page, because what costs this machine its cores is the picture being
+// re-encoded, and the request says whether it is.
+func transcodeWhy(plan playback.Plan) string {
+	if plan.Mode == playback.ModeRemux {
+		return "the client asked for a different container"
+	}
+	what := "the sound"
+	if plan.VideoCodec != "copy" {
+		what = "the picture"
+		if plan.AudioCodec != "copy" {
+			what = "the picture and the sound"
+		}
+	}
+	return "the client asked for " + what + " to be re-encoded"
 }
 
 // startFrom is where in the file this stream begins.
@@ -493,6 +528,9 @@ func sessionKey(playSession string, partID int64) string {
 func (s *Server) transcodeSegment(w http.ResponseWriter, r *http.Request) {
 	if s.Transcoder == nil {
 		http.Error(w, "this server has no ffmpeg", http.StatusNotFound)
+		return
+	}
+	if id, _, err := parseID(r.PathValue("item")); err == nil && s.refused(w, streamKey(r, id)) {
 		return
 	}
 	session, found := s.Transcoder.Get(r.PathValue("session"))
@@ -539,12 +577,19 @@ func (s *Server) transcodeSegment(w http.ResponseWriter, r *http.Request) {
 // stopEncoding is a client saying it has stopped, which frees a core now
 // rather than at the idle deadline.
 func (s *Server) stopEncoding(w http.ResponseWriter, r *http.Request) {
+	play := r.URL.Query().Get("PlaySessionId")
 	if s.Transcoder != nil {
-		play := r.URL.Query().Get("PlaySessionId")
 		// The part is not in the request, so every file this play session
 		// could have been of is stopped; there is one.
 		for _, part := range s.partsOfPlaySession(r.Context(), play) {
 			s.Transcoder.StopKey(sessionKey(play, part))
+		}
+	}
+	// The play session id carries the item it was made for, which is what the
+	// register is keyed on alongside the device.
+	if item, _, found := strings.Cut(play, "-"); found {
+		if id, _, err := parseID(item); err == nil {
+			s.forget(streamKey(r, id))
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)

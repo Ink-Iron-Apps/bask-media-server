@@ -11,6 +11,8 @@ import (
 
 	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/nowplaying"
+	"github.com/inknironapps/bask-media-server/internal/playback"
 	"github.com/inknironapps/bask-media-server/internal/scan"
 	"github.com/inknironapps/bask-media-server/internal/serve"
 	"github.com/inknironapps/bask-media-server/internal/store"
@@ -333,6 +335,22 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	// A stream an administrator has stopped is refused here, which is where
+	// stopping a direct play has to happen: nothing is being encoded, so
+	// there is no process to kill, and the only thing this server controls is
+	// whether it keeps handing over the file.
+	key := streamKey(r, found.ID)
+	if s.refused(w, key) {
+		return
+	}
+	// Reported from the file request as well as from the progress report,
+	// because a client appears on the page the moment it starts reading
+	// rather than when it first says where it has got to.
+	s.report(r, nowplaying.Stream{
+		Key: key, ItemID: found.ID, Title: found.Title,
+		Duration: found.Duration, Mode: string(playback.ModeDirect),
+	})
 
 	if err := serve.File(w, r, part.Path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

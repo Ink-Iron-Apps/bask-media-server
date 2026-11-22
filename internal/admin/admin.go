@@ -31,6 +31,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/jobs"
+	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/store"
 )
 
@@ -73,6 +74,10 @@ type Server struct {
 	// is what no ffmpeg looks like.
 	Transcoding func() int
 
+	// Playing is the register of who is watching what. Nil means the page
+	// shows no streams and nothing can be stopped from here.
+	Playing *nowplaying.Registry
+
 	// Started is when the process came up, for the uptime on the status page.
 	// Zero means the first request sets it.
 	Started time.Time
@@ -113,6 +118,9 @@ func (s *Server) Handler() http.Handler {
 
 	authed("GET /admin/api/session", s.whoami)
 	authed("GET /admin/api/overview", s.overview)
+
+	authed("GET /admin/api/playing", s.listPlaying)
+	authed("POST /admin/api/playing/terminate", s.terminatePlaying)
 
 	authed("GET /admin/api/sections", s.listSections)
 	authed("POST /admin/api/sections", s.createSection)

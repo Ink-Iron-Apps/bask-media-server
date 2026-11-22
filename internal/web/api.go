@@ -11,6 +11,7 @@ import (
 
 	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/serve"
 	"github.com/inknironapps/bask-media-server/internal/store"
 )
@@ -389,6 +390,17 @@ func (s *Server) saveProgress(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "save progress", err)
 		return
 	}
+
+	key := streamKey(r, body.ItemID)
+	if s.refused(w, key) {
+		return
+	}
+	s.report(r, nowplaying.Stream{
+		Key:      key,
+		ItemID:   body.ItemID,
+		Position: time.Duration(body.OffsetMS) * time.Millisecond,
+		Duration: time.Duration(body.DurationMS) * time.Millisecond,
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -499,6 +511,12 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.fail(w, "read part", err)
+		return
+	}
+
+	// Stopping a direct play is refusing to keep sending the file: there is
+	// no encoder behind it to kill.
+	if s.refused(w, streamKey(r, part.ItemID)) {
 		return
 	}
 

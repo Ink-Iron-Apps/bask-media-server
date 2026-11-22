@@ -259,11 +259,79 @@ function passButtons() {
     el('button', { on: { click: () => startJob('markers') }, text: 'Detect intros', title: "Compare each season's audio to find intros and credits" }));
 }
 
+/* ---------- now playing ---------- */
+
+// playingCard is who is watching what, with the one button that stops them.
+//
+// Drawn only when something is playing. A card reading "nothing is playing"
+// is a card an operator learns to ignore, and this one has to be noticed.
+function playingCard(streams, redraw) {
+  if (!streams.length) return null;
+  return el('div', { class: 'card' },
+    el('h2', { text: 'Playing now' }),
+    el('table', {}, el('tbody', {}, streams.map((stream) => el('tr', {},
+      el('td', {},
+        el('strong', { text: stream.title }),
+        stream.subtitle ? el('div', { class: 'muted', text: stream.subtitle }) : null,
+        el('div', { class: 'muted mono', text: watchedBy(stream) })),
+      el('td', {},
+        el('span', { class: 'badge ' + (stream.mode === 'direct' ? 'done' : 'running'), text: modeLabel(stream.mode) }),
+        stream.why ? el('div', { class: 'muted', text: stream.why }) : null),
+      el('td', { class: 'muted', text: howFar(stream) }),
+      el('td', { class: 'right' },
+        el('button', {
+          class: 'danger',
+          text: 'Stop',
+          on: { click: () => stopStream(stream, redraw) },
+        }))))))); 
+}
+
+// watchedBy is the line saying who, on what, from where.
+function watchedBy(stream) {
+  const parts = [stream.user || 'someone', stream.client || stream.surface];
+  if (stream.device && stream.device !== stream.client) parts.push(stream.device);
+  if (stream.address) parts.push(stream.address);
+  return parts.join('  ·  ');
+}
+
+function modeLabel(mode) {
+  if (mode === 'transcode') return 'Transcoding';
+  if (mode === 'remux') return 'Direct stream';
+  return 'Direct play';
+}
+
+// howFar is where they are in it, and how long they have been there.
+function howFar(stream) {
+  const at = Math.round((stream.positionMs || 0) / 1000);
+  const of = Math.round((stream.durationMs || 0) / 1000);
+  const where = of > 0 ? duration(at) + ' of ' + duration(of) : duration(at);
+  const state = stream.paused ? 'paused' : 'watching for ' + duration(stream.forSeconds || 0);
+  return where + '  ·  ' + state;
+}
+
+// stopStream ends somebody's stream, with a sentence saying why.
+//
+// The sentence is asked for rather than optional: a Plex client shows it, and
+// a film that stops with no explanation is a household asking what broke.
+async function stopStream(stream, redraw) {
+  const reason = prompt('Stop "' + stream.title + '"?\n\nWhat should the client be told?',
+    'An administrator stopped this stream.');
+  if (reason === null) return;
+  try {
+    await api('POST', '/playing/terminate', { key: stream.key, reason: reason });
+    toast('Stopped.');
+    await redraw();
+  } catch (err) { failed(err); }
+}
+
 /* ---------- overview ---------- */
 
 views.overview = async function (main) {
   const draw = async () => {
-    const o = await api('GET', '/overview');
+    // Both at once: the page is one view of what this server is doing, and a
+    // second round trip would show the two halves a moment apart.
+    const [o, now] = await Promise.all([api('GET', '/overview'), api('GET', '/playing')]);
+    const streams = (now && now.playing) || [];
     document.getElementById('brand-name').textContent = o.name || 'Bask';
     const s = o.stats || {};
     const running = (o.jobs || []).filter((j) => j.state === 'running');
@@ -289,6 +357,7 @@ views.overview = async function (main) {
       ['Goroutines', num(o.goroutines)],
       ['Database', o.databaseMB + ' MB'],
       ['Artwork', o.artworkMB == null ? 'not cached' : size(o.artworkMB * 1048576) + ' of ' + size(o.artworkCapMB * 1048576)],
+      ['Playing now', count(o.playing || 0, 'stream')],
       ['Converting now', o.transcoding == null ? 'no ffmpeg' : num(o.transcoding) + ' stream' + (o.transcoding === 1 ? '' : 's')],
       ['Machine id', o.machineId],
     ];
@@ -304,6 +373,7 @@ views.overview = async function (main) {
       el('div', { class: 'head' }, el('div', {}, el('h1', { text: o.name || 'Bask Media Server' }),
         el('p', { class: 'muted', text: 'One binary, one database file.' })), passButtons()),
       el('div', { class: 'tiles' }, tiles),
+      playingCard(streams, draw),
       running.length
         ? el('div', {}, el('h2', { text: 'Running now' }), running.map((j) => jobLine(j, cancelJob)))
         : null,
@@ -315,8 +385,11 @@ views.overview = async function (main) {
         el('table', {}, el('tbody', {}, facts.map(([k, v]) =>
           el('tr', {}, el('th', { text: k }), el('td', { class: 'mono', text: String(v) })))))),
     );
-    if (running.length && !polling) poll(draw);
-    if (!running.length) stopPolling();
+    // Polled while anything is happening, which now includes somebody
+    // watching: a position that does not move is a status page nobody trusts.
+    const busy = running.length > 0 || streams.length > 0;
+    if (busy && !polling) poll(draw);
+    if (!busy) stopPolling();
   };
   await draw();
 };

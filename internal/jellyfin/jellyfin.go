@@ -30,6 +30,7 @@ import (
 
 	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/store"
 	"github.com/inknironapps/bask-media-server/internal/subtitles"
 )
@@ -67,6 +68,11 @@ type Server struct {
 	// answered with more than a guess. Nil means direct play: see
 	// [Server.negotiate].
 	Prober Prober
+
+	// Playing is the register of who is watching what. Nil means this
+	// presenter reports nothing, which is what it did before there was a
+	// page to report to — progress is still written either way.
+	Playing *nowplaying.Registry
 }
 
 // route is one pattern this presenter answers.

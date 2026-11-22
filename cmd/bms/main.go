@@ -33,6 +33,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/fingerprint"
 	"github.com/inknironapps/bask-media-server/internal/jellyfin"
 	"github.com/inknironapps/bask-media-server/internal/jobs"
+	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/plexapi"
 	"github.com/inknironapps/bask-media-server/internal/scan"
 	"github.com/inknironapps/bask-media-server/internal/store"
@@ -295,9 +296,21 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	// does is per request.
 	converter := &subtitles.Converter{FFmpeg: ffmpegPath(cfg.ffmpegPath)}
 
+	// One register of who is watching what, shared by every surface, because
+	// a household watching on three devices is one list and not three. It
+	// holds nothing across a restart by design: a stream is true only while
+	// it is happening.
+	watching := nowplaying.Options{}
+	if transcoder != nil {
+		// Assigned only when there is one, because a nil manager in an
+		// interface field is not nil and the register would call it.
+		watching.Transcoder = transcoder
+	}
+	playing := nowplaying.New(watching)
+
 	api := &plexapi.Server{
 		Store: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version,
-		Artwork: images, Subtitles: converter,
+		Artwork: images, Subtitles: converter, Playing: playing,
 	}
 
 	// One listener for every surface. The Plex-compatible API owns the root,
@@ -313,7 +326,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 			// client a server like this one can actually be reached by.
 			emby := &jellyfin.Server{
 				Store: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version,
-				Artwork: images, Subtitles: converter,
+				Artwork: images, Subtitles: converter, Playing: playing,
 			}
 			if transcoder != nil {
 				emby.Transcoder = transcoder
@@ -343,6 +356,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 				Version:   version,
 				Artwork:   images,
 				Started:   time.Now(),
+				Playing:   playing,
 			}
 			if transcoder != nil {
 				panel.Transcoding = transcoder.Sessions
@@ -355,6 +369,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 				Log:     log,
 				Name:    cfg.name,
 				Artwork: images,
+				Playing: playing,
 			}
 			if prober != nil {
 				viewing.Prober = prober

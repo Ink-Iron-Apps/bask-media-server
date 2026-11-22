@@ -23,6 +23,9 @@ and the Plex vocabulary never reaches storage or scanning.
   offer the choice
 - Hardware encoding where the machine has it: VAAPI, NVENC, QSV,
   VideoToolbox or AMF, proved on the machine before it is used
+- Now Playing in the admin interface: who is watching what, on which device,
+  how far in, and whether anything is being converted — with a button that
+  stops a stream and tells the client why
 - Posters, backdrops and summaries from TMDB, cached on disk under a byte cap
 - Skip Intro and Skip Credits: markers read from a file's chapters, and
   measured from the audio a season's episodes share where there are none

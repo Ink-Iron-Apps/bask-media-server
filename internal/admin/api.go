@@ -48,6 +48,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	if s.Transcoding != nil {
 		out["transcoding"] = s.Transcoding()
 	}
+	out["playing"] = s.playingCount()
 	if s.Artwork != nil {
 		if bytes, files, err := s.Artwork.Usage(); err == nil {
 			out["artworkMB"] = bytes >> 20

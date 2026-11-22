@@ -47,6 +47,13 @@ type container struct {
 	LibrarySectionID    int64  `xml:"librarySectionID,attr,omitempty" json:"librarySectionID,omitempty"`
 	LibrarySectionTitle string `xml:"librarySectionTitle,attr,omitempty" json:"librarySectionTitle,omitempty"`
 
+	// TerminationCode and TerminationText are how a timeline report is
+	// answered for a stream somebody has stopped. The code is what a client
+	// keys its behaviour off; the text is what it shows the person holding
+	// the remote.
+	TerminationCode int    `xml:"terminationCode,attr,omitempty" json:"terminationCode,omitempty"`
+	TerminationText string `xml:"terminationText,attr,omitempty" json:"terminationText,omitempty"`
+
 	// Directory holds sections, shows and seasons; Metadata holds movies and
 	// episodes. In XML the elements are named per entry type, which is what
 	// the Elem field on entry does.
@@ -345,6 +352,14 @@ func containerAttrs(c container) []xml.Attr {
 		add("librarySectionID", strconv.FormatInt(c.LibrarySectionID, 10))
 	}
 	add("librarySectionTitle", c.LibrarySectionTitle)
+	// The attributes here are written by hand rather than from the struct
+	// tags, so a field added to the container is invisible in XML until it is
+	// added to this list as well. That is how the termination went out as an
+	// empty MediaContainer the first time.
+	if c.TerminationCode > 0 {
+		add("terminationCode", strconv.Itoa(c.TerminationCode))
+	}
+	add("terminationText", c.TerminationText)
 	return attrs
 }
 

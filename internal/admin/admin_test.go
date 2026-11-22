@@ -20,6 +20,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/admin"
 	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/jobs"
+	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/plexapi"
 	"github.com/inknironapps/bask-media-server/internal/store"
 )
@@ -43,6 +44,8 @@ type harness struct {
 	adminToken  string
 	viewerToken string
 	adminID     int64
+
+	playing *nowplaying.Registry
 }
 
 func newHarness(t *testing.T) *harness {
@@ -77,8 +80,12 @@ func newHarness(t *testing.T) *harness {
 	runner := &jobs.Runner{DB: db, Provider: jobs.TMDBProvider(db, "", 2)}
 	t.Cleanup(runner.Shutdown)
 
-	api := &plexapi.Server{Store: db, Name: "Bask Media Server", MachineID: "machine-1", Version: "test"}
-	panel := &admin.Server{DB: db, Jobs: runner, Name: "Bask Media Server", MachineID: "machine-1", Version: "test"}
+	// One register shared by both surfaces, exactly as the server wires it:
+	// what a media client reports is what the interface can stop.
+	playing := nowplaying.New(nowplaying.Options{})
+
+	api := &plexapi.Server{Store: db, Name: "Bask Media Server", MachineID: "machine-1", Version: "test", Playing: playing}
+	panel := &admin.Server{DB: db, Jobs: runner, Name: "Bask Media Server", MachineID: "machine-1", Version: "test", Playing: playing}
 
 	mux := http.NewServeMux()
 	mux.Handle("/admin/", panel.Handler())
@@ -96,6 +103,7 @@ func newHarness(t *testing.T) *harness {
 		adminToken:  adminToken,
 		viewerToken: viewerToken,
 		adminID:     owner.ID,
+		playing:     playing,
 	}
 }
 

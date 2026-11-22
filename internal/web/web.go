@@ -25,6 +25,7 @@ import (
 
 	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/store"
 	"github.com/inknironapps/bask-media-server/internal/subtitles"
 )
@@ -73,6 +74,10 @@ type Server struct {
 	// SessionTTL overrides how long a sign-in lasts. Zero means the store's
 	// default.
 	SessionTTL time.Duration
+
+	// Playing is the register of who is watching what. Nil means this
+	// interface reports nothing; positions are written either way.
+	Playing *nowplaying.Registry
 }
 
 type credKey struct{}

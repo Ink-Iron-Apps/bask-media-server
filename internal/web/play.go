@@ -11,6 +11,7 @@ import (
 
 	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/ffprobe"
+	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/playback"
 	"github.com/inknironapps/bask-media-server/internal/serve"
 	"github.com/inknironapps/bask-media-server/internal/store"
@@ -70,6 +71,12 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "there is no file for that")
 		return
 	}
+	// A stream somebody stopped does not restart by pressing play again
+	// until the register has forgotten it.
+	key := streamKey(r, item.ID)
+	if s.refused(w, key) {
+		return
+	}
 
 	direct := map[string]any{
 		"mode":    string(playback.ModeDirect),
@@ -83,6 +90,7 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 	// ffprobe is a server that direct plays, which is what it did before any
 	// of this existed.
 	if s.Prober == nil {
+		s.playingDirect(r, key, item)
 		writeJSON(w, http.StatusOK, direct)
 		return
 	}
@@ -90,6 +98,7 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.logger().Warn("could not probe before playing; sending the file as it is",
 			"path", part.Path, "error", err)
+		s.playingDirect(r, key, item)
 		writeJSON(w, http.StatusOK, direct)
 		return
 	}
@@ -102,6 +111,7 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 	}
 	plan := playback.Decide(info, part.Container, caps)
 	if plan.Mode == playback.ModeDirect {
+		s.playingDirect(r, key, item)
 		writeJSON(w, http.StatusOK, direct)
 		return
 	}
@@ -139,6 +149,11 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.report(r, nowplaying.Stream{
+		Key: key, ItemID: item.ID, Title: item.Title, Duration: duration,
+		Mode: string(plan.Mode), Why: plan.Why, Session: session.ID,
+	})
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mode":    string(plan.Mode),
 		"label":   label(plan.Mode),
@@ -147,6 +162,14 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 		"session": session.ID,
 		"startMs": body.StartMS,
 		"hls":     true,
+	})
+}
+
+// playingDirect records a stream that is the file itself.
+func (s *Server) playingDirect(r *http.Request, key string, item *domain.Item) {
+	s.report(r, nowplaying.Stream{
+		Key: key, ItemID: item.ID, Title: item.Title,
+		Duration: item.Duration, Mode: string(playback.ModeDirect),
 	})
 }
 
@@ -245,11 +268,19 @@ func (s *Server) transcodeError(w http.ResponseWriter, what string, err error) {
 	}
 }
 
-// stopPlayback ends a transcoding session now rather than waiting for the
-// watchdog: the client knows it has stopped, and saying so frees a core.
+// stopPlayback ends a stream now rather than waiting for the watchdog: the
+// page knows it has stopped, and saying so frees a core and takes the viewer
+// off the status page at the moment they stopped.
+//
+// Sent for a direct play too, where there is no session to end — hence the
+// item in the query, which is what the register is keyed on. The literal
+// "direct" in the path is the page saying there was nothing to convert.
 func (s *Server) stopPlayback(w http.ResponseWriter, r *http.Request) {
-	if s.Transcoder != nil {
-		s.Transcoder.Stop(r.PathValue("session"))
+	if session := r.PathValue("session"); s.Transcoder != nil && session != "direct" {
+		s.Transcoder.Stop(session)
+	}
+	if item, err := strconv.ParseInt(r.URL.Query().Get("itemId"), 10, 64); err == nil && item > 0 {
+		s.forget(streamKey(r, item))
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

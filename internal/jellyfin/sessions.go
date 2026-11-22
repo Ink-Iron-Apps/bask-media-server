@@ -83,6 +83,15 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request, final bool) {
 		s.fail(w, "save progress", err)
 		return
 	}
+
+	// The same report, told twice: a row for where this account got to, and a
+	// line on the page for who is watching right now. One is permanent and
+	// one lasts as long as the stream does.
+	if final {
+		s.forget(streamKey(r, item.ID))
+	} else {
+		s.report(r, playingOf(r, item, body))
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

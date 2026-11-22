@@ -704,15 +704,19 @@ function detachAudioHls() {
 function closeAudio() {
   reportAudio();
   stopReporting();
-  if (queue.session) {
-    fetch(API + '/play/' + queue.session + '/stop', {
+  // Sent whether or not anything was being converted: the encoder is only
+  // half of what a stop ends, and the other half is the line on the status
+  // page saying somebody is listening to this.
+  const track = queue.tracks[queue.at];
+  if (track) {
+    fetch(API + '/play/' + (queue.session || 'direct') + '/stop?itemId=' + track.id, {
       method: 'POST',
       headers: { 'X-BMS-Web': '1' },
       credentials: 'same-origin',
       keepalive: true,
     }).catch(() => { /* the watchdog is the backstop */ });
-    queue.session = null;
   }
+  queue.session = null;
   detachAudioHls();
   audio.pause();
   audio.removeAttribute('src');
@@ -1230,16 +1234,15 @@ function closePlayer() {
   clearInterval(reportTimer);
   reportTimer = null;
 
-  // Tell the server it can stop converting. The watchdog would notice
-  // eventually; saying so frees a core now.
-  if (playing.session) {
-    fetch(API + '/play/' + playing.session + '/stop', {
-      method: 'POST',
-      headers: { 'X-BMS-Web': '1' },
-      credentials: 'same-origin',
-      keepalive: true,
-    }).catch(() => { /* the watchdog is the backstop */ });
-  }
+  // Tell the server the stream is over. The watchdog would notice eventually;
+  // saying so frees a core now, and takes this viewer off the status page at
+  // the moment they stopped watching rather than a minute later.
+  fetch(API + '/play/' + (playing.session || 'direct') + '/stop?itemId=' + playing.detail.item.id, {
+    method: 'POST',
+    headers: { 'X-BMS-Web': '1' },
+    credentials: 'same-origin',
+    keepalive: true,
+  }).catch(() => { /* the watchdog is the backstop */ });
   detachHls();
   fill(document.getElementById('player-subs'));
   video.pause();

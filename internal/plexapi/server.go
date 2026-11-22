@@ -13,6 +13,7 @@ import (
 
 	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/scan"
 	"github.com/inknironapps/bask-media-server/internal/serve"
 	"github.com/inknironapps/bask-media-server/internal/store"
@@ -43,6 +44,11 @@ type Server struct {
 	// Subtitles converts subtitle text on the way out. Optional: without one
 	// this server still serves a sidecar as it is and SubRip as WebVTT.
 	Subtitles *subtitles.Converter
+
+	// Playing is the register of who is watching what. Nil means this
+	// presenter reports nothing and nothing here can be terminated;
+	// playback positions are written either way.
+	Playing *nowplaying.Registry
 }
 
 type credKey struct{}
@@ -452,6 +458,31 @@ func (s *Server) timeline(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "save progress", err)
 		return
 	}
+
+	key := streamKey(r, id)
+	switch {
+	case q.Get("state") == "stopped":
+		s.forget(key)
+	default:
+		s.report(r, nowplaying.Stream{
+			Key: key, ItemID: id, Position: p.Offset, Duration: p.Duration,
+			Paused: q.Get("state") == "paused",
+		})
+	}
+
+	// Plex's own way of telling a client it has been stopped. The client
+	// shows the sentence and stops, which is a better end to somebody's
+	// evening than a player that simply stalls — and it costs nothing,
+	// because the client was going to make this request anyway.
+	if s.Playing != nil {
+		if reason, stopping := s.Playing.Stopping(key); stopping {
+			write(w, r, container{
+				TerminationCode: plexTerminationStopped,
+				TerminationText: reason,
+			})
+			return
+		}
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -509,6 +540,18 @@ func (s *Server) streamPart(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "read part", err)
 		return
 	}
+
+	// Where stopping a direct play actually happens: nothing is being
+	// encoded, so the only thing this server controls is whether it keeps
+	// handing over the file.
+	key := streamKey(r, p.ItemID)
+	if s.refused(w, key) {
+		return
+	}
+	// Reported from here as well as from the timeline, so a client appears on
+	// the page as soon as it starts reading rather than when it first says
+	// where it has got to.
+	s.report(r, nowplaying.Stream{Key: key, ItemID: p.ItemID})
 
 	if err := serve.File(w, r, p.Path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
