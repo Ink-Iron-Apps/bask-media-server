@@ -1124,7 +1124,7 @@ async function showTokens(user) {
 /* ---------- settings ---------- */
 
 views.settings = async function (main) {
-  const settings = await api('GET', '/settings');
+  const [settings, backups] = await Promise.all([api('GET', '/settings'), api('GET', '/backups')]);
   const name = el('input', { id: 'server-name', value: settings.name || '' });
   const key = el('input', { id: 'tmdb-key', type: 'password', placeholder: settings.tmdbKeyStored ? 'stored' : 'not set', spellcheck: 'false' });
 
@@ -1200,10 +1200,63 @@ views.settings = async function (main) {
       el('h2', { text: 'Tools found on this machine' }),
       el('table', {}, el('tbody', {}, tools)),
       el('p', { class: 'muted', text: 'Both are optional. Without them the library still scans, browses and plays; it has no durations, chapters or detected intros.' })),
+    backupCard(backups),
     el('div', { class: 'card' },
       el('h2', { text: 'This sign-in' }),
       el('p', { class: 'muted', text: 'A browser session lasts ' + settings.sessionDays + ' days and is separate from the tokens clients hold, so signing out here signs nothing else out.' })));
 };
+
+// backupCard is the database's copies: what there is, and one button.
+//
+// The database is the one thing on this server that cannot be rebuilt — the
+// media is on disk and a scan finds it again, while watched state, resume
+// positions, playlists and tokens exist nowhere else.
+function backupCard(backups) {
+  const list = (backups && backups.backups) || [];
+  const rows = list.map((backup) => el('tr', {},
+    el('th', { class: 'mono', text: backup.name }),
+    el('td', { class: 'muted', text: when(backup.taken) }),
+    el('td', { class: 'muted', text: backup.sizeMB + ' MB' }),
+    el('td', { class: 'right' }, el('div', { class: 'row actions' },
+      el('a', { class: 'button', href: '/admin/api/backups/' + encodeURIComponent(backup.name), text: 'Download' }),
+      el('button', {
+        class: 'danger',
+        text: 'Remove',
+        on: {
+          click: async () => {
+            if (!confirm('Remove ' + backup.name + '?\n\nThe database itself is untouched. This deletes one copy of it.')) return;
+            try {
+              await api('DELETE', '/backups/' + encodeURIComponent(backup.name));
+              toast('Removed.');
+              render();
+            } catch (err) { failed(err); }
+          },
+        },
+      })))));
+
+  return el('div', { class: 'card' },
+    el('h2', { text: 'Backups' }),
+    el('p', { class: 'muted', text: 'Copies of the database, written while the server runs. '
+      + 'They go in ' + ((backups && backups.directory) || 'a folder beside the database')
+      + ', and the newest ' + ((backups && backups.keep) || 7) + ' are kept.' }),
+    el('div', { class: 'row' }, el('button', {
+      class: 'primary',
+      text: 'Back up now',
+      on: {
+        click: async () => {
+          try {
+            await api('POST', '/backups');
+            toast('Backing up.');
+            location.hash = '#/jobs';
+          } catch (err) { failed(err); }
+        },
+      },
+    })),
+    rows.length
+      ? el('table', {}, el('tbody', {}, rows))
+      : el('p', { class: 'muted', text: 'Nothing has been backed up yet.' }),
+    el('p', { class: 'muted', text: 'A copy on the same disk protects against a mistake, not against the disk. Download one somewhere else now and then.' }));
+}
 
 /* ---------- start ---------- */
 

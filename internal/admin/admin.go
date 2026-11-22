@@ -78,6 +78,12 @@ type Server struct {
 	// shows no streams and nothing can be stopped from here.
 	Playing *nowplaying.Registry
 
+	// BackupDir is where database copies are written and read back, and
+	// KeepBackups how many are kept. They mirror what the job runner was
+	// given, so the page lists the directory the passes actually write to.
+	BackupDir   string
+	KeepBackups int
+
 	// Started is when the process came up, for the uptime on the status page.
 	// Zero means the first request sets it.
 	Started time.Time
@@ -152,6 +158,11 @@ func (s *Server) Handler() http.Handler {
 	authed("POST /admin/api/items/{id}/revert", s.revertItem)
 	authed("GET /admin/api/items/{id}/candidates", s.candidates)
 	authed("POST /admin/api/items/{id}/match", s.rematchItem)
+
+	authed("GET /admin/api/backups", s.listBackups)
+	authed("POST /admin/api/backups", s.startBackup)
+	authed("GET /admin/api/backups/{name}", s.downloadBackup)
+	authed("DELETE /admin/api/backups/{name}", s.deleteBackup)
 
 	authed("GET /admin/api/settings", s.readSettings)
 	authed("PATCH /admin/api/settings", s.writeSettings)

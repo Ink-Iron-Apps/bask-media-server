@@ -51,6 +51,10 @@ type harness struct {
 	// put a provider in front of it: the real one resolves a TMDB key and a
 	// test has none.
 	runner *jobs.Runner
+
+	// panel is the interface itself, exposed so a test can point it at a
+	// directory of its own.
+	panel *admin.Server
 }
 
 func newHarness(t *testing.T) *harness {
@@ -110,6 +114,7 @@ func newHarness(t *testing.T) *harness {
 		adminID:     owner.ID,
 		playing:     playing,
 		runner:      runner,
+		panel:       panel,
 	}
 }
 

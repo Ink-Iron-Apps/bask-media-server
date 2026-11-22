@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -65,6 +66,8 @@ const (
 	KindEnrich Kind = "enrich"
 	// KindMarkers finds intros and credits by comparing a season's audio.
 	KindMarkers Kind = "markers"
+	// KindBackup writes a complete copy of the database beside it.
+	KindBackup Kind = "backup"
 )
 
 // State is where a job got to.
@@ -129,6 +132,13 @@ type Runner struct {
 	// Printer fingerprints audio for marker detection. Nil means no ffmpeg,
 	// and a marker job refuses rather than pretending to run.
 	Printer detect.Printer
+
+	// BackupDir is where database copies are written. Empty means a folder
+	// beside the database.
+	BackupDir string
+
+	// KeepBackups is how many copies to keep. Zero means seven.
+	KeepBackups int
 
 	// Provider is resolved when an enrichment job starts rather than held,
 	// because the key can be set from the admin interface after the server
@@ -253,6 +263,9 @@ func (r *Runner) prepare(ctx context.Context, kind Kind, sectionID int64) (func(
 			return nil, "", fmt.Errorf("%w: ffmpeg was not found, so audio cannot be read", ErrUnavailable)
 		}
 		return r.markers, "", nil
+
+	case KindBackup:
+		return r.backup, filepath.Base(r.backupDir()), nil
 	}
 	return nil, "", fmt.Errorf("unknown job kind %q", kind)
 }
@@ -300,6 +313,54 @@ func (r *Runner) enrich(ctx context.Context, rep report, provider metadata.Provi
 	rep(fmt.Sprintf("%d matched, %d not found, %d images", result.Matched, result.Unmatched, result.Images),
 		result.Matched+result.Unmatched, max(total, result.Matched+result.Unmatched))
 	return nil
+}
+
+// backup writes a copy of the database and prunes the old ones.
+//
+// A job rather than a handler that does the work itself, so it shows up in
+// Activity with everything else, can be cancelled, and cannot be started
+// twice at once — a second VACUUM INTO while the first is still writing is
+// two copies of a large file at the same time on a machine that may not have
+// room for one.
+func (r *Runner) backup(ctx context.Context, rep report) error {
+	dir := r.backupDir()
+	path := filepath.Join(dir, store.BackupName(time.Now()))
+	rep("writing "+filepath.Base(path), 0, 1)
+
+	size, err := r.DB.Backup(ctx, path)
+	if err != nil {
+		return err
+	}
+	note := fmt.Sprintf("%s · %d MB", filepath.Base(path), size>>20)
+
+	if removed, err := store.PruneBackups(dir, r.keepBackups()); err != nil {
+		// The copy is written and good; failing the job over the tidying
+		// would say otherwise.
+		r.logger().Warn("could not remove old backups", "dir", dir, "error", err)
+	} else if removed > 0 {
+		note += fmt.Sprintf(" · %d older removed", removed)
+	}
+
+	rep(note, 1, 1)
+	return nil
+}
+
+// backupDir is where copies go: what the operator configured, or beside the
+// database.
+func (r *Runner) backupDir() string {
+	if r.BackupDir != "" {
+		return r.BackupDir
+	}
+	return store.DefaultBackupDir(r.DB.Path())
+}
+
+// keepBackups is how many copies are kept. Zero means the default of seven,
+// which is a week of nightly copies.
+func (r *Runner) keepBackups() int {
+	if r.KeepBackups > 0 {
+		return r.KeepBackups
+	}
+	return 7
 }
 
 func (r *Runner) markers(ctx context.Context, rep report) error {

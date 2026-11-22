@@ -80,6 +80,9 @@ func main() {
 		artworkDir  = flag.String("artwork", "", "where to cache posters and backdrops (default: beside the database)")
 		artworkMB   = flag.Int64("artwork-cache-mb", 512, "cap on the artwork cache in MiB")
 		tmdbKey     = flag.String("tmdb-key", "", "TMDB API key or v4 read token; falls back to BMS_TMDB_API_KEY")
+		backupEvery = flag.Duration("backup-every", 24*time.Hour, "how often to copy the database; 0 turns it off")
+		backupDir   = flag.String("backup-dir", "", "where to write database copies (default: a folder beside the database)")
+		keepBackups = flag.Int("keep-backups", 7, "how many database copies to keep")
 		sections    sectionFlag
 	)
 	flag.Var(&sections, "section", `add a library on first run, as "Title:movies|shows|music|photos:/path" (repeatable)`)
@@ -101,24 +104,27 @@ func main() {
 	}
 
 	if err := run(context.Background(), log, runConfig{
-		dbPath:     *dbPath,
-		addr:       *addr,
-		name:       *name,
-		scanNow:    *scanNow,
-		probe:      *probe,
-		enrichNow:  *enrichNow,
-		detectNow:  *detectNow,
-		adminUI:    *adminUI,
-		webUI:      *webUI,
-		jellyfin:   *jellyfinAPI,
-		transcodes: *transcodes,
-		accel:      *accel,
-		ffmpegPath: *ffmpegPath,
-		detectJobs: *detectJobs,
-		artworkDir: *artworkDir,
-		artworkMB:  *artworkMB,
-		tmdbKey:    key,
-		sections:   sections.specs,
+		dbPath:      *dbPath,
+		addr:        *addr,
+		name:        *name,
+		scanNow:     *scanNow,
+		probe:       *probe,
+		enrichNow:   *enrichNow,
+		detectNow:   *detectNow,
+		adminUI:     *adminUI,
+		webUI:       *webUI,
+		jellyfin:    *jellyfinAPI,
+		transcodes:  *transcodes,
+		accel:       *accel,
+		ffmpegPath:  *ffmpegPath,
+		detectJobs:  *detectJobs,
+		artworkDir:  *artworkDir,
+		artworkMB:   *artworkMB,
+		tmdbKey:     key,
+		backupEvery: *backupEvery,
+		backupDir:   *backupDir,
+		keepBackups: *keepBackups,
+		sections:    sections.specs,
 	}); err != nil {
 		log.Error("bms stopped", "error", err)
 		os.Exit(1)
@@ -143,7 +149,17 @@ type runConfig struct {
 	artworkDir string
 	artworkMB  int64
 	tmdbKey    string
-	sections   []string
+
+	// backupEvery is how often the database is copied, backupDir where the
+	// copies go and keepBackups how many are kept. The copy is taken while
+	// the server runs — see store.Backup — so there is no reason not to do
+	// it by default: the one thing here that cannot be rebuilt from the files
+	// on disk is this database.
+	backupEvery time.Duration
+	backupDir   string
+	keepBackups int
+
+	sections []string
 }
 
 func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
@@ -236,13 +252,15 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	}
 
 	runner := &jobs.Runner{
-		DB:       db,
-		Log:      log,
-		Prober:   prober,
-		Printer:  printer,
-		Provider: jobs.TMDBProvider(db, cfg.tmdbKey, 4),
-		Artwork:  images,
-		Workers:  cfg.detectJobs,
+		DB:          db,
+		Log:         log,
+		Prober:      prober,
+		Printer:     printer,
+		Provider:    jobs.TMDBProvider(db, cfg.tmdbKey, 4),
+		Artwork:     images,
+		Workers:     cfg.detectJobs,
+		BackupDir:   cfg.backupDir,
+		KeepBackups: cfg.keepBackups,
 	}
 	// Nothing started here outlives the process: rule 4 of the resource
 	// budget, and the reason a job is cancellable in the first place.
@@ -357,6 +375,10 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 				Artwork:   images,
 				Started:   time.Now(),
 				Playing:   playing,
+				// The same directory the passes write to, so the page lists
+				// what is actually there rather than where it would guess.
+				BackupDir:   cfg.backupDir,
+				KeepBackups: cfg.keepBackups,
 			}
 			if transcoder != nil {
 				panel.Transcoding = transcoder.Sessions
@@ -406,6 +428,11 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	}()
 
 	go reportMemory(ctx, log)
+	if cfg.backupEvery > 0 {
+		log.Info("the database will be copied on a timer",
+			"every", cfg.backupEvery, "keep", cfg.keepBackups)
+		go backupOnSchedule(ctx, runner, cfg.backupEvery, log)
+	}
 
 	select {
 	case err := <-errs:
@@ -485,6 +512,34 @@ func addSections(ctx context.Context, db *store.DB, log *slog.Logger, specs []st
 		log.Info("added section", "title", title, "kind", string(kind), "root", root)
 	}
 	return nil
+}
+
+// backupOnSchedule copies the database on a timer.
+//
+// Through the job runner rather than by calling the store directly, so a
+// scheduled copy is the same thing as one somebody pressed the button for:
+// it appears in Activity, it can be cancelled, and two of them cannot run at
+// once — a second VACUUM INTO while the first is still writing is two copies
+// of a large file on a machine that may not have room for one.
+//
+// The first copy is taken one interval in, not at startup: a server that is
+// restarted repeatedly while somebody is setting it up should not write a
+// backup each time.
+func backupOnSchedule(ctx context.Context, runner *jobs.Runner, every time.Duration, log *slog.Logger) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := runner.Start(ctx, jobs.KindBackup, 0); err != nil {
+				// Busy means a pass is already running, which is not a
+				// failure: the next tick will do it.
+				log.Warn("could not start the scheduled backup", "error", err)
+			}
+		}
+	}
 }
 
 // reportMemory logs resident memory hourly.

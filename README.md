@@ -36,6 +36,9 @@ and the Plex vocabulary never reaches storage or scanning.
   scan recognises it by
 - Skip Intro and Skip Credits: markers read from a file's chapters, and
   measured from the audio a season's episodes share where there are none
+- Backups of the database, taken while the server runs — nightly by default,
+  on a button in the interface, kept to the newest seven and downloadable, so
+  the one thing here that a scan cannot rebuild has copies
 - An admin web interface at `/admin`: libraries, scan and detection progress,
   accounts and tokens, served from the binary with nothing to install
 - A web interface for watching at `/web`: libraries, search, Continue
