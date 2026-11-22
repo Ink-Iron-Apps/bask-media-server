@@ -2,6 +2,7 @@ package enrich_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -61,6 +62,17 @@ func newFakeTMDB(t *testing.T) *fakeTMDB {
 	mux.HandleFunc("/tv/77/season/1/episode/1", func(w http.ResponseWriter, r *http.Request) {
 		fake.searches++
 		fmt.Fprint(w, `{"id":9001,"name":"Part 1","overview":"The first part.","air_date":"2002-05-12","still_path":"/still.jpg"}`)
+	})
+	// The detail endpoints, which are how a correction fetches the entry
+	// somebody picked rather than searching again and getting the same
+	// ranking that was wrong the first time.
+	mux.HandleFunc("/movie/1234", func(w http.ResponseWriter, r *http.Request) {
+		fake.searches++
+		fmt.Fprint(w, `{"id":1234,"title":"The Right Film","overview":"The right one.","release_date":"1993-01-15","poster_path":"/p.jpg","backdrop_path":"/b.jpg"}`)
+	})
+	mux.HandleFunc("/tv/77", func(w http.ResponseWriter, r *http.Request) {
+		fake.searches++
+		fmt.Fprint(w, `{"id":77,"name":"The Right Series","overview":"The right one.","first_air_date":"2002-05-12","poster_path":"/show.jpg"}`)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Everything else is a miss, which is how a provider says an episode
@@ -376,4 +388,54 @@ func (r rewriting) swap(match metadata.Match) metadata.Match {
 		match.BackdropURL = r.host + "/backdrop.jpg"
 	}
 	return match
+}
+
+// The provider that enriches a library is also the one that offers the
+// entries it did not pick, which is what a correction chooses from.
+func TestTheProviderOffersItsOtherEntries(t *testing.T) {
+	newFakeTMDB(t)
+	provider, err := tmdb.New("test-key", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matcher, ok := any(provider).(metadata.Matcher)
+	if !ok {
+		t.Fatal("the provider cannot be asked for its other entries, so no match can be corrected")
+	}
+
+	found, err := matcher.MovieCandidates(context.Background(), "Blue", 1993)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) == 0 {
+		t.Fatal("the provider offered nothing to choose from")
+	}
+	if found[0].ProviderID == "" {
+		t.Fatalf("a candidate with no id cannot be chosen: %+v", found[0])
+	}
+	// And the entry it names can be fetched exactly, by that id.
+	match, err := matcher.MovieByID(context.Background(), found[0].ProviderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if match.Title != "The Right Film" || match.Year != 1993 {
+		t.Fatalf("the detail endpoint was not read: %+v", match)
+	}
+
+	series, err := matcher.ShowByID(context.Background(), "77")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if series.Title != "The Right Series" {
+		t.Fatalf("series = %+v", series)
+	}
+
+	// An id the provider has nothing under is a no-match rather than a
+	// failure, and an id that is not a number is never put in a path.
+	if _, err := matcher.MovieByID(context.Background(), "9999"); !errors.Is(err, metadata.ErrNoMatch) {
+		t.Fatalf("an unknown id gave %v", err)
+	}
+	if _, err := matcher.MovieByID(context.Background(), "../../etc/passwd"); !errors.Is(err, metadata.ErrNoMatch) {
+		t.Fatalf("an id that is not a number gave %v", err)
+	}
 }

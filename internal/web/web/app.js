@@ -462,6 +462,15 @@ async function itemView(id) {
   actions.append(starButton(item));
   if (parts.length) actions.append(addToPlaylistButton(item));
 
+  // The trailer goes beside Play, because that is what somebody deciding
+  // whether to watch something is looking for; everything else goes in a
+  // shelf below.
+  const bonus = detail.extras || [];
+  const trailer = bonus.find((extra) => extra.sort === 'trailer');
+  if (trailer) {
+    actions.append(el('button', { text: 'Trailer', on: { click: () => playExtra(trailer.item.id) } }));
+  }
+
   hero.append(el('div', { class: 'over' },
     el('h1', { text: item.title }),
     meta ? el('div', { class: 'meta', text: meta }) : null,
@@ -471,6 +480,7 @@ async function itemView(id) {
   const episodes = children.filter((child) => child.kind === 'episode');
   fill(main(),
     hero,
+    extrasShelf(bonus),
     children.length && !episodes.length ? el('h2', { text: 'Seasons' }) : null,
     children.length && !episodes.length ? grid(children) : null,
     episodes.length ? el('h2', { text: episodes.length + (episodes.length === 1 ? ' episode' : ' episodes') }) : null,
@@ -483,6 +493,35 @@ async function itemView(id) {
       el('div', { text: episode.title }),
       el('div', { class: 'sum', text: episode.summary || '' })),
     el('span', { class: 'muted', text: episode.watched ? 'watched' : (episode.offsetMs ? clock(episode.offsetMs) : runtime(episode.durationMs)) })))) : null);
+}
+
+// extrasShelf is the trailers, featurettes and deleted scenes under an item.
+//
+// Labelled by sort rather than grouped under headings: a film has three or
+// four of these, and three headings over one row each is more page furniture
+// than content.
+function extrasShelf(bonus) {
+  if (!bonus.length) return null;
+  return el('div', {},
+    el('h2', { text: bonus.length === 1 ? 'Extra' : 'Extras' }),
+    el('div', { class: 'episodes' }, bonus.map((extra) => el('button', {
+      class: 'episode',
+      on: { click: () => playExtra(extra.item.id) },
+    },
+    el('span', { class: 'n', text: '▶' }),
+    el('span', { class: 'body' },
+      el('div', { text: extra.item.title }),
+      el('div', { class: 'sum', text: extra.label })),
+    el('span', { class: 'muted', text: runtime(extra.item.durationMs) })))));
+}
+
+// playExtra plays one, by asking for it the way anything else is asked for:
+// an extra is an item with a file, so the ordinary player handles it.
+async function playExtra(id) {
+  try {
+    const detail = await api('GET', '/items/' + id);
+    play(detail, 0);
+  } catch (err) { failed(err); }
 }
 
 /* ---------- music ---------- */

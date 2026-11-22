@@ -21,12 +21,19 @@ and the Plex vocabulary never reaches storage or scanning.
 - Favourites, playlists and collections, on both APIs and in the browser
 - Two cuts of a film as one film with two versions, named so a client can
   offer the choice
+- Trailers and extras: the `Trailers/`, `Featurettes/` and `Deleted Scenes/`
+  folders and the `-trailer` filenames, offered beside what they belong to on
+  all three surfaces instead of becoming rows in the library
 - Hardware encoding where the machine has it: VAAPI, NVENC, QSV,
   VideoToolbox or AMF, proved on the machine before it is used
 - Now Playing in the admin interface: who is watching what, on which device,
   how far in, and whether anything is being converted — with a button that
   stops a stream and tells the client why
 - Posters, backdrops and summaries from TMDB, cached on disk under a byte cap
+- Fixing what the provider got wrong: correct a title, year or summary by
+  hand, or pick the right entry out of the provider's list. A corrected item
+  is left alone by later metadata passes, and the filename is still what a
+  scan recognises it by
 - Skip Intro and Skip Credits: markers read from a file's chapters, and
   measured from the audio a season's episodes share where there are none
 - An admin web interface at `/admin`: libraries, scan and detection progress,

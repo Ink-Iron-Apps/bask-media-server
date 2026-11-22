@@ -108,6 +108,12 @@ func (s *Server) routes() []route {
 		{"GET /Items/{item}/Images/{type}", s.image, false},
 		{"GET /Items/{item}/PlaybackInfo", s.playbackInfo, false},
 		{"POST /Items/{item}/PlaybackInfo", s.playbackInfo, false},
+		// Extras, at both spellings Jellyfin's own clients use. These two
+		// answered an empty list until there was something to put in it.
+		{"GET /Users/{user}/Items/{item}/SpecialFeatures", s.specialFeatures, false},
+		{"GET /Items/{item}/SpecialFeatures", s.specialFeatures, false},
+		{"GET /Users/{user}/Items/{item}/LocalTrailers", s.localTrailers, false},
+		{"GET /Items/{item}/LocalTrailers", s.localTrailers, false},
 		{"GET /Shows/{series}/Seasons", s.seasons, false},
 		{"GET /Shows/{series}/Episodes", s.episodes, false},
 		{"GET /Shows/NextUp", s.nextUp, false},
@@ -170,11 +176,9 @@ func (s *Server) routes() []route {
 		{"POST /Users/{user}/FavoriteItems/{item}", s.addFavourite, false},
 		{"DELETE /Users/{user}/FavoriteItems/{item}", s.dropFavourite, false},
 
-		// Answered so a client's shelves resolve rather than error. BMS has
-		// no trailers and no extras, and says so with an empty answer instead
-		// of a 404 — a missing route reads as a broken server.
-		{"GET /Items/{item}/LocalTrailers", s.emptyList, false},
-		{"GET /Items/{item}/SpecialFeatures", s.emptyList, false},
+		// Answered so a client's shelves resolve rather than error. A
+		// missing route reads as a broken server, and there is nothing here
+		// that looks like "similar to this".
 		{"GET /Items/{item}/Similar", s.emptyItems, false},
 		{"GET /DisplayPreferences/{id}", s.displayPreferences, false},
 		{"POST /DisplayPreferences/{id}", s.noContent, false},

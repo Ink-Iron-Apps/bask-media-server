@@ -423,6 +423,41 @@ var migrations = []string{
 	// describes — two editions are one film with two files, which is the
 	// whole point of reading it.
 	`ALTER TABLE parts ADD COLUMN edition TEXT NOT NULL DEFAULT ''`,
+
+	// What the scan found, kept beside what is displayed, so a title can be
+	// corrected by hand without the next scan undoing it.
+	//
+	// An item's identity is the title and year the filename gave, which is
+	// what makes a rescan idempotent — so editing the title in place would
+	// make the next scan fail to recognise the row and insert a second one
+	// beside it, with the file moving to the new row and the correction
+	// orphaned. Holding the scanned values separately costs two columns and
+	// a rebuilt index, and nothing in the read path changes: title is still
+	// title.
+	`ALTER TABLE items ADD COLUMN scanned_title TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE items ADD COLUMN scanned_year INTEGER NOT NULL DEFAULT 0`,
+	`UPDATE items SET scanned_title = title, scanned_year = year`,
+	`DROP INDEX items_identity`,
+	`CREATE UNIQUE INDEX items_identity ON items(section_id, kind, IFNULL(parent_id, 0), scanned_title, scanned_year, idx, disc)`,
+
+	// Which sort of extra an item is: a trailer, a deleted scene, a
+	// featurette. Empty for everything that is not one.
+	//
+	// On the item rather than the part because an extra is a thing with its
+	// own title, duration and position beside what it belongs to — and
+	// because every listing has to leave extras out, which is a predicate on
+	// a column and not a join.
+	`ALTER TABLE items ADD COLUMN extra TEXT NOT NULL DEFAULT ''`,
+	`CREATE INDEX items_extras ON items(parent_id, extra)`,
+
+	// Whether somebody has set this item's details by hand.
+	//
+	// A locked item is left alone by the enrichment pass, because a provider
+	// that overwrites a correction every night is worse than no provider.
+	// One flag for the item rather than one per field: the thing a person
+	// does here is fix an item, and a half-locked row is a rule nobody can
+	// predict from the page.
+	`ALTER TABLE items ADD COLUMN locked INTEGER NOT NULL DEFAULT 0`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

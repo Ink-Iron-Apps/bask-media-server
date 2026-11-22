@@ -48,3 +48,25 @@ type Provider interface {
 	// Episode fetches one episode of a show the provider has already matched.
 	Episode(ctx context.Context, showProviderID string, season, number int) (Match, error)
 }
+
+// Matcher is a provider that can also be asked for the matches it did not
+// pick, and for one match by its id.
+//
+// Separate from [Provider] on purpose. Enrichment needs one answer and should
+// not be able to ask for a list; correcting a wrong match needs the list, and
+// needs to fetch the entry somebody chose from it. A provider that implements
+// only Provider still enriches a library — correcting a match by hand is
+// simply unavailable, which the interface reports rather than hiding.
+type Matcher interface {
+	// MovieCandidates and ShowCandidates are what the provider found,
+	// ordered as it ranked them. Empty rather than ErrNoMatch when there is
+	// nothing: a search with no results is an answer, not a failure.
+	MovieCandidates(ctx context.Context, title string, year int) ([]Match, error)
+	ShowCandidates(ctx context.Context, title string, year int) ([]Match, error)
+
+	// MovieByID and ShowByID fetch one entry the provider already named,
+	// which is what makes a chosen correction exact rather than another
+	// search that might rank differently.
+	MovieByID(ctx context.Context, providerID string) (Match, error)
+	ShowByID(ctx context.Context, providerID string) (Match, error)
+}

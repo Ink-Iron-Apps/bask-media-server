@@ -101,6 +101,11 @@ type found struct {
 	movie *Movie
 	ep    *Episode
 
+	// extra is set when this file belongs to something rather than being it:
+	// a trailer, a featurette. movie or ep then names what it belongs to
+	// rather than what it is.
+	extra *Extra
+
 	// siblings are the subtitle files in the same folder, which is where
 	// every tool in this space puts them. Collected per directory while
 	// walking so that matching one to a film is a string comparison rather
@@ -254,6 +259,17 @@ func (s *Scanner) walk(ctx context.Context, section domain.Section, out chan<- f
 			}
 			switch section.Kind {
 			case domain.SectionMovies:
+				// Extras first: a file in "Trailers" is a trailer whatever
+				// its name reads as, and reading it as a film is what put
+				// teasers in the films row.
+				if extra, ok := ParseExtra(root, path); ok {
+					parent := ParseMovie(extra.Parent)
+					if parent.Title == "" {
+						return nil
+					}
+					f.kind, f.extra, f.movie = domain.KindExtra, &extra, &parent
+					break
+				}
 				m := ParseMovie(path)
 				if m.Title == "" {
 					return nil
@@ -261,6 +277,22 @@ func (s *Scanner) walk(ctx context.Context, section domain.Section, out chan<- f
 				f.kind, f.movie = domain.KindMovie, &m
 				f.siblings = subtitles[filepath.Dir(path)]
 			case domain.SectionShows:
+				if extra, ok := ParseExtra(root, path); ok {
+					// An extra named after an episode belongs to that
+					// episode; anything else under a series belongs to the
+					// series.
+					if ep, named := ParseEpisode(root, extra.Parent); named {
+						f.kind, f.extra, f.ep = domain.KindExtra, &extra, &ep
+						break
+					}
+					show, year, named := ShowOf(root, path)
+					if !named {
+						return nil
+					}
+					f.kind, f.extra = domain.KindExtra, &extra
+					f.ep = &Episode{Show: show, ShowYear: year}
+					break
+				}
 				ep, ok := ParseEpisode(root, path)
 				if !ok {
 					return nil
@@ -380,6 +412,24 @@ func (s *Scanner) toFound(ctx context.Context, section domain.Section, f found) 
 		Subtitles:  subtitles,
 	}
 	switch {
+	case f.extra != nil:
+		// An extra of a film or of a series: the title and sort are its own,
+		// and movie or ep names what it hangs off.
+		out.Kind, out.Extra = domain.KindExtra, f.extra.Kind
+		out.Title = f.extra.Title
+		if f.movie != nil {
+			out.Movie, out.MovieYear = f.movie.Title, f.movie.Year
+		}
+		if f.ep != nil {
+			out.Show, out.ShowYear = f.ep.Show, f.ep.ShowYear
+			out.SeasonNum, out.EpisodeNum = f.ep.Season, f.ep.Number
+			// The episode's own title, so the row this hangs off is the one
+			// the episode's file will write rather than a second one.
+			out.ParentTitle = f.ep.Title
+		}
+		if out.Movie == "" && out.Show == "" {
+			return store.Found{}, false
+		}
 	case f.movie != nil:
 		out.Kind = domain.KindMovie
 		out.Title, out.Year = f.movie.Title, f.movie.Year

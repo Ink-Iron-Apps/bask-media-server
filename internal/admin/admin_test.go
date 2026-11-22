@@ -46,6 +46,11 @@ type harness struct {
 	adminID     int64
 
 	playing *nowplaying.Registry
+
+	// runner is the job runner the interface drives, exposed so a test can
+	// put a provider in front of it: the real one resolves a TMDB key and a
+	// test has none.
+	runner *jobs.Runner
 }
 
 func newHarness(t *testing.T) *harness {
@@ -104,6 +109,7 @@ func newHarness(t *testing.T) *harness {
 		viewerToken: viewerToken,
 		adminID:     owner.ID,
 		playing:     playing,
+		runner:      runner,
 	}
 }
 

@@ -79,6 +79,10 @@ type entry struct {
 	UUID     string `xml:"uuid,attr,omitempty" json:"uuid,omitempty"`
 
 	// Item fields.
+	// Subtype is which sort of clip an extra is: trailer, featurette,
+	// deleted. Only ever set on an extra, where Type is "clip".
+	Subtype string `xml:"subtype,attr,omitempty" json:"subtype,omitempty"`
+
 	RatingKey            string `xml:"ratingKey,attr,omitempty" json:"ratingKey,omitempty"`
 	ParentRatingKey      string `xml:"parentRatingKey,attr,omitempty" json:"parentRatingKey,omitempty"`
 	GrandparentRatingKey string `xml:"grandparentRatingKey,attr,omitempty" json:"grandparentRatingKey,omitempty"`
@@ -377,6 +381,11 @@ func elementFor(kind domain.Kind) string {
 		return "Track"
 	case domain.KindPhoto:
 		return "Photo"
+	case domain.KindExtra:
+		// A Video, like a film: an extra is something a client plays. What
+		// makes it an extra is the type and the subtype on the row, which
+		// the extras route writes.
+		return "Video"
 	default:
 		return "Video"
 	}

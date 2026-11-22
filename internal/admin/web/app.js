@@ -578,6 +578,159 @@ function editSection(sec) {
   fill(main,el('div', { class: 'head' }, el('h1', { text: 'Libraries' })), card);
 }
 
+/* ---------- metadata ---------- */
+
+// The metadata view: find something, correct what the provider got wrong.
+//
+// A search box rather than a browser, because this is the page somebody opens
+// having already seen the wrong poster on their television — they know what
+// they are looking for, and a tree of every library is in the way of it.
+views.metadata = async function (main) {
+  const box = el('input', { placeholder: 'A title', spellcheck: 'false' });
+  const results = el('div', {});
+
+  const search = async () => {
+    const term = box.value.trim();
+    if (term.length < 2) {
+      fill(results, el('p', { class: 'muted', text: 'Two letters or more.' }));
+      return;
+    }
+    try {
+      const found = (await api('GET', '/items?q=' + encodeURIComponent(term))) || [];
+      fill(results, found.length
+        ? el('table', {}, el('tbody', {}, found.map((item) => el('tr', {},
+          el('td', {}, el('strong', { text: item.title + (item.year ? ' (' + item.year + ')' : '') }),
+            el('div', { class: 'muted', text: [item.kind, item.library].filter(Boolean).join('  ·  ') })),
+          el('td', { class: 'right' }, el('button', { text: 'Edit', on: { click: () => editItem(item.id) } }))))))
+        : el('p', { class: 'muted', text: 'Nothing by that name.' }));
+    } catch (err) { failed(err); }
+  };
+
+  box.addEventListener('keydown', (event) => { if (event.key === 'Enter') search(); });
+
+  fill(main,
+    el('div', { class: 'head' }, el('div', {}, el('h1', { text: 'Metadata' }),
+      el('p', { class: 'muted', text: 'Correct a title, or pick the right entry when the provider chose the wrong one.' }))),
+    el('div', { class: 'card' },
+      el('label', { text: 'Find something' }),
+      el('div', { class: 'row' }, box, el('button', { class: 'primary', text: 'Search', on: { click: search } })),
+      results));
+  box.focus();
+};
+
+// editItem is the editor for one item: the fields, and the provider's other
+// entries.
+async function editItem(id) {
+  const main = document.getElementById('main');
+  let detail;
+  try {
+    detail = await api('GET', '/items/' + id);
+  } catch (err) { failed(err); return; }
+
+  const title = el('input', { value: detail.title, spellcheck: 'false' });
+  const year = el('input', { value: detail.year || '', type: 'number' });
+  const summary = el('textarea', { rows: '4' });
+  summary.value = detail.summary || '';
+  const locked = el('input', { type: 'checkbox', id: 'locked-' + id });
+  locked.checked = !!detail.locked;
+
+  const matches = el('div', {});
+  const term = el('input', { value: detail.title, spellcheck: 'false' });
+
+  // What the filename said, where it is no longer what is shown: the one
+  // fact that explains why a rescan did not put the old title back.
+  const scanned = (detail.scannedTitle && detail.scannedTitle !== detail.title)
+    ? el('p', { class: 'muted', text: 'The file is named "' + detail.scannedTitle
+      + (detail.scannedYear ? ' (' + detail.scannedYear + ')' : '') + '", which is still how a scan finds it.' })
+    : null;
+
+  const save = async () => {
+    try {
+      await api('PATCH', '/items/' + id, {
+        title: title.value,
+        year: Number(year.value) || 0,
+        summary: summary.value,
+        locked: locked.checked,
+      });
+      toast(locked.checked ? 'Saved and locked, so a metadata pass will leave it alone.' : 'Saved.');
+      editItem(id);
+    } catch (err) { failed(err); }
+  };
+
+  const searchProvider = async () => {
+    fill(matches, el('p', { class: 'muted', text: 'Asking the provider…' }));
+    try {
+      const answer = await api('GET', '/items/' + id + '/candidates?q=' + encodeURIComponent(term.value.trim()));
+      const found = (answer && answer.candidates) || [];
+      fill(matches, found.length
+        ? el('div', {}, found.map((candidate) => el('div', { class: 'row match' },
+          candidate.posterUrl ? el('img', { src: candidate.posterUrl, alt: '', class: 'thumb' }) : null,
+          el('div', { class: 'grow' },
+            el('strong', { text: candidate.title + (candidate.year ? ' (' + candidate.year + ')' : '') }),
+            candidate.current ? el('span', { class: 'badge', text: 'current' }) : null,
+            el('div', { class: 'muted', text: (candidate.summary || '').slice(0, 200) })),
+          el('button', {
+            text: 'Use this',
+            on: { click: () => useMatch(id, candidate) },
+          }))))
+        : el('p', { class: 'muted', text: 'The provider has nothing by that name.' }));
+    } catch (err) { failed(err); }
+  };
+
+  fill(main,
+    el('div', { class: 'head' }, el('div', {}, el('h1', { text: detail.title }),
+      el('p', { class: 'muted', text: [detail.kind, detail.library].filter(Boolean).join('  ·  ') })),
+      el('button', { text: 'Back', on: { click: () => render() } })),
+
+    el('div', { class: 'card' },
+      el('h2', { text: 'Details' }),
+      scanned,
+      el('label', { text: 'Title' }), title,
+      el('label', { text: 'Year' }), year,
+      el('label', { text: 'Summary' }), summary,
+      el('div', { class: 'row' },
+        locked,
+        el('label', { for: 'locked-' + id, text: 'Leave this alone when fetching metadata' })),
+      el('div', { class: 'row' },
+        el('button', { class: 'primary', text: 'Save', on: { click: save } }),
+        el('button', {
+          text: 'Back to the filename',
+          on: {
+            click: async () => {
+              if (!confirm('Put the file\'s own title back?\n\nIt is unlocked as well, so the next metadata pass will match it again.')) return;
+              try {
+                await api('POST', '/items/' + id + '/revert');
+                toast('Reverted.');
+                editItem(id);
+              } catch (err) { failed(err); }
+            },
+          },
+        })),
+      (detail.files || []).length
+        ? el('div', { class: 'muted mono files' }, (detail.files || []).map((path) => el('div', { text: path })))
+        : null),
+
+    el('div', { class: 'card' },
+      el('h2', { text: 'Which one is it?' }),
+      detail.canRematch
+        ? el('div', {},
+          el('p', { class: 'muted', text: 'Search the provider and pick the right entry. The summary and the artwork are replaced with that entry\'s.' }),
+          el('div', { class: 'row' }, term,
+            el('button', { text: 'Search the provider', on: { click: searchProvider } })),
+          matches)
+        : el('p', { class: 'muted', text: detail.why || 'This item cannot be matched to a provider.' })));
+}
+
+// useMatch points the item at the entry somebody chose.
+async function useMatch(id, candidate) {
+  if (!confirm('Use "' + candidate.title + (candidate.year ? ' (' + candidate.year + ')' : '') + '"?')) return;
+  try {
+    const answer = await api('POST', '/items/' + id + '/match', { providerId: candidate.providerId });
+    toast(answer && answer.note ? answer.note : 'Matched to ' + candidate.title + '.');
+    editItem(id);
+  } catch (err) { failed(err); }
+}
+
 /* ---------- activity ---------- */
 
 views.jobs = async function (main) {

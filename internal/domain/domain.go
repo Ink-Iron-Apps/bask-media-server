@@ -29,7 +29,53 @@ const (
 	// photos and other albums, however deep the person who filed them went.
 	KindPhotoAlbum Kind = "photoalbum"
 	KindPhoto      Kind = "photo"
+
+	// An extra belongs to something rather than being it: a trailer, a
+	// deleted scene, a featurette. A kind of its own rather than a flag on a
+	// movie, because everything that lists a library has to leave them out —
+	// a trailer in the films row is the mistake this replaces.
+	KindExtra Kind = "extra"
 )
+
+// ExtraKind is which sort of extra a file is.
+//
+// The names are the ones Plex and Jellyfin use in their own APIs, because
+// both of them are spoken here and a third spelling would mean translating
+// twice.
+type ExtraKind string
+
+const (
+	ExtraTrailer         ExtraKind = "trailer"
+	ExtraBehindTheScenes ExtraKind = "behindTheScenes"
+	ExtraDeleted         ExtraKind = "deletedScene"
+	ExtraFeaturette      ExtraKind = "featurette"
+	ExtraInterview       ExtraKind = "interview"
+	ExtraScene           ExtraKind = "scene"
+	ExtraShort           ExtraKind = "short"
+	ExtraOther           ExtraKind = "other"
+)
+
+// Label is what a client shows above a row of these.
+func (e ExtraKind) Label() string {
+	switch e {
+	case ExtraTrailer:
+		return "Trailer"
+	case ExtraBehindTheScenes:
+		return "Behind the Scenes"
+	case ExtraDeleted:
+		return "Deleted Scene"
+	case ExtraFeaturette:
+		return "Featurette"
+	case ExtraInterview:
+		return "Interview"
+	case ExtraScene:
+		return "Scene"
+	case ExtraShort:
+		return "Short"
+	default:
+		return "Extra"
+	}
+}
 
 // SectionKind is what a library holds. A section is the unit a client browses
 // and the unit a scan walks.
@@ -141,6 +187,14 @@ type Item struct {
 	// never, which is what an enrichment pass looks for.
 	MetadataAt time.Time
 
+	// Locked means somebody set this item's details by hand, so the
+	// enrichment pass leaves it alone.
+	Locked bool
+
+	// Extra is which sort of extra this is, for the items whose kind is
+	// KindExtra, and empty for everything else.
+	Extra ExtraKind
+
 	// Parts are the files behind a playable item. A movie or episode normally
 	// has exactly one; more than one means multiple versions of the same thing.
 	Parts []Part
@@ -150,7 +204,7 @@ type Item struct {
 // gathering children.
 func (i Item) Playable() bool {
 	switch i.Kind {
-	case KindMovie, KindEpisode, KindTrack, KindPhoto:
+	case KindMovie, KindEpisode, KindTrack, KindPhoto, KindExtra:
 		return true
 	default:
 		return false

@@ -108,7 +108,7 @@ func (d *DB) MarkSectionScanned(ctx context.Context, id int64, at time.Time) err
 	return nil
 }
 
-const itemColumns = `id, section_id, kind, parent_id, title, sort_title, year, idx, disc, summary, duration_ms, added_at, updated_at, provider_id, poster_key, art_key, metadata_at, taken_at, performer`
+const itemColumns = `id, section_id, kind, parent_id, title, sort_title, year, idx, disc, summary, duration_ms, added_at, updated_at, provider_id, poster_key, art_key, metadata_at, taken_at, performer, locked, extra`
 
 func scanItem(rows interface{ Scan(...any) error }) (domain.Item, error) {
 	var (
@@ -117,12 +117,17 @@ func scanItem(rows interface{ Scan(...any) error }) (domain.Item, error) {
 		parent                                  sql.NullInt64
 		durationMS                              int64
 		addedAt, updatedAt, metadataAt, takenAt int64
+		locked                                  int
+		extra                                   string
 	)
 	if err := rows.Scan(&it.ID, &it.SectionID, &kind, &parent, &it.Title, &it.SortTitle,
 		&it.Year, &it.Index, &it.Disc, &it.Summary, &durationMS, &addedAt, &updatedAt,
-		&it.ProviderID, &it.PosterKey, &it.ArtKey, &metadataAt, &takenAt, &it.Performer); err != nil {
+		&it.ProviderID, &it.PosterKey, &it.ArtKey, &metadataAt, &takenAt, &it.Performer,
+		&locked, &extra); err != nil {
 		return domain.Item{}, err
 	}
+	it.Locked = locked != 0
+	it.Extra = domain.ExtraKind(extra)
 	it.MetadataAt, it.TakenAt = fromMillis(metadataAt), fromMillis(takenAt)
 	it.Kind = domain.Kind(kind)
 	if parent.Valid {
@@ -185,9 +190,12 @@ func (d *DB) SectionItems(ctx context.Context, sectionID int64, kind domain.Kind
 func (d *DB) Children(ctx context.Context, parentID int64, page Page) ([]domain.Item, int, error) {
 	only, scope := d.only("section_id")
 
+	// Extras are left out: a season's episodes are its children and so is a
+	// trailer, and a client asking for episodes must not be handed one. They
+	// are read on their own, by [DB.Extras].
 	var total int
 	if err := d.sql.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM items WHERE parent_id = ?`+only,
+		`SELECT COUNT(*) FROM items WHERE parent_id = ? AND extra = ''`+only,
 		append([]any{parentID}, scope...)...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count children: %w", err)
 	}
@@ -196,7 +204,7 @@ func (d *DB) Children(ctx context.Context, parentID int64, page Page) ([]domain.
 	args := append([]any{parentID}, scope...)
 	args = append(args, limit, offset)
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT `+itemColumns+` FROM items WHERE parent_id = ?`+only+`
+		`SELECT `+itemColumns+` FROM items WHERE parent_id = ? AND extra = ''`+only+`
 		 ORDER BY disc, idx, taken_at, year, sort_title LIMIT ? OFFSET ?`,
 		args...)
 	if err != nil {
@@ -609,4 +617,64 @@ func (d *DB) NextUp(ctx context.Context, userID int64, limit int) ([]domain.Item
 	}
 	defer rows.Close()
 	return d.collect(ctx, rows)
+}
+
+// Extras are the trailers, featurettes and deleted scenes that belong to an
+// item.
+//
+// Ordered by sort rather than by name, because that is how a client draws
+// them: the trailer first, because that is what anybody is looking for, and
+// the rest in a stable order after it. Read through the scoped handle like
+// everything else, so an extra of a film in a library this device cannot see
+// does not come back on its own.
+func (d *DB) Extras(ctx context.Context, parentID int64) ([]domain.Item, error) {
+	only, scope := d.only("section_id")
+	args := append([]any{parentID}, scope...)
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT `+itemColumns+` FROM items
+		  WHERE parent_id = ? AND extra <> ''`+only+`
+		  ORDER BY CASE extra
+		      WHEN 'trailer' THEN 0 WHEN 'scene' THEN 1 WHEN 'deletedScene' THEN 2
+		      WHEN 'featurette' THEN 3 WHEN 'behindTheScenes' THEN 4
+		      WHEN 'interview' THEN 5 WHEN 'short' THEN 6 ELSE 7
+		    END, sort_title, id`,
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("list extras: %w", err)
+	}
+	defer rows.Close()
+	return d.collect(ctx, rows)
+}
+
+// ExtraCounts is how many extras each of these items has, in one query, for a
+// listing that wants to say so without reading them.
+func (d *DB) ExtraCounts(ctx context.Context, ids []int64) (map[int64]int, error) {
+	counts := map[int64]int{}
+	if len(ids) == 0 {
+		return counts, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT parent_id, COUNT(*) FROM items
+		  WHERE extra <> '' AND parent_id IN (`+placeholders+`)
+		  GROUP BY parent_id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("count extras: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var parent sql.NullInt64
+		var count int
+		if err := rows.Scan(&parent, &count); err != nil {
+			return nil, fmt.Errorf("count extras: %w", err)
+		}
+		if parent.Valid {
+			counts[parent.Int64] = count
+		}
+	}
+	return counts, rows.Err()
 }

@@ -225,3 +225,10 @@ progress.bar::-moz-progress-bar { background: var(--accent); }
   .brand { padding: .25rem .5rem; }
   .side-foot { margin: 0 0 0 auto; border: 0; flex-direction: row; gap: .75rem; padding: 0 .5rem; }
 }
+
+/* One of the provider's entries, offered as a correction: a poster small
+   enough to recognise and a summary short enough to read at a glance. */
+.match { align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+.match .thumb { width: 60px; border-radius: 4px; background: #1b1b1b; }
+.match .grow { flex: 1; }
+.files { margin-top: 12px; word-break: break-all; }

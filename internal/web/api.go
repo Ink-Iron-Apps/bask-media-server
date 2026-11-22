@@ -328,6 +328,32 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 	}
 	out["subtitles"] = subtitleViews(subs[found.ID])
 
+	// Trailers and the rest, each with the sort it is, so the page can draw
+	// the trailer behind the play button and the others in a shelf. Asked for
+	// here rather than on the grid, because a shelf nobody has opened is not
+	// worth a query per poster.
+	bonus, err := s.db(r.Context()).Extras(r.Context(), found.ID)
+	if err != nil {
+		s.fail(w, "read extras", err)
+		return
+	}
+	if len(bonus) > 0 {
+		bonusViews, err := s.views(r.Context(), bonus, user.ID)
+		if err != nil {
+			s.fail(w, "read progress", err)
+			return
+		}
+		shelf := make([]map[string]any, 0, len(bonus))
+		for i, extra := range bonus {
+			shelf = append(shelf, map[string]any{
+				"item":  bonusViews[i],
+				"sort":  string(extra.Extra),
+				"label": extra.Extra.Label(),
+			})
+		}
+		out["extras"] = shelf
+	}
+
 	// The season and show above an episode, so a player can say what is on
 	// without another round trip.
 	if found.ParentID != nil {

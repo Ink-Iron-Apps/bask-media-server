@@ -345,6 +345,10 @@ func (s *Server) item(w http.ResponseWriter, r *http.Request) {
 	rel := s.relatives(r.Context(), []domain.Item{*found}, user)
 	progress := s.progressFor(r, user, []domain.Item{*found})
 	rendered := s.render(*found, rel, progress[found.ID])
+	// Counted here rather than on every listing: a client reads these when
+	// somebody opens a film, which is one query at the moment it is useful
+	// instead of one per page of a library.
+	rendered.SpecialFeatureCount, rendered.LocalTrailerCount = s.countExtras(r, id)
 	rendered.MediaStreams = s.streamsOf(r.Context(), *found)
 	if len(rendered.MediaSources) > 0 {
 		rendered.MediaSources[0].MediaStreams = rendered.MediaStreams

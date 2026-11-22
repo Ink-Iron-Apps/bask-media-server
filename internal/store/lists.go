@@ -789,27 +789,27 @@ func (d *DB) visibleOf(ctx context.Context, itemIDs []int64) ([]int64, error) {
 
 // scanItemWithPrefix reads a row that carries one extra leading column.
 func scanItemWithPrefix(rows *sql.Rows, first *int64) (domain.Item, error) {
-	var (
-		it                                      domain.Item
-		kind                                    string
-		parent                                  sql.NullInt64
-		durationMS                              int64
-		addedAt, updatedAt, metadataAt, takenAt int64
-	)
-	if err := rows.Scan(first, &it.ID, &it.SectionID, &kind, &parent, &it.Title, &it.SortTitle,
-		&it.Year, &it.Index, &it.Disc, &it.Summary, &durationMS, &addedAt, &updatedAt,
-		&it.ProviderID, &it.PosterKey, &it.ArtKey, &metadataAt, &takenAt, &it.Performer); err != nil {
+	item, err := scanItem(prepended{rows: rows, first: first})
+	if err != nil {
 		return domain.Item{}, fmt.Errorf("scan item: %w", err)
 	}
-	it.MetadataAt, it.TakenAt = fromMillis(metadataAt), fromMillis(takenAt)
-	it.Kind = domain.Kind(kind)
-	if parent.Valid {
-		id := parent.Int64
-		it.ParentID = &id
-	}
-	it.Duration = time.Duration(durationMS) * time.Millisecond
-	it.AddedAt, it.UpdatedAt = fromMillis(addedAt), fromMillis(updatedAt)
-	return it, nil
+	return item, nil
+}
+
+// prepended adapts a row whose first column is something other than an item
+// into the shape scanItem reads.
+//
+// One scan function rather than two, because the second copy drifted the
+// moment a column was added to itemColumns: the listings kept working and
+// every playlist read failed with "expected 21 destination arguments, not
+// 20", nowhere near the line that caused it.
+type prepended struct {
+	rows  interface{ Scan(...any) error }
+	first any
+}
+
+func (p prepended) Scan(dest ...any) error {
+	return p.rows.Scan(append([]any{p.first}, dest...)...)
 }
 
 // attachParts fills in the files for the playable items in a slice, in one

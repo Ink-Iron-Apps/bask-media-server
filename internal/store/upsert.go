@@ -66,6 +66,24 @@ type Found struct {
 	Container  string
 	ModifiedAt time.Time
 
+	// Extra marks this file as something that belongs to another item: a
+	// trailer, a deleted scene. Non-empty means Kind is KindExtra, and the
+	// parent is named by Movie and MovieYear, or by Show and the season and
+	// episode numbers where it belongs to television.
+	Extra domain.ExtraKind
+
+	// Movie and MovieYear name the film an extra belongs to. Empty for
+	// everything that is not an extra of a film.
+	Movie     string
+	MovieYear int
+
+	// ParentTitle is the title of the episode an extra belongs to, where the
+	// extra's name said which one. The episode's own title rather than the
+	// extra's, because that is what the episode's identity is built on — so
+	// an extra scanned before the episode's own file lands on the same row
+	// the episode will, rather than beside it.
+	ParentTitle string
+
 	// Edition is which cut of a film this file is, where the name says so.
 	// Two editions are one item with two files, so this is what lets a
 	// client offer the choice rather than showing two identical rows.
@@ -199,6 +217,16 @@ func (w *Writer) Add(ctx context.Context, f Found) error {
 		spec.parentID, spec.takenAt = parent, f.TakenAt
 	case domain.KindMovie:
 		// No parent.
+	case domain.KindExtra:
+		parentID, err := w.extraParent(ctx, f)
+		if err != nil {
+			return err
+		}
+		spec.parentID, spec.extra = parentID, f.Extra
+		// Never a year of its own: an extra's year would put it in the
+		// identity index beside a differently-dated copy of itself, and
+		// nobody is looking for the release year of a featurette.
+		spec.year = 0
 	default:
 		return fmt.Errorf("scanner produced an unplayable kind: %s", f.Kind)
 	}
@@ -329,6 +357,7 @@ type itemSpec struct {
 	duration  time.Duration
 	takenAt   time.Time
 	performer string
+	extra     domain.ExtraKind
 
 	// poster is artwork for a container the scan found rather than fetched —
 	// an album's cover. Applied only when the row has none, so the first file
@@ -357,6 +386,95 @@ func (w *Writer) ensureContainer(ctx context.Context, spec itemSpec) (int64, err
 	return id, nil
 }
 
+// extraParent is the item an extra belongs to, created if the scan has not
+// reached it yet.
+//
+// Order is not guaranteed: a walk can reach "Trailers/teaser.mkv" before the
+// film's own file, so the parent is ensured the same way a season is. The
+// identity index means the film's own file then lands on this very row rather
+// than beside it.
+//
+// An extra whose parent cannot be named is refused rather than filed
+// somewhere arbitrary: a trailer attached to the wrong film is worse than one
+// that was skipped and logged.
+func (w *Writer) extraParent(ctx context.Context, f Found) (*int64, error) {
+	switch {
+	case f.Show != "" && f.SeasonNum > 0 && f.EpisodeNum > 0:
+		showID, err := w.ensureContainer(ctx, itemSpec{
+			sectionID: f.SectionID, kind: domain.KindShow, title: f.Show, year: f.ShowYear,
+		})
+		if err != nil {
+			return nil, err
+		}
+		seasonID, err := w.ensureContainer(ctx, itemSpec{
+			sectionID: f.SectionID, kind: domain.KindSeason, parentID: &showID,
+			title: fmt.Sprintf("Season %d", f.SeasonNum), index: f.SeasonNum,
+		})
+		if err != nil {
+			return nil, err
+		}
+		// The episode, by the identity its own file will produce: the name
+		// of an extra like "S01E01 - Part 1-deleted.mkv" reads as the
+		// episode it belongs to, so the row is ensured rather than waited
+		// for — a walk reaches the extra before the episode as often as not,
+		// because a hyphen sorts before a dot.
+		if f.ParentTitle != "" {
+			episodeID, err := w.ensureContainer(ctx, itemSpec{
+				sectionID: f.SectionID, kind: domain.KindEpisode, parentID: &seasonID,
+				title: f.ParentTitle, index: f.EpisodeNum,
+			})
+			if err != nil {
+				return nil, err
+			}
+			return &episodeID, nil
+		}
+		// Nothing in the name said which episode, so the number is all there
+		// is. An episode that has not been scanned leaves the extra on the
+		// series, which is where somebody would look for it anyway.
+		episodeID, found, err := w.episodeNumbered(ctx, seasonID, f.EpisodeNum)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return &episodeID, nil
+		}
+		return &showID, nil
+	case f.Show != "":
+		showID, err := w.ensureContainer(ctx, itemSpec{
+			sectionID: f.SectionID, kind: domain.KindShow, title: f.Show, year: f.ShowYear,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &showID, nil
+	case f.Movie != "":
+		movieID, err := w.ensureContainer(ctx, itemSpec{
+			sectionID: f.SectionID, kind: domain.KindMovie, title: f.Movie, year: f.MovieYear,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &movieID, nil
+	}
+	return nil, fmt.Errorf("an extra with nothing to belong to: %s", f.Path)
+}
+
+// episodeNumbered is the episode at this number in this season, if the scan
+// has written it.
+func (w *Writer) episodeNumbered(ctx context.Context, seasonID int64, number int) (int64, bool, error) {
+	var id int64
+	err := w.tx.QueryRowContext(ctx,
+		`SELECT id FROM items WHERE kind = 'episode' AND parent_id = ? AND idx = ? AND extra = ''
+		 ORDER BY id LIMIT 1`, seasonID, number).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("look up episode: %w", err)
+	}
+	return id, true, nil
+}
+
 // applyPoster gives a container artwork it does not already have.
 func (w *Writer) applyPoster(ctx context.Context, itemID int64, key string) error {
 	if key == "" {
@@ -379,9 +497,12 @@ func (w *Writer) upsertItem(ctx context.Context, spec itemSpec) (int64, error) {
 	}
 
 	var id int64
+	// Found by what the scan found, not by what is displayed: an item whose
+	// title was corrected in the interface is still this file's item, and
+	// looking it up by the corrected title would insert a second row.
 	err := w.tx.QueryRowContext(ctx,
 		`SELECT id FROM items WHERE section_id = ? AND kind = ? AND IFNULL(parent_id, 0) = IFNULL(?, 0)
-		   AND title = ? AND year = ? AND idx = ? AND disc = ?`,
+		   AND scanned_title = ? AND scanned_year = ? AND idx = ? AND disc = ?`,
 		spec.sectionID, string(spec.kind), parent, spec.title, spec.year, spec.index, spec.disc).Scan(&id)
 	switch {
 	case err == nil:
@@ -406,6 +527,16 @@ func (w *Writer) upsertItem(ctx context.Context, spec itemSpec) (int64, error) {
 				return 0, fmt.Errorf("update performer: %w", err)
 			}
 		}
+		if spec.extra != "" {
+			// A file moved from "Featurettes" to "Trailers" is the same
+			// extra, resorted. Written here so a rescan picks that up rather
+			// than leaving it filed where it used to be.
+			if _, err := w.tx.ExecContext(ctx,
+				`UPDATE items SET extra = ? WHERE id = ? AND extra <> ?`,
+				string(spec.extra), id, string(spec.extra)); err != nil {
+				return 0, fmt.Errorf("update extra: %w", err)
+			}
+		}
 		if err := w.applyPoster(ctx, id, spec.poster); err != nil {
 			return 0, err
 		}
@@ -416,12 +547,13 @@ func (w *Writer) upsertItem(ctx context.Context, spec itemSpec) (int64, error) {
 
 	res, err := w.tx.ExecContext(ctx,
 		`INSERT INTO items (section_id, kind, parent_id, title, sort_title, year, idx, disc,
-		    duration_ms, added_at, updated_at, taken_at, poster_key, performer)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    duration_ms, added_at, updated_at, taken_at, poster_key, performer,
+		    scanned_title, scanned_year, extra)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		spec.sectionID, string(spec.kind), parent, spec.title, SortTitle(spec.title),
 		spec.year, spec.index, spec.disc,
 		spec.duration.Milliseconds(), millis(w.now), millis(w.now), millis(spec.takenAt),
-		spec.poster, spec.performer)
+		spec.poster, spec.performer, spec.title, spec.year, string(spec.extra))
 	if err != nil {
 		return 0, fmt.Errorf("insert item: %w", err)
 	}

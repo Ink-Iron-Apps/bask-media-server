@@ -147,6 +147,11 @@ func (s *Server) Handler() http.Handler {
 	authed("PATCH /admin/api/collections/{id}", s.updateCollection)
 	authed("DELETE /admin/api/collections/{id}", s.deleteCollection)
 	authed("GET /admin/api/items", s.findItems)
+	authed("GET /admin/api/items/{id}", s.readItem)
+	authed("PATCH /admin/api/items/{id}", s.editItem)
+	authed("POST /admin/api/items/{id}/revert", s.revertItem)
+	authed("GET /admin/api/items/{id}/candidates", s.candidates)
+	authed("POST /admin/api/items/{id}/match", s.rematchItem)
 
 	authed("GET /admin/api/settings", s.readSettings)
 	authed("PATCH /admin/api/settings", s.writeSettings)

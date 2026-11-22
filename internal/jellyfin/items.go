@@ -65,6 +65,16 @@ type item struct {
 	// or moving one has to be able to say which.
 	PlaylistItemID string `json:"PlaylistItemId,omitempty"`
 
+	// ExtraType is which sort of extra this is, for the rows a client asks
+	// for under an item: Trailer, BehindTheScenes, DeletedScene and so on.
+	ExtraType string `json:"ExtraType,omitempty"`
+
+	// The counts tell a client there is a row worth drawing before it asks
+	// for the rows themselves, which is the difference between a trailer
+	// button that is there and one that appears a second later.
+	SpecialFeatureCount int `json:"SpecialFeatureCount,omitempty"`
+	LocalTrailerCount   int `json:"LocalTrailerCount,omitempty"`
+
 	ChildCount         int `json:"ChildCount,omitempty"`
 	RecursiveItemCount int `json:"RecursiveItemCount,omitempty"`
 
@@ -131,6 +141,10 @@ func typeOf(kind domain.Kind) string {
 		return "PhotoAlbum"
 	case domain.KindPhoto:
 		return "Photo"
+	case domain.KindExtra:
+		// Overwritten per extra with its own sort — a trailer is a "Trailer"
+		// to a client — so this is only what an extra of no stated sort is.
+		return "Video"
 	default:
 		return "Folder"
 	}
@@ -140,7 +154,7 @@ func typeOf(kind domain.Kind) string {
 // client reaches for a video surface, an audio one, or an image viewer.
 func mediaTypeOf(kind domain.Kind) string {
 	switch kind {
-	case domain.KindMovie, domain.KindEpisode:
+	case domain.KindMovie, domain.KindEpisode, domain.KindExtra:
 		return "Video"
 	case domain.KindTrack:
 		return "Audio"

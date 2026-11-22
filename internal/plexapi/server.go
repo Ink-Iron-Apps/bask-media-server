@@ -70,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /library/sections/{id}/all", s.sectionAll)
 	authed("GET /library/metadata/{key}", s.metadata)
 	authed("GET /library/metadata/{key}/children", s.children)
+	authed("GET /library/metadata/{key}/extras", s.extrasOf)
 	authed("GET /library/parts/{id}", s.streamPart)
 	// Sidecar subtitles, which a client fetches by the key on the stream. The
 	// extension is part of the name a Plex client builds, and it is also how
