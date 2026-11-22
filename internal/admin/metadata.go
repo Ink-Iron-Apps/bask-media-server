@@ -307,11 +307,27 @@ func (s *Server) rematchItem(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "save the match", err)
 		return
 	}
+	// The rating comes with the match, and a correction that left the old
+	// one in place would be a film re-matched to a children's title that is
+	// still rated 18 — or the other way round, which matters more.
+	if match.Rating != "" {
+		if err := s.DB.SetRating(r.Context(), id, match.Rating); err != nil {
+			s.fail(w, "save the rating", err)
+			return
+		}
+	}
 
 	note := ""
 	if item.Kind == domain.KindShow {
 		if err := s.DB.ForgetDescendants(r.Context(), id); err != nil {
 			s.fail(w, "forget the episodes", err)
+			return
+		}
+		// The seasons and episodes take the series' rating now rather than
+		// at the next pass, because the restriction that reads it is
+		// enforced on the next request.
+		if err := s.DB.InheritRatings(r.Context()); err != nil {
+			s.fail(w, "hand the rating down", err)
 			return
 		}
 		note = "The episodes were matched through the old series, so they are unmatched again: run a metadata pass to fetch them."

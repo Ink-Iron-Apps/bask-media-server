@@ -48,7 +48,10 @@ func (p *provider) ShowCandidates(context.Context, string, int) ([]metadata.Matc
 func (p *provider) MovieByID(_ context.Context, id string) (metadata.Match, error) {
 	switch id {
 	case "108":
-		return metadata.Match{ProviderID: "108", Title: "Three Colours: Blue", Year: 1993, Summary: "It."}, nil
+		return metadata.Match{
+			ProviderID: "108", Title: "Three Colours: Blue", Year: 1993, Summary: "It.",
+			Rating: "R",
+		}, nil
 	case "666":
 		return metadata.Match{ProviderID: "666", Title: "Blue Steel", Year: 1989, Summary: "Not it."}, nil
 	}
@@ -221,6 +224,12 @@ func TestAWrongMatchIsFixedByPickingTheRightOne(t *testing.T) {
 	}
 	if item.Summary != "It." {
 		t.Fatalf("summary = %q", item.Summary)
+	}
+	// The rating comes with the match: a film re-matched to a children's
+	// title that is still rated 18 is the mistake this avoids, and the other
+	// way round matters more.
+	if item.Rating != "R" || item.RatingAge != 17 {
+		t.Fatalf("rating = %q (%d)", item.Rating, item.RatingAge)
 	}
 	// The old artwork is gone rather than left beside the new summary: half
 	// of one match and half of another is worse than an empty poster.
