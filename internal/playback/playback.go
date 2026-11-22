@@ -117,6 +117,54 @@ type Plan struct {
 	// Causes are what made this more than a direct play, in the order they
 	// were found.
 	Causes []Cause
+
+	// Burn is a subtitle to draw into the picture, or nil.
+	//
+	// Not something [Decide] ever asks for: burning in is a client saying it
+	// cannot render a subtitle itself, which is a separate request from
+	// whether it can play the file. Every surface that honours it sets this
+	// and forces a re-encode, because a video stream cannot be copied and
+	// drawn on at the same time.
+	Burn *BurnIn
+}
+
+// BurnIn is a subtitle to draw into the picture.
+//
+// Some subtitles cannot be handed to a client at all. A PGS track off a
+// Blu-ray is a sequence of pictures, and a television that wants text gets
+// nothing from it; an ASS track with positioning and fonts renders as
+// misplaced lines in most players. The answer both of those have always had
+// is to draw the subtitle into the video while transcoding, which is the one
+// thing a media server can do that a client cannot.
+type BurnIn struct {
+	// Path is the file holding the subtitle: the media file for an embedded
+	// track, the sidecar for one beside it.
+	Path string
+
+	// Index is which subtitle stream inside Path, counted among the subtitle
+	// streams rather than all streams, because that is what ffmpeg's
+	// subtitles filter takes. Negative for a sidecar, which has one.
+	Index int
+
+	// Picture is true for a bitmap subtitle — PGS, VobSub — which has to be
+	// composited onto the frames rather than rendered as text.
+	Picture bool
+}
+
+// Burning reports whether this plan draws a subtitle into the picture.
+func (p Plan) Burning() bool { return p.Burn != nil }
+
+// Key is the part of a plan that decides whether two requests can share one
+// encoder.
+//
+// The subtitle belongs in it: a viewer switching subtitle tracks is asking
+// for a different picture, and without this they would be handed the session
+// that is already burning the other one.
+func (b *BurnIn) Key() string {
+	if b == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s#%d", b.Path, b.Index)
 }
 
 // Transcoding reports whether this plan needs ffmpeg at all.

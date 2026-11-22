@@ -212,6 +212,9 @@ h2.tight { margin: 0 0 .4rem; }
 }
 #player-subs .menu button:hover:not(:disabled) { background: var(--panel-2); }
 #player-subs .menu button:disabled { color: var(--muted); }
+/* The subtitle currently being drawn into the picture, which is a state the
+   browser's own track machinery cannot show. */
+#player-subs .menu button.on { color: var(--accent); }
 
 .player-error {
   position: absolute; inset: auto 1rem 5rem 1rem;

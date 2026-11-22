@@ -62,7 +62,13 @@ wait
 
 func manager(t *testing.T, ffmpeg string, change ...func(*transcode.Options)) *transcode.Manager {
 	t.Helper()
-	opts := transcode.Options{FFmpeg: ffmpeg, Root: filepath.Join(t.TempDir(), "sessions")}
+	// Accel off, because detection runs the binary it is given and the fake
+	// encoder here waits to be killed: every manager would otherwise pay ten
+	// seconds per candidate accelerator before the test started. Hardware
+	// detection has its own tests, against a fake that answers.
+	opts := transcode.Options{
+		FFmpeg: ffmpeg, Root: filepath.Join(t.TempDir(), "sessions"), Accel: "off",
+	}
 	for _, apply := range change {
 		apply(&opts)
 	}

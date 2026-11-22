@@ -45,6 +45,9 @@ and the Plex vocabulary never reaches storage or scanning.
   Watching, and a player with Skip Intro
 - Conversion on the fly for a client that cannot play a file as it is, and
   direct play — the file itself, untouched — for every client that can
+- Subtitles drawn into the picture where a client cannot draw them itself: a
+  PGS track off a Blu-ray is a sequence of images, and burning it in is the
+  one thing a server can do that a client cannot
 - Subtitles: the sidecar files beside the media and the streams inside it,
   with language, forced and SDH read from where they are written
 - Music libraries: artists, albums and tracks from the files' own tags, with

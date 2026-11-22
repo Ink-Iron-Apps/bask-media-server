@@ -237,9 +237,18 @@ func (s *Session) args(index int) []string {
 		args = append(args, "-ss", fmt.Sprintf("%.3f", start.Seconds()))
 	}
 	args = append(args, "-i", s.req.Path, "-copyts", "-muxpreload", "0", "-muxdelay", "0")
-	args = append(args, "-map", "0:v:0?", "-map", "0:a:0?", "-sn", "-dn")
 
 	plan := s.req.Plan
+	// A bitmap subtitle is composited rather than rendered, which needs the
+	// subtitle stream inside the filtergraph and therefore a named output to
+	// map. Everything else maps the first video and audio streams straight
+	// through.
+	if plan.Burning() && plan.Burn.Picture {
+		args = append(args, "-filter_complex", s.overlay(plan.Height), "-map", "[vout]", "-map", "0:a:0?", "-sn", "-dn")
+	} else {
+		args = append(args, "-map", "0:v:0?", "-map", "0:a:0?", "-sn", "-dn")
+	}
+
 	if plan.VideoCodec == "copy" {
 		args = append(args, "-c:v", "copy")
 	} else {
@@ -385,4 +394,78 @@ func (c *capped) String() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return string(c.buf)
+}
+
+// Drawing subtitles into the picture.
+//
+// Two different jobs wearing one name. A text subtitle is rendered by libass
+// through the `subtitles` filter, which reads the file again itself and picks
+// events by the frame's own timestamp — which works here only because the
+// command keeps original timestamps with -copyts, so a stream started an hour
+// in still lines up. A bitmap subtitle is already pictures, and pictures are
+// composited: the stream goes into the filtergraph and is overlaid on the
+// video.
+//
+// The bitmap path gives up on hardware encoding for the session. Compositing
+// onto frames that live on a graphics device is a different filter chain for
+// every vendor, and getting one of them subtly wrong produces a stream that
+// plays with the subtitles in the wrong place — worse than a core's worth of
+// software encoding for one film.
+
+// subtitleFilter is the filter that renders a text subtitle, or "".
+func (s *Session) subtitleFilter() string {
+	burn := s.req.Plan.Burn
+	if burn == nil || burn.Picture {
+		return ""
+	}
+	filter := "subtitles=filename=" + escapeFilterValue(burn.Path)
+	if burn.Index >= 0 {
+		filter += ":si=" + strconv.Itoa(burn.Index)
+	}
+	return filter
+}
+
+// overlay is the filtergraph for a bitmap subtitle: scale the picture, then
+// composite the subtitle onto it.
+//
+// Scaled first so the overlay is done once at the output size rather than at
+// the source's, and because scaling a frame that already has subtitles drawn
+// on it blurs them.
+func (s *Session) overlay(height int) string {
+	burn := s.req.Plan.Burn
+	video := "[0:v:0]"
+	if height > 0 {
+		video += fmt.Sprintf("scale=-2:%d,", height)
+	}
+	// format=yuv420p before the overlay, because a bitmap subtitle arrives as
+	// RGB and overlaying onto a format the encoder cannot take is how this
+	// fails at the end of the chain rather than at the start.
+	video += "format=yuv420p[vbase];"
+	subtitle := fmt.Sprintf("[0:%d]", burn.Index)
+	return video + "[vbase]" + subtitle + "overlay[vout]"
+}
+
+// escapeFilterValue quotes a path for an ffmpeg filter argument.
+//
+// Filter arguments are parsed twice — once for the graph, once for the filter
+// — so a Windows path or a film with a colon in its name needs both the
+// backslash and the colon escaped. Single-quoting handles the separators and
+// the quote itself is escaped out of and back into the quoting.
+func escapeFilterValue(value string) string {
+	var out strings.Builder
+	out.WriteByte('\'')
+	for _, r := range value {
+		switch r {
+		case '\'':
+			// Out of the quotes, an escaped quote, back in.
+			out.WriteString(`'\''`)
+		case '\\', ':':
+			out.WriteByte('\\')
+			out.WriteRune(r)
+		default:
+			out.WriteRune(r)
+		}
+	}
+	out.WriteByte('\'')
+	return out.String()
 }

@@ -70,6 +70,10 @@ func converting(t *testing.T) (*jellyfin.Server, string) {
 	manager, err := transcode.New(transcode.Options{
 		FFmpeg: fakeEncoder(t),
 		Root:   filepath.Join(t.TempDir(), "sessions"),
+		// Off, because detection runs the binary it is given and this one
+		// waits to be killed: every test would otherwise pay ten seconds per
+		// candidate accelerator before it started.
+		Accel: "off",
 	})
 	if err != nil {
 		t.Fatal(err)

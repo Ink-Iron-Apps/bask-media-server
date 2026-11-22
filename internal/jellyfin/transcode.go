@@ -19,6 +19,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/playback"
 	"github.com/inknironapps/bask-media-server/internal/serve"
 	"github.com/inknironapps/bask-media-server/internal/store"
+	"github.com/inknironapps/bask-media-server/internal/subtitles"
 	"github.com/inknironapps/bask-media-server/internal/transcode"
 )
 
@@ -49,6 +50,7 @@ type Transcoder interface {
 	Get(id string) (*transcode.Session, bool)
 	Stop(id string)
 	StopKey(key string)
+	StopPrefix(prefix string)
 }
 
 /* ---------- what the client asked for ---------- */
@@ -457,13 +459,22 @@ func (s *Server) sessionFor(w http.ResponseWriter, r *http.Request) (*transcode.
 		}
 	}
 
+	plan := wirePlan(r)
+	// A subtitle the client cannot render itself is drawn into the picture
+	// here, which is the one thing a server can do that a client cannot.
+	plan.Burn = s.burnFrom(r, *found)
+	if plan.Burn != nil && plan.VideoCodec == "copy" {
+		// Nothing can be copied and drawn on at the same time.
+		plan.VideoCodec, plan.Mode = "h264", playback.ModeTranscode
+	}
+
 	session, err := s.Transcoder.Start(transcode.Request{
 		// The client's own play session id, so the second request for this
 		// playlist gets the ffmpeg the first one started rather than another,
 		// and so a client that says it has stopped can be taken at its word.
-		Key:      sessionKey(r.URL.Query().Get("PlaySessionId"), part.ID),
+		Key:      sessionKey(r.URL.Query().Get("PlaySessionId"), part.ID, plan.Burn),
 		Path:     part.Path,
-		Plan:     wirePlan(r),
+		Plan:     plan,
 		Duration: found.Duration,
 		StartAt:  startFrom(r),
 	})
@@ -477,7 +488,6 @@ func (s *Server) sessionFor(w http.ResponseWriter, r *http.Request) (*transcode.
 		return nil, false
 	}
 
-	plan := wirePlan(r)
 	s.report(r, nowplaying.Stream{
 		Key: streamKey(r, id), ItemID: id, Title: found.Title,
 		Duration: found.Duration, Mode: string(plan.Mode),
@@ -516,11 +526,24 @@ func startFrom(r *http.Request) time.Duration {
 	return 0
 }
 
-func sessionKey(playSession string, partID int64) string {
+func sessionKey(playSession string, partID int64, burn *playback.BurnIn) string {
 	if playSession == "" {
 		return ""
 	}
-	return "jellyfin|" + playSession + "|" + strconv.FormatInt(partID, 10)
+	key := playSessionPrefix(playSession) + strconv.FormatInt(partID, 10)
+	// The burned-in subtitle is part of what is being produced: a viewer
+	// switching subtitle tracks wants a different picture, and without this
+	// they would be handed the encoder that is already drawing the other one.
+	if burn != nil {
+		key += "|" + burn.Key()
+	}
+	return key
+}
+
+// playSessionPrefix is what every session of one play session's keys starts
+// with, which is how a client that can only name the play session stops them.
+func playSessionPrefix(playSession string) string {
+	return "jellyfin|" + playSession + "|"
 }
 
 // transcodeSegment hands over one piece of the stream, and says the client is
@@ -578,12 +601,11 @@ func (s *Server) transcodeSegment(w http.ResponseWriter, r *http.Request) {
 // rather than at the idle deadline.
 func (s *Server) stopEncoding(w http.ResponseWriter, r *http.Request) {
 	play := r.URL.Query().Get("PlaySessionId")
-	if s.Transcoder != nil {
-		// The part is not in the request, so every file this play session
-		// could have been of is stopped; there is one.
-		for _, part := range s.partsOfPlaySession(r.Context(), play) {
-			s.Transcoder.StopKey(sessionKey(play, part))
-		}
+	if s.Transcoder != nil && play != "" {
+		// Neither the file nor the subtitle is in this request, and both are
+		// in the key, so everything this play session started is stopped by
+		// the prefix they share.
+		s.Transcoder.StopPrefix(playSessionPrefix(play))
 	}
 	// The play session id carries the item it was made for, which is what the
 	// register is keyed on alongside the device.
@@ -593,31 +615,6 @@ func (s *Server) stopEncoding(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// partsOfPlaySession is which files a play session id could name.
-//
-// The id carries the item it was made for, which is enough to ask the
-// database for that item's files — a stop that names a play session can then
-// be matched without this server keeping a table of live ones.
-func (s *Server) partsOfPlaySession(ctx context.Context, play string) []int64 {
-	item, _, found := strings.Cut(play, "-")
-	if !found {
-		return nil
-	}
-	id, _, err := parseID(item)
-	if err != nil {
-		return nil
-	}
-	found2, err := s.db(ctx).Item(ctx, id)
-	if err != nil {
-		return nil
-	}
-	out := make([]int64, 0, len(found2.Parts))
-	for _, part := range found2.Parts {
-		out = append(out, part.ID)
-	}
-	return out
 }
 
 func (s *Server) transcodeError(w http.ResponseWriter, what string, err error) {
@@ -759,4 +756,44 @@ func rewriteAttribute(line, base, query string) string {
 		return line
 	}
 	return line[:start+len(marker)] + base + rest[:end] + query + rest[end:]
+}
+
+// burnFrom is the subtitle this request asks to have drawn into the picture,
+// or nil.
+//
+// Jellyfin says it in two parts: which subtitle, by the index this surface
+// gave it, and how it should be delivered. "Encode" means burn it in.
+//
+// A picture subtitle is burned in whether or not the client said so, because
+// there is no other way to deliver one to a client that is already
+// transcoding: PGS is a sequence of images, and a television that asked for
+// text would get nothing. Saying no here would mean a film that plays with
+// the subtitles missing and no explanation.
+func (s *Server) burnFrom(r *http.Request, item domain.Item) *playback.BurnIn {
+	index := r.URL.Query().Get("SubtitleStreamIndex")
+	if index == "" {
+		return nil
+	}
+	position, err := strconv.Atoi(index)
+	if err != nil || position < 0 {
+		return nil
+	}
+	method := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("SubtitleMethod")))
+
+	found, err := s.db(r.Context()).Subtitles(r.Context(), []int64{item.ID})
+	if err != nil {
+		s.logger().Warn("could not read subtitles to burn in", "item", item.ID, "error", err)
+		return nil
+	}
+	list := found[item.ID]
+	if position >= len(list) {
+		return nil
+	}
+	chosen := list[position]
+
+	if method != "encode" && chosen.Text() {
+		// The client can render this one itself, and it did not ask us to.
+		return nil
+	}
+	return subtitles.BurnIn(list, chosen)
 }

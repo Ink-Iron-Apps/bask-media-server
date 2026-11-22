@@ -183,6 +183,13 @@ func works(ctx context.Context, ffmpeg string, accel Accel) bool {
 // is comparing data rather than two copies of an argument list.
 func (s *Session) video(args []string, seconds float64, height int, bitRate int64) []string {
 	accel := s.accel
+	plan := s.req.Plan
+	// A bitmap subtitle is composited in a filtergraph that this server only
+	// knows how to write for the processor, so a session burning one encodes
+	// there: see the note above [Session.overlay].
+	if plan.Burning() && plan.Burn.Picture {
+		accel = nil
+	}
 
 	encoder, quality := "libx264", []string{"-preset", "veryfast", "-crf", "21"}
 	scale := softwareScale
@@ -208,8 +215,22 @@ func (s *Session) video(args []string, seconds float64, height int, bitRate int6
 			"-maxrate", fmt.Sprintf("%d", bitRate),
 			"-bufsize", fmt.Sprintf("%d", bitRate*2))
 	}
-	if height > 0 {
-		args = append(args, "-vf", scale(height))
+	// The filter chain. A text subtitle is rendered first, on the processor,
+	// because libass draws text and not device frames — which also puts it
+	// in the right place for VAAPI, whose own chain starts by uploading.
+	//
+	// A bitmap subtitle has already been dealt with by the filtergraph in
+	// [Session.args], so nothing here scales it again.
+	burning := plan.Burning() && plan.Burn.Picture
+	chain := []string{}
+	if subtitle := s.subtitleFilter(); subtitle != "" {
+		chain = append(chain, subtitle)
+	}
+	if height > 0 && !burning {
+		chain = append(chain, scale(height))
+	}
+	if len(chain) > 0 {
+		args = append(args, "-vf", strings.Join(chain, ","))
 	}
 	return args
 }

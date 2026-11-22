@@ -298,6 +298,29 @@ func (m *Manager) StopKey(key string) {
 	}
 }
 
+// StopPrefix ends every session whose key begins with this prefix.
+//
+// For a client that says it has stopped but names only part of what it was
+// playing: a Jellyfin client reports its play session id, while the key also
+// carries which file and which burned-in subtitle it was — so the thing it
+// can name is a prefix of the thing that has to be stopped.
+func (m *Manager) StopPrefix(prefix string) {
+	if prefix == "" {
+		return
+	}
+	m.mu.Lock()
+	var ids []string
+	for key, session := range m.byKey {
+		if strings.HasPrefix(key, prefix) {
+			ids = append(ids, session.ID)
+		}
+	}
+	m.mu.Unlock()
+	for _, id := range ids {
+		m.Stop(id)
+	}
+}
+
 func (m *Manager) Sessions() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -15,6 +15,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/playback"
 	"github.com/inknironapps/bask-media-server/internal/serve"
 	"github.com/inknironapps/bask-media-server/internal/store"
+	"github.com/inknironapps/bask-media-server/internal/subtitles"
 	"github.com/inknironapps/bask-media-server/internal/transcode"
 )
 
@@ -43,9 +44,15 @@ type Transcoder interface {
 // the file.
 func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		ItemID       int64 `json:"itemId"`
-		PartID       int64 `json:"partId"`
-		StartMS      int64 `json:"startMs"`
+		ItemID  int64 `json:"itemId"`
+		PartID  int64 `json:"partId"`
+		StartMS int64 `json:"startMs"`
+
+		// BurnSubtitleID asks for a subtitle to be drawn into the picture,
+		// which is how a browser watches a PGS track: it cannot draw one, and
+		// the server can.
+		BurnSubtitleID int64 `json:"burnSubtitleId"`
+
 		Capabilities struct {
 			Containers []string `json:"containers"`
 			Video      []string `json:"video"`
@@ -86,21 +93,46 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 		"startMs": body.StartMS,
 	}
 
+	// A subtitle to burn in makes this a conversion whatever the file is, so
+	// it is resolved before the direct-play answers below.
+	burn := s.burnFrom(r, *item, body.BurnSubtitleID)
+	if burn != nil && s.Transcoder == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"mode":  "unsupported",
+			"label": "Cannot play",
+			"why":   "that subtitle has to be drawn into the picture, and this server has no ffmpeg to do it",
+			"url":   "/web/stream/" + strconv.FormatInt(part.ID, 10),
+		})
+		return
+	}
+
 	// No probe, nothing to decide with: send the file. A server with no
 	// ffprobe is a server that direct plays, which is what it did before any
 	// of this existed.
-	if s.Prober == nil {
+	if s.Prober == nil && burn == nil {
 		s.playingDirect(r, key, item)
 		writeJSON(w, http.StatusOK, direct)
 		return
 	}
-	info, err := s.Prober.Probe(r.Context(), part.Path)
-	if err != nil {
-		s.logger().Warn("could not probe before playing; sending the file as it is",
-			"path", part.Path, "error", err)
-		s.playingDirect(r, key, item)
-		writeJSON(w, http.StatusOK, direct)
-		return
+	var info ffprobe.Info
+	if s.Prober != nil {
+		measured, err := s.Prober.Probe(r.Context(), part.Path)
+		switch {
+		case err != nil && burn == nil:
+			s.logger().Warn("could not probe before playing; sending the file as it is",
+				"path", part.Path, "error", err)
+			s.playingDirect(r, key, item)
+			writeJSON(w, http.StatusOK, direct)
+			return
+		case err != nil:
+			// Burning in needs a conversion whether or not the file could be
+			// measured, so an unmeasured file is converted with defaults
+			// rather than sent with the subtitle missing.
+			s.logger().Warn("could not probe before burning in a subtitle",
+				"path", part.Path, "error", err)
+		default:
+			info = measured
+		}
 	}
 
 	caps := playback.Capabilities{
@@ -110,10 +142,23 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 		MaxHeight:  body.Capabilities.MaxHeight,
 	}
 	plan := playback.Decide(info, part.Container, caps)
-	if plan.Mode == playback.ModeDirect {
+	if plan.Mode == playback.ModeDirect && burn == nil {
 		s.playingDirect(r, key, item)
 		writeJSON(w, http.StatusOK, direct)
 		return
+	}
+	if burn != nil {
+		// Nothing can be copied and drawn on at the same time.
+		plan.Burn = burn
+		plan.Mode, plan.VideoCodec = playback.ModeTranscode, "h264"
+		if plan.AudioCodec == "" {
+			plan.AudioCodec = "copy"
+		}
+		if plan.Why == "" {
+			plan.Why = "a subtitle is being drawn into the picture"
+		} else {
+			plan.Why += ", and a subtitle is being drawn into the picture"
+		}
 	}
 
 	// Something has to be converted, and this server may not be able to:
@@ -192,7 +237,34 @@ func sessionKey(partID int64, plan playback.Plan) string {
 		strconv.FormatInt(partID, 10),
 		plan.VideoCodec, plan.AudioCodec,
 		strconv.Itoa(plan.Height), strconv.Itoa(plan.Channels),
+		// A viewer switching subtitle tracks is asking for a different
+		// picture, and without this they would be handed the encoder that is
+		// already drawing the other one.
+		plan.Burn.Key(),
 	}, "|")
+}
+
+// burnFrom is the subtitle this request asks to have drawn into the picture.
+//
+// Only ever by the viewer's own choice: the page offers it for the subtitles
+// a browser cannot draw, which is every picture subtitle and the ASS tracks
+// whose positioning a <track> element ignores.
+func (s *Server) burnFrom(r *http.Request, item domain.Item, subtitleID int64) *playback.BurnIn {
+	if subtitleID <= 0 {
+		return nil
+	}
+	found, err := s.db(r.Context()).Subtitles(r.Context(), []int64{item.ID})
+	if err != nil {
+		s.logger().Warn("could not read subtitles to burn in", "item", item.ID, "error", err)
+		return nil
+	}
+	list := found[item.ID]
+	for _, sub := range list {
+		if sub.ID == subtitleID {
+			return subtitles.BurnIn(list, sub)
+		}
+	}
+	return nil
 }
 
 // partOf picks the file to play: the one asked for, or the first, which is

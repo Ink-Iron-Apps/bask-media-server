@@ -63,6 +63,8 @@ sleep 60
 	}
 	manager, err := transcode.New(transcode.Options{
 		FFmpeg: script, Root: filepath.Join(t.TempDir(), "sessions"),
+		// Off: detection runs the binary it is given, and this one sleeps.
+		Accel: "off",
 	})
 	if err != nil {
 		t.Fatal(err)

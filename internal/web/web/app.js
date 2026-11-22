@@ -1056,42 +1056,77 @@ function showSubtitle(index) {
 
 function renderSubtitleMenu(detail, available, picked) {
   const box = document.getElementById('player-subs');
-  const unavailable = (detail.subtitles || []).filter((sub) => !sub.text);
-  if (!available.length && !unavailable.length) {
+  const pictures = (detail.subtitles || []).filter((sub) => !sub.text);
+  if (!available.length && !pictures.length) {
     box.replaceChildren();
     return;
   }
 
+  const burning = (playing && playing.burn) || 0;
   const menu = el('div', { class: 'menu', hidden: true });
   const choose = (index, label) => el('button', {
     text: label,
     on: {
       click: () => {
-        showSubtitle(index);
         menu.hidden = true;
+        if (burning) {
+          // Burned in, so turning it off means asking for the stream again
+          // without it: the subtitle is in the picture, not beside it.
+          burnSubtitle(detail, 0);
+          return;
+        }
+        showSubtitle(index);
         button.textContent = index < 0 ? 'Subtitles' : label;
       },
     },
   });
 
+  const current = burning
+    ? (pictures.find((sub) => sub.id === burning) || {}).label || 'Subtitles'
+    : (picked < 0 ? 'Subtitles' : available[picked].label);
+
   const button = el('button', {
     class: 'ghost',
-    text: picked < 0 ? 'Subtitles' : available[picked].label,
+    text: current,
     on: { click: () => { menu.hidden = !menu.hidden; } },
   });
 
   fill(menu,
     choose(-1, 'Off'),
     available.map((sub, index) => choose(index, sub.label)),
-    // Picture subtitles are listed and greyed: they exist, this page cannot
-    // draw them, and a viewer who can see that stops looking for them.
-    unavailable.map((sub) => el('button', {
-      disabled: true,
-      title: 'A picture subtitle, which a browser cannot draw. It plays in the Bask app.',
-      text: sub.label + ' (picture)',
+    // A picture subtitle is a sequence of images, which a browser has no way
+    // to draw. The server can draw it into the video instead — which costs a
+    // conversion, so it is offered rather than done quietly.
+    pictures.map((sub) => el('button', {
+      class: sub.id === burning ? 'on' : '',
+      title: 'A picture subtitle. The server draws it into the video, which means converting the stream.',
+      text: sub.label + ' (burn in)',
+      on: {
+        click: () => {
+          menu.hidden = true;
+          burnSubtitle(detail, sub.id);
+        },
+      },
     })));
 
   fill(box, button, menu);
+}
+
+// burnSubtitle restarts the stream with a subtitle drawn into the picture, or
+// without one, keeping the viewer where they were.
+async function burnSubtitle(detail, subtitleId) {
+  const at = Math.round((video.currentTime || 0) * 1000);
+  if (playing && playing.session) {
+    // Free the encoder that is drawing the other one rather than leaving it
+    // to the idle deadline.
+    fetch(API + '/play/' + playing.session + '/stop?itemId=' + detail.item.id, {
+      method: 'POST',
+      headers: { 'X-BMS-Web': '1' },
+      credentials: 'same-origin',
+    }).catch(() => { /* the watchdog is the backstop */ });
+  }
+  toast(subtitleId ? 'Drawing that subtitle into the picture.' : 'Subtitles off.');
+  await play(detail, at, subtitleId);
 }
 
 /* ---------- the player ---------- */
@@ -1101,7 +1136,7 @@ const playerBox = document.getElementById('player');
 let playing = null;      // { item, parts, markers, next }
 let reportTimer = null;
 
-async function play(detail, offsetMs) {
+async function play(detail, offsetMs, burnSubtitleId) {
   const part = (detail.parts || [])[0];
   if (!part) {
     toast('There is no file for this one.', true);
@@ -1127,6 +1162,9 @@ async function play(detail, offsetMs) {
       itemId: detail.item.id,
       partId: part.id,
       startMs,
+      // A subtitle the browser cannot draw is drawn by the server, which
+      // makes this a conversion whatever the file is.
+      burnSubtitleId: burnSubtitleId || 0,
       capabilities: capabilities(),
     });
   } catch (err) {
@@ -1141,6 +1179,7 @@ async function play(detail, offsetMs) {
     next: null,
     session: answer.session || null,
     mode: answer.mode,
+    burn: burnSubtitleId || 0,
   };
 
   const mode = document.getElementById('player-mode');
