@@ -13,3 +13,10 @@
 *.keystore
 key.properties
 /bms.env
+
+# What a transcoding test leaves behind when it runs with a package directory
+# as its working directory. Not source, and three of them were committed once.
+*.pid
+init.mp4
+seg*.m4s
+stream.m3u8
