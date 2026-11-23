@@ -46,6 +46,7 @@ func (s *Server) items(w http.ResponseWriter, r *http.Request) {
 		Start: intQuery(r, "StartIndex"), Size: intQuery(r, "Limit"),
 		Genres: genresWanted(r),
 	}
+	page.Sort, page.Desc = sortWanted(r)
 	wanted, aside, understood := wantedKinds(query.Get("IncludeItemTypes"))
 	if !understood {
 		nothing(w, page)

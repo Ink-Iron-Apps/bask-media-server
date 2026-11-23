@@ -174,3 +174,34 @@ func (s *Server) genres(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, itemsReply{Items: out, TotalRecordCount: len(out)})
 }
+
+// sortWanted reads Jellyfin's sort parameters.
+//
+// Jellyfin names its orders differently from Plex — SortName, DateCreated,
+// ProductionYear, Runtime — so they are translated here rather than letting
+// the store learn a second vocabulary. A name this server has no order for
+// falls back to the default, because a client asking for an order BMS does
+// not have still wants its list.
+func sortWanted(r *http.Request) (store.SortKey, bool) {
+	query := r.URL.Query()
+	desc := strings.EqualFold(strings.TrimSpace(query.Get("SortOrder")), "Descending")
+
+	// The first name that means something: a client sends a list, in
+	// preference order, and the rest are tie-breaks this server already
+	// applies itself.
+	for _, name := range splitList(query.Get("SortBy")) {
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "sortname", "name", "album", "albumartist":
+			return store.SortTitleKey, desc
+		case "datecreated", "dateadded":
+			return store.SortAdded, desc
+		case "productionyear", "premieredate", "startdate":
+			return store.SortYear, desc
+		case "runtime":
+			return store.SortDuration, desc
+		case "officialrating", "criticrating":
+			return store.SortRating, desc
+		}
+	}
+	return store.SortTitleKey, desc
+}

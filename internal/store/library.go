@@ -30,6 +30,14 @@ type Page struct {
 	// Any one of them rather than all, because that is what a client's
 	// filter menu means when somebody ticks two boxes.
 	Genres []string
+
+	// Sort is the order to list in, and the empty key means by title, which
+	// is the order every listing had before clients could ask. Carried here
+	// with the window for the same reason the filter is: a client paging
+	// through a sorted list is paging through that order, and the two
+	// cannot be decided apart.
+	Sort SortKey
+	Desc bool
 }
 
 // Window returns the page clamped to something sane: a non-negative start and
@@ -192,7 +200,7 @@ func (d *DB) SectionItems(ctx context.Context, sectionID int64, kind domain.Kind
 	args = append(args, limit, offset)
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT `+itemColumns+` FROM items WHERE section_id = ? AND kind = ? AND parent_id IS NULL`+rated+genre+`
-		 ORDER BY sort_title, year LIMIT ? OFFSET ?`,
+		 ORDER BY `+orderBy(page.Sort, page.Desc)+` LIMIT ? OFFSET ?`,
 		args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list section items: %w", err)

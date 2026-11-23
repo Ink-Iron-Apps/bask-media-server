@@ -90,6 +90,13 @@ type entry struct {
 	// filter value carries. Not to be confused with the container's own Size.
 	Size int `xml:"size,attr,omitempty" json:"size,omitempty"`
 
+	// DefaultDirection, Default and DescKey belong to a sort menu's rows: a
+	// client reads which way an order reads best, which one to start with,
+	// and what to send for the reverse.
+	DefaultDirection string `xml:"defaultDirection,attr,omitempty" json:"defaultDirection,omitempty"`
+	Default          bool   `xml:"default,attr,omitempty" json:"default,omitempty"`
+	DescKey          string `xml:"descKey,attr,omitempty" json:"descKey,omitempty"`
+
 	Scanner  string `xml:"scanner,attr,omitempty" json:"scanner,omitempty"`
 	Language string `xml:"language,attr,omitempty" json:"language,omitempty"`
 	UUID     string `xml:"uuid,attr,omitempty" json:"uuid,omitempty"`

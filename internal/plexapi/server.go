@@ -77,6 +77,12 @@ func (s *Server) Handler() http.Handler {
 	// filter sheet is two requests, the menu and then the shelf.
 	authed("GET /library/sections/{id}/filters", s.filters)
 	authed("GET /library/sections/{id}/genre", s.genreValues)
+	// The rest of the furniture around a grid: what it sorts by, which
+	// letters its titles start with, and the per-library settings request a
+	// client makes on opening one.
+	authed("GET /library/sections/{id}/sorts", s.sorts)
+	authed("GET /library/sections/{id}/firstCharacter", s.firstCharacter)
+	authed("GET /library/sections/{id}/prefs", s.prefs)
 	authed("GET /library/metadata/{key}", s.metadata)
 	authed("GET /library/metadata/{key}/children", s.children)
 	authed("GET /library/metadata/{key}/extras", s.extrasOf)
@@ -289,6 +295,7 @@ func (s *Server) sectionAll(w http.ResponseWriter, r *http.Request) {
 
 	page := pageFrom(r)
 	page.Genres = genresWanted(r)
+	page.Sort, page.Desc = store.ParseSort(r.URL.Query().Get("sort"))
 	items, total, err := s.db(r.Context()).SectionItems(r.Context(), id, kind, page)
 	if err != nil {
 		s.fail(w, "list items", err)

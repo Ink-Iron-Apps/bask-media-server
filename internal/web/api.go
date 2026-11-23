@@ -252,6 +252,7 @@ func (s *Server) section(w http.ResponseWriter, r *http.Request) {
 		// chip into the rest of the shelf.
 		Genres: genresWanted(r),
 	}
+	page.Sort, page.Desc = store.ParseSort(r.URL.Query().Get("sort"))
 	kind := section.Kind.TopKind()
 	items, total, err := s.db(r.Context()).SectionItems(r.Context(), id, kind, page)
 	if err != nil {
