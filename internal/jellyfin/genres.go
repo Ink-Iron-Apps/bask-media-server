@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/store"
 )
 
@@ -48,6 +49,29 @@ func wordsWanted(r *http.Request) []store.WordFilter {
 	}}
 }
 
+// peopleWanted reads Jellyfin's credit filter off a request.
+//
+// Jellyfin's Person parameter does not say which role it means: a client
+// asking for a name wants everything that name worked on, whether they
+// directed it or appeared in it. So it becomes one filter over every role,
+// which matches somebody who did any of them — four separate filters would
+// instead require them to have done all four.
+func peopleWanted(r *http.Request) []store.CreditFilter {
+	names := splitList(r.URL.Query().Get("Person"))
+	if len(names) == 0 {
+		return nil
+	}
+	return []store.CreditFilter{{Roles: domain.CreditRoles(), Names: names}}
+}
+
+// studioWanted reads Jellyfin's studio filter.
+func studioWanted(r *http.Request) string {
+	for _, name := range splitList(r.URL.Query().Get("Studios")) {
+		return name
+	}
+	return ""
+}
+
 func splitList(value string) []string {
 	if strings.TrimSpace(value) == "" {
 		return nil
@@ -73,6 +97,7 @@ type filtersReply struct {
 	OfficialRatings []string `json:"OfficialRatings"`
 	Tags            []string `json:"Tags"`
 	Years           []int    `json:"Years"`
+	Studios         []string `json:"Studios"`
 }
 
 // filters answers for one library.
@@ -84,7 +109,10 @@ func (s *Server) filters(w http.ResponseWriter, r *http.Request) {
 	if parent == "" {
 		parent = strings.TrimSpace(r.URL.Query().Get("parentId"))
 	}
-	out := filtersReply{Genres: []string{}, OfficialRatings: []string{}, Tags: []string{}, Years: []int{}}
+	out := filtersReply{
+		Genres: []string{}, OfficialRatings: []string{}, Tags: []string{},
+		Years: []int{}, Studios: []string{},
+	}
 	if parent == "" {
 		// No library named: nothing to narrow, which is the honest answer to
 		// a filter sheet that has not been opened on anything yet.
@@ -128,6 +156,16 @@ func (s *Server) filters(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, one := range words {
 			out.Tags = append(out.Tags, one.Name)
+		}
+	}
+
+	// Studios, which a client's filter sheet offers beside the genres.
+	if studios, err := s.db(r.Context()).StudioNames(r.Context(), section.ID, string(kind)); err != nil {
+		s.fail(w, "list studios", err)
+		return
+	} else {
+		for _, studio := range studios {
+			out.Studios = append(out.Studios, studio.Name)
 		}
 	}
 

@@ -1333,6 +1333,7 @@ function rulesCard(rules, vocabulary, libraries, label, turnHand) {
         pick.addEventListener('change', () => { rule.value = pick.value; ask(); });
         return pick;
       }
+      case 'person':
       case 'genre': {
         // A text box with the library's own genres offered beside it, not a
         // menu of them: a rule may name a genre nothing carries yet, and the
@@ -1340,7 +1341,7 @@ function rulesCard(rules, vocabulary, libraries, label, turnHand) {
         const listID = 'genres-' + Math.random().toString(36).slice(2, 8);
         const box = el('input', {
           value: rule.value || '', list: listID, spellcheck: 'false',
-          placeholder: (spec.choices || []).length ? spec.choices[0] : 'Comedy',
+          placeholder: (spec.choices || []).length ? spec.choices[0] : (spec.value === 'person' ? 'A name' : 'Comedy'),
         });
         box.addEventListener('input', () => { rule.value = box.value; ask(); });
         return [box, el('datalist', { id: listID }, (spec.choices || []).map((choice) =>

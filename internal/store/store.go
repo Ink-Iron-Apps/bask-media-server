@@ -669,6 +669,46 @@ var migrations = []string{
 	`INSERT INTO item_tags (item_id, tag_id) SELECT item_id, genre_id FROM item_genres`,
 	`DROP TABLE item_genres`,
 	`DROP TABLE genres`,
+
+	// Who made a thing and who is in it.
+	//
+	// Not the tags table, although the shape rhymes. A person has a part as
+	// well as a name — "Amy Adams as Louise Banks" — and a part belongs to
+	// the pairing rather than to either side, so the joining row carries
+	// it. A tag has nothing of its own to say.
+	//
+	// One row per person per name, shared across the library, so an actor in
+	// forty films is one row and a client asking "what else are they in" is
+	// an index lookup. The name is unique without regard to case for the
+	// same reason a genre's is: two spellings of one person is two people
+	// everywhere it matters.
+	`CREATE TABLE people (
+		id        INTEGER PRIMARY KEY AUTOINCREMENT,
+		name      TEXT NOT NULL COLLATE NOCASE UNIQUE,
+		thumb_key TEXT NOT NULL DEFAULT ''
+	)`,
+
+	// role is what they did: a part, or the job they are credited with.
+	// position is where they came in the provider's own ordering, which is
+	// billing order for a cast and is the only thing that makes the first
+	// four names the ones worth showing.
+	`CREATE TABLE item_people (
+		item_id   INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+		person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+		role      TEXT NOT NULL,
+		part      TEXT NOT NULL DEFAULT '',
+		position  INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (item_id, person_id, role, part)
+	)`,
+	// The other direction: everything one person worked on.
+	`CREATE INDEX item_people_person ON item_people(person_id, role)`,
+	// And the order a credit list is read in.
+	`CREATE INDEX item_people_item ON item_people(item_id, role, position)`,
+
+	// A studio is not a person: it has no part and no billing order, and
+	// Plex carries it as an attribute rather than a tag element. So it is a
+	// column, and a film has one.
+	`ALTER TABLE items ADD COLUMN studio TEXT NOT NULL DEFAULT ''`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

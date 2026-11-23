@@ -83,6 +83,14 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /library/sections/{id}/tag", s.tagValues)
 	authed("GET /library/sections/{id}/mood", s.moodValues)
 	authed("GET /library/sections/{id}/style", s.styleValues)
+	// The credits a library can be narrowed by, and the pictures of the
+	// people in them.
+	authed("GET /library/sections/{id}/director", s.directorValues)
+	authed("GET /library/sections/{id}/writer", s.writerValues)
+	authed("GET /library/sections/{id}/producer", s.producerValues)
+	authed("GET /library/sections/{id}/actor", s.actorValues)
+	authed("GET /library/sections/{id}/studio", s.studioValues)
+	authed("GET /library/people/{key}", s.personThumb)
 	// The rest of the furniture around a grid: what it sorts by, which
 	// letters its titles start with, and the per-library settings request a
 	// client makes on opening one.
@@ -311,6 +319,15 @@ func (s *Server) sectionAll(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+	// One menu per role, because Plex names the role in the parameter.
+	for _, role := range domain.CreditRoles() {
+		if names := creditsWanted(r, role); len(names) > 0 {
+			page.People = append(page.People, store.CreditFilter{
+				Roles: []domain.CreditRole{role}, Names: names,
+			})
+		}
+	}
+	page.Studio = strings.TrimSpace(r.URL.Query().Get("studio"))
 	page.Sort, page.Desc = store.ParseSort(r.URL.Query().Get("sort"))
 	items, total, err := s.db(r.Context()).SectionItems(r.Context(), id, kind, page)
 	if err != nil {
@@ -945,6 +962,29 @@ func (s *Server) renderItem(
 	}
 	for _, name := range it.Styles {
 		e.Style = append(e.Style, tag{Tag: name, Filter: "style=" + url.QueryEscape(name)})
+	}
+
+	e.Studio = it.Studio
+	for _, credit := range it.People {
+		crew := func(into *[]tag, field string) {
+			*into = append(*into, tag{Tag: credit.Name, Filter: field + "=" + url.QueryEscape(credit.Name)})
+		}
+		switch credit.Role {
+		case domain.CreditDirector:
+			crew(&e.Director, "director")
+		case domain.CreditWriter:
+			crew(&e.Writer, "writer")
+		case domain.CreditProducer:
+			crew(&e.Producer, "producer")
+		case domain.CreditActor:
+			// Plex's "role" attribute is the character, not the job, which
+			// reads backwards and is what the clients look for.
+			one := role{Tag: credit.Name, Role: credit.Part}
+			if credit.Thumb != "" {
+				one.Thumb = "/library/people/" + url.PathEscape(credit.Thumb)
+			}
+			e.Role = append(e.Role, one)
+		}
 	}
 	if it.Disc > 0 {
 		// Plex carries a track's disc as the parent's index, because the disc

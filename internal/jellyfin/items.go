@@ -63,6 +63,16 @@ type item struct {
 	// attached.
 	Tags []string `json:"Tags,omitempty"`
 
+	// People is the whole credit list in one array, each entry carrying what
+	// that person did. Jellyfin has no separate director or writer field: a
+	// client filters this array by Type, which is why the role is on the
+	// entry rather than implied by which list it came from.
+	People []personEntry `json:"People,omitempty"`
+
+	// Studios is who made it. A list on the wire, and one entry here,
+	// because a thing has one studio.
+	Studios []namedID `json:"Studios,omitempty"`
+
 	ProductionYear int    `json:"ProductionYear,omitempty"`
 	Overview       string `json:"Overview,omitempty"`
 	PremiereDate   string `json:"PremiereDate,omitempty"`
@@ -109,6 +119,23 @@ type item struct {
 	CollectionType string `json:"CollectionType,omitempty"`
 
 	LocationType string `json:"LocationType,omitempty"`
+}
+
+// personEntry is one credit in Jellyfin's vocabulary.
+//
+// Type is what they did — Actor, Director, Writer, Producer — capitalised as
+// Jellyfin writes it, because its clients compare the string. Role is the
+// character, which reads backwards and is what they look for; it is the same
+// backwards naming Plex uses, so at least the two agree.
+type personEntry struct {
+	Name string `json:"Name"`
+	ID   string `json:"Id"`
+	Type string `json:"Type"`
+	Role string `json:"Role,omitempty"`
+
+	// PrimaryImageTag is what a client puts in an image URL for their
+	// photograph, and absent when there is none.
+	PrimaryImageTag string `json:"PrimaryImageTag,omitempty"`
 }
 
 // namedID is a thing with a name and a handle, which is the shape Jellyfin
@@ -322,6 +349,19 @@ func (s *Server) render(it domain.Item, rel related, progress domain.Progress) i
 	if len(it.Tags) > 0 || len(it.Labels) > 0 {
 		out.Tags = append(append([]string{}, it.Labels...), it.Tags...)
 	}
+	if it.Studio != "" {
+		out.Studios = []namedID{{Name: it.Studio, ID: it.Studio}}
+	}
+	for _, credit := range it.People {
+		entry := personEntry{
+			Name: credit.Name, ID: credit.Name,
+			Type: creditTypeOf(credit.Role), Role: credit.Part,
+		}
+		if credit.Thumb != "" {
+			entry.PrimaryImageTag = shortTag(credit.Thumb)
+		}
+		out.People = append(out.People, entry)
+	}
 	if len(it.Genres) > 0 {
 		out.Genres = it.Genres
 		out.GenreItems = make([]namedID, 0, len(it.Genres))
@@ -478,4 +518,21 @@ func displaySize(p domain.Part) (width, height int) {
 		return p.Height, p.Width
 	}
 	return p.Width, p.Height
+}
+
+// creditTypeOf is what Jellyfin calls one role.
+//
+// Capitalised as Jellyfin writes it, because its clients compare the string
+// rather than parsing it.
+func creditTypeOf(role domain.CreditRole) string {
+	switch role {
+	case domain.CreditDirector:
+		return "Director"
+	case domain.CreditWriter:
+		return "Writer"
+	case domain.CreditProducer:
+		return "Producer"
+	default:
+		return "Actor"
+	}
 }

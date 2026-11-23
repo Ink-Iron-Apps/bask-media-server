@@ -112,7 +112,10 @@ type entry struct {
 	GUID                 string `xml:"guid,attr,omitempty" json:"guid,omitempty"`
 	// ContentRating is the rating as the board wrote it. Plex clients draw
 	// it beside the title and some of them filter on it.
-	ContentRating    string `xml:"contentRating,attr,omitempty" json:"contentRating,omitempty"`
+	ContentRating string `xml:"contentRating,attr,omitempty" json:"contentRating,omitempty"`
+	// Studio is who made it. An attribute rather than a tag element,
+	// because that is where Plex puts it and where its clients read it.
+	Studio           string `xml:"studio,attr,omitempty" json:"studio,omitempty"`
 	Summary          string `xml:"summary,attr,omitempty" json:"summary,omitempty"`
 	Index            int    `xml:"index,attr,omitempty" json:"index,omitempty"`
 	ParentIndex      int    `xml:"parentIndex,attr,omitempty" json:"parentIndex,omitempty"`
@@ -176,6 +179,14 @@ type entry struct {
 	Mood  []tag `xml:"Mood,omitempty" json:"Mood,omitempty"`
 	Style []tag `xml:"Style,omitempty" json:"Style,omitempty"`
 
+	// The credits, as Plex's clients read them. Role carries a character and
+	// a photograph, which is why it is its own type; the crew elements are
+	// plain tags.
+	Director []tag  `xml:"Director,omitempty" json:"Director,omitempty"`
+	Writer   []tag  `xml:"Writer,omitempty" json:"Writer,omitempty"`
+	Producer []tag  `xml:"Producer,omitempty" json:"Producer,omitempty"`
+	Role     []role `xml:"Role,omitempty" json:"Role,omitempty"`
+
 	Media    []media    `xml:"Media,omitempty" json:"Media,omitempty"`
 	Location []location `xml:"Location,omitempty" json:"Location,omitempty"`
 	Marker   []marker   `xml:"Marker,omitempty" json:"Marker,omitempty"`
@@ -192,6 +203,21 @@ type tag struct {
 	ID     int64  `xml:"id,attr,omitempty" json:"id,omitempty"`
 	Tag    string `xml:"tag,attr" json:"tag"`
 	Filter string `xml:"filter,attr,omitempty" json:"filter,omitempty"`
+}
+
+// role is one person in the cast: who they are, who they played, and a
+// picture.
+//
+// Its own type rather than a tag, because a cast row draws all three and a
+// tag has nowhere to put the last two. The attribute names are Plex's, down
+// to "role" meaning the character rather than the job, which reads
+// backwards and is what the clients look for.
+type role struct {
+	ID    int64  `xml:"id,attr,omitempty" json:"id,omitempty"`
+	Tag   string `xml:"tag,attr" json:"tag"`
+	Role  string `xml:"role,attr,omitempty" json:"role,omitempty"`
+	Thumb string `xml:"thumb,attr,omitempty" json:"thumb,omitempty"`
+	Order int    `xml:"-" json:"-"`
 }
 
 // marker is a stretch a client offers to skip. The attribute names are Plex's,

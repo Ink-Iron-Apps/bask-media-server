@@ -578,7 +578,10 @@ func TestARuleSetTheServerCannotAnswerIsRefused(t *testing.T) {
 		name  string
 		rules domain.Smart
 	}{
-		{"a field nobody has", one("director", domain.SmartIs, "Gilliam")},
+		// Composer is a real credit on a real film and a field this server
+		// has no rule for, which is the case worth refusing: a rule nobody
+		// can answer must not be stored as one that matches nothing.
+		{"a field nobody has", one("composer", domain.SmartIs, "Jóhannsson")},
 		{"a comparison the field cannot take", one(domain.SmartYear, domain.SmartContains, "198")},
 		{"a year that is not a number", one(domain.SmartYear, domain.SmartIs, "nineteen")},
 		{"a library that is not a library", one(domain.SmartLibrary, domain.SmartIs, "films")},

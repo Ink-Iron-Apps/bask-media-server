@@ -241,9 +241,27 @@ func (s *Server) vocabulary(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "list genres", err)
 		return
 	}
+	// And the names credited in the library, for the same reason: nobody
+	// should have to spell "Denis Villeneuve" from memory to narrow a shelf.
+	directors, err := s.viewing(r).PeopleNames(r.Context(), domain.CreditDirector)
+	if err != nil {
+		s.fail(w, "list directors", err)
+		return
+	}
+	actors, err := s.viewing(r).PeopleNames(r.Context(), domain.CreditActor)
+	if err != nil {
+		s.fail(w, "list actors", err)
+		return
+	}
+
 	for i := range fields {
-		if fields[i].Field == domain.SmartGenre {
+		switch fields[i].Field {
+		case domain.SmartGenre:
 			fields[i].Choices = genres
+		case domain.SmartDirector:
+			fields[i].Choices = directors
+		case domain.SmartActor:
+			fields[i].Choices = actors
 		}
 	}
 

@@ -189,14 +189,17 @@ func TestRulesTheServerCannotAnswerAreRefusedWithTheReason(t *testing.T) {
 	_, made := h.call(http.MethodPost, "/admin/api/collections", map[string]any{"title": "Nonsense"})
 	id := strconv.Itoa(int(made["id"].(float64)))
 
+	// Composer is a real credit on a real film and a field this server has
+	// no rule for, which is the case worth refusing: a rule nobody can
+	// answer must not be stored as one that matches nothing.
 	bad := map[string]any{"rules": []any{
-		map[string]any{"field": "director", "op": "is", "value": "Gilliam"},
+		map[string]any{"field": "composer", "op": "is", "value": "Jóhannsson"},
 	}}
 	res, body := h.call(http.MethodPatch, "/admin/api/collections/"+id, map[string]any{"rules": bad})
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("an unknown field = %d: %v", res.StatusCode, body)
 	}
-	if message, _ := body["error"].(string); !strings.Contains(message, "director") {
+	if message, _ := body["error"].(string); !strings.Contains(message, "composer") {
 		t.Fatalf("error = %q", message)
 	}
 

@@ -146,6 +146,42 @@ type ArtQuery struct {
 	ProviderID string
 }
 
+// Person is one credit as a provider gives it.
+type Person struct {
+	Name string
+	Role domain.CreditRole
+
+	// Part is the character an actor played, and empty for everyone else.
+	Part string
+
+	// Position is where the provider put them, which for a cast is billing
+	// order.
+	Position int
+
+	// ThumbURL is their photograph, to be fetched into the artwork cache
+	// like any other picture. Empty when the provider has none.
+	ThumbURL string
+}
+
+// Credits is who made a thing and who is in it.
+type Credits struct {
+	// Studio is who made it, as the provider names them, and empty when it
+	// does not say.
+	Studio string
+
+	People []Person
+}
+
+// PeopleSource is a provider that can also be asked who made a thing.
+//
+// Separate from [Provider] because it is the expensive half: a request per
+// matched title on top of the match itself. A library that does not want
+// cast lists should not pay for them, which is a per-library setting, and a
+// provider that cannot answer should not have to pretend.
+type PeopleSource interface {
+	People(ctx context.Context, want ArtQuery) (Credits, error)
+}
+
 // ArtworkSource is somewhere pictures can be browsed.
 //
 // Separate from [Provider] because the two are configured, paid for and

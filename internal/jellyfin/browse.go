@@ -48,6 +48,8 @@ func (s *Server) items(w http.ResponseWriter, r *http.Request) {
 	}
 	page.Sort, page.Desc = sortWanted(r)
 	page.Words = wordsWanted(r)
+	page.People = peopleWanted(r)
+	page.Studio = studioWanted(r)
 	wanted, aside, understood := wantedKinds(query.Get("IncludeItemTypes"))
 	if !understood {
 		nothing(w, page)

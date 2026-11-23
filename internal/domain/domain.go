@@ -201,6 +201,55 @@ func (s SectionSettings) ScanInterval() time.Duration {
 	return time.Duration(s.ScanEvery) * time.Minute
 }
 
+// CreditRole is what somebody did on a thing.
+//
+// Four, because four is what the clients draw: a cast list, and three crew
+// jobs each of which gets its own line on a detail page. A provider's
+// hundred department names collapse into these or are dropped, because a
+// credit nothing displays is a row in a table for nobody.
+type CreditRole string
+
+const (
+	// CreditActor is somebody in it, and the only role with a part.
+	CreditActor CreditRole = "actor"
+
+	CreditDirector CreditRole = "director"
+	CreditWriter   CreditRole = "writer"
+	CreditProducer CreditRole = "producer"
+)
+
+// CreditRoles is every role, in the order a detail page shows them.
+func CreditRoles() []CreditRole {
+	return []CreditRole{CreditDirector, CreditWriter, CreditProducer, CreditActor}
+}
+
+// Valid reports whether this is a role BMS stores.
+func (r CreditRole) Valid() bool {
+	switch r {
+	case CreditActor, CreditDirector, CreditWriter, CreditProducer:
+		return true
+	default:
+		return false
+	}
+}
+
+// Credit is one person's involvement in one thing.
+//
+// Here rather than only in the store because every surface renders it: a
+// Plex client reads a Role element, a Jellyfin client a People entry, and
+// the viewing pages a line under the title.
+type Credit struct {
+	Name string
+	Role CreditRole
+
+	// Part is the character an actor played, and empty for everyone else.
+	Part string
+
+	// Thumb names their picture in the artwork cache, and is empty when
+	// nothing has been fetched.
+	Thumb string
+}
+
 // Item is anything a client can browse or play: a movie, a show, one of its
 // seasons, or an episode.
 //
@@ -302,6 +351,16 @@ type Item struct {
 	Labels []string
 	Moods  []string
 	Styles []string
+
+	// Studio is who made it, as the provider names them. Empty until a
+	// metadata pass that was asked for people has reached it.
+	Studio string
+
+	// People are the credits: who directed, wrote and produced it, and who
+	// is in it. In the order a detail page shows them — crew first, then the
+	// cast in the provider's own billing order — and read only where a whole
+	// item is read, for the reason the other lists are.
+	People []Credit
 
 	// Parts are the files behind a playable item. A movie or episode normally
 	// has exactly one; more than one means multiple versions of the same thing.
@@ -690,6 +749,9 @@ const (
 	SmartSummary     SmartField = "summary"
 	SmartPerformer   SmartField = "performer"
 	SmartGenre       SmartField = "genre"
+	SmartDirector    SmartField = "director"
+	SmartActor       SmartField = "actor"
+	SmartStudio      SmartField = "studio"
 	SmartYear        SmartField = "year"
 	SmartCertificate SmartField = "certificate"
 	SmartAge         SmartField = "age"

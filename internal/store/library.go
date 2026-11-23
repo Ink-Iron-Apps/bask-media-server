@@ -48,6 +48,17 @@ type Page struct {
 	// cannot be decided apart.
 	Sort SortKey
 	Desc bool
+
+	// People narrows to what somebody worked on. One entry per menu used:
+	// the entries are AND and the names within one are OR, for the same
+	// reason the words are. An entry naming several roles matches somebody
+	// who did any of them, which is what a wire that does not say which
+	// role it means asks for.
+	People []CreditFilter
+
+	// Studio narrows to who made it. One value, because a thing has one
+	// studio and a menu row is a single choice.
+	Studio string
 }
 
 // Window returns the page clamped to something sane: a non-negative start and
@@ -145,7 +156,7 @@ func (d *DB) MarkSectionScanned(ctx context.Context, id int64, at time.Time) err
 	return nil
 }
 
-const itemColumns = `id, section_id, kind, parent_id, title, sort_title, year, idx, disc, summary, duration_ms, added_at, updated_at, provider_id, poster_key, art_key, metadata_at, taken_at, performer, locked, extra, rating, rating_age`
+const itemColumns = `id, section_id, kind, parent_id, title, sort_title, year, idx, disc, summary, duration_ms, added_at, updated_at, provider_id, poster_key, art_key, metadata_at, taken_at, performer, locked, extra, rating, rating_age, studio`
 
 func scanItem(rows interface{ Scan(...any) error }) (domain.Item, error) {
 	var (
@@ -160,7 +171,7 @@ func scanItem(rows interface{ Scan(...any) error }) (domain.Item, error) {
 	if err := rows.Scan(&it.ID, &it.SectionID, &kind, &parent, &it.Title, &it.SortTitle,
 		&it.Year, &it.Index, &it.Disc, &it.Summary, &durationMS, &addedAt, &updatedAt,
 		&it.ProviderID, &it.PosterKey, &it.ArtKey, &metadataAt, &takenAt, &it.Performer,
-		&locked, &extra, &it.Rating, &it.RatingAge); err != nil {
+		&locked, &extra, &it.Rating, &it.RatingAge, &it.Studio); err != nil {
 		return domain.Item{}, err
 	}
 	it.Locked = locked != 0
@@ -200,6 +211,15 @@ func (d *DB) SectionItems(ctx context.Context, sectionID int64, kind domain.Kind
 		clause, args := d.wordClause(ctx, filter)
 		genre += clause
 		wanted = append(wanted, args...)
+	}
+	for _, filter := range page.People {
+		clause, args := peopleClause(filter, d.peopleNamesFor(ctx, filter.Names))
+		genre += clause
+		wanted = append(wanted, args...)
+	}
+	if page.Studio != "" {
+		genre += " AND studio = ?"
+		wanted = append(wanted, page.Studio)
 	}
 
 	var total int
@@ -297,6 +317,16 @@ func (d *DB) Item(ctx context.Context, id int64) (*domain.Item, error) {
 	it.Labels = words[TagLabel][it.ID]
 	it.Moods = words[TagMood][it.ID]
 	it.Styles = words[TagStyle][it.ID]
+
+	// And the credits, for the same reason: this is one item read whole, and
+	// a detail page draws all of them.
+	credits, err := d.Credits(ctx, it.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, credit := range credits {
+		it.People = append(it.People, credit.Credit)
+	}
 	if it.Playable() {
 		parts, err := d.Parts(ctx, it.ID)
 		if err != nil {

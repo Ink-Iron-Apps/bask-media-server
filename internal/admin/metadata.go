@@ -49,6 +49,14 @@ type itemDetail struct {
 	Moods  []string `json:"moods,omitempty"`
 	Styles []string `json:"styles,omitempty"`
 
+	// Studio and People are what a metadata pass found, shown so somebody
+	// can see whether a library that asked for credits actually got them.
+	// Read-only here: a cast list is forty names from a catalogue, and
+	// correcting one by hand is a different feature from correcting a
+	// title.
+	Studio string          `json:"studio,omitempty"`
+	People []domain.Credit `json:"people,omitempty"`
+
 	ProviderID string `json:"providerId,omitempty"`
 	Locked     bool   `json:"locked"`
 	Matched    bool   `json:"matched"`
@@ -107,6 +115,8 @@ func (s *Server) readItem(w http.ResponseWriter, r *http.Request) {
 		Labels:     item.Labels,
 		Moods:      item.Moods,
 		Styles:     item.Styles,
+		Studio:     item.Studio,
+		People:     item.People,
 		ProviderID: item.ProviderID, Locked: item.Locked,
 		Matched: item.ProviderID != "", Files: files,
 	}

@@ -76,6 +76,35 @@ func (s *Server) filters(w http.ResponseWriter, r *http.Request) {
 			Key: base + "/" + string(kind), Title: kind.Label(),
 		})
 	}
+
+	// And the credits, on the same rule: a role is offered only where
+	// somebody in this library is credited with it, which is to say only
+	// where the library asked for people at all.
+	for _, role := range domain.CreditRoles() {
+		names, err := s.db(r.Context()).SectionPeople(r.Context(), section.ID, top, role)
+		if err != nil {
+			s.fail(w, "list "+string(role)+"s", err)
+			return
+		}
+		if len(names) == 0 {
+			continue
+		}
+		out.Directory = append(out.Directory, entry{
+			Elem: "Directory", Type: "filter",
+			Filter: string(role), FilterType: "string",
+			Key: base + "/" + string(role), Title: roleLabel(role),
+		})
+	}
+	if studios, err := s.db(r.Context()).StudioNames(r.Context(), section.ID, top); err != nil {
+		s.fail(w, "list studios", err)
+		return
+	} else if len(studios) > 0 {
+		out.Directory = append(out.Directory, entry{
+			Elem: "Directory", Type: "filter",
+			Filter: "studio", FilterType: "string",
+			Key: base + "/studio", Title: "Studio",
+		})
+	}
 	out.Size = len(out.Directory)
 	out.TotalSize = out.Size
 	write(w, r, out)

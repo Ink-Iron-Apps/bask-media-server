@@ -187,7 +187,96 @@ func (e *Enricher) one(ctx context.Context, item domain.Item) (matched bool, ima
 			return false, images, err
 		}
 	}
+	// And the credits, which are the expensive half and so are asked for
+	// only where the library said it wanted them.
+	fetched, err := e.people(ctx, item, match.ProviderID)
+	if err != nil {
+		return false, images, err
+	}
+	images += fetched
 	return true, images, nil
+}
+
+// people fetches the cast, the crew and the studio, where the library asked
+// for them.
+//
+// A separate request per title, which is why it is a setting. Reports how
+// many photographs were fetched, because they go into the same cache and the
+// same tally as the posters.
+//
+// A failure here does not fail the item. The title, the summary and the
+// poster are already saved by the time this runs, and losing a cast list to
+// a blink in the network is not worth undoing them — the next pass over an
+// unlocked item will try again.
+func (e *Enricher) people(ctx context.Context, item domain.Item, providerID string) (images int, err error) {
+	if providerID == "" {
+		return 0, nil
+	}
+	source, ok := e.Provider.(metadata.PeopleSource)
+	if !ok {
+		return 0, nil
+	}
+
+	switch item.Kind {
+	case domain.KindMovie, domain.KindShow:
+	default:
+		// A season and an episode take the series' credits, which is what
+		// every client shows on them anyway, and asking per episode would
+		// be a request per episode for the same answer.
+		return 0, nil
+	}
+
+	section, err := e.DB.Section(ctx, item.SectionID)
+	if err != nil {
+		return 0, err
+	}
+	if !section.Settings.PeopleWanted(section.Kind) {
+		return 0, nil
+	}
+
+	credits, err := source.People(ctx, metadata.ArtQuery{
+		Kind: item.Kind, Title: item.Title, Year: item.Year, ProviderID: providerID,
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return 0, err
+		}
+		e.logger().Debug("could not read the credits", "title", item.Title, "error", err)
+		return 0, nil
+	}
+
+	if err := e.DB.SetStudio(ctx, item.ID, credits.Studio); err != nil {
+		return 0, err
+	}
+	if len(credits.People) == 0 {
+		// Nothing said, so nothing cleared: the same rule as the genres
+		// above.
+		return 0, nil
+	}
+
+	stored := make([]store.Credit, 0, len(credits.People))
+	for _, person := range credits.People {
+		credit := store.Credit{
+			Credit: domain.Credit{
+				Name: person.Name, Role: person.Role, Part: person.Part,
+			},
+			Position: person.Position,
+		}
+		// A photograph is worth having but never worth failing over: a cast
+		// row with a name and no face is still a cast row.
+		if e.Artwork != nil && person.ThumbURL != "" {
+			if key, ferr := e.Artwork.Fetch(ctx, person.ThumbURL); ferr == nil {
+				credit.Thumb, images = key, images+1
+			} else if errors.Is(ferr, context.Canceled) {
+				return images, ferr
+			}
+		}
+		stored = append(stored, credit)
+	}
+	if err := e.DB.SetCredits(ctx, item.ID, stored); err != nil {
+		return images, err
+	}
+	return images, nil
 }
 
 // episode needs its show's provider id, which is why shows are enriched first.

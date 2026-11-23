@@ -53,6 +53,12 @@ const (
 	// the whole point of a collection that fills itself.
 	smartValueGenre smartKind = "genre"
 
+	// smartValuePerson is a name, offered with the names in use as
+	// suggestions for the same reason a genre is: nobody should have to
+	// spell "Denis Villeneuve" from memory, and a rule may still name
+	// somebody nothing is credited to yet.
+	smartValuePerson smartKind = "person"
+
 	smartValueNumber  smartKind = "number"
 	smartValueDays    smartKind = "days"
 	smartValueMinutes smartKind = "minutes"
@@ -173,6 +179,30 @@ var smartFields = map[domain.SmartField]smartSpec{
 				return `NOT ` + carries, []any{value}
 			}
 			return carries, []any{value}
+		},
+	},
+	domain.SmartDirector: {
+		label: "Director",
+		value: smartValuePerson,
+		ops:   []domain.SmartOp{domain.SmartIs, domain.SmartIsNot},
+		compile: func(op domain.SmartOp, value string, _ int64) (string, []any) {
+			return creditRule(domain.CreditDirector, op, value)
+		},
+	},
+	domain.SmartActor: {
+		label: "Actor",
+		value: smartValuePerson,
+		ops:   []domain.SmartOp{domain.SmartIs, domain.SmartIsNot},
+		compile: func(op domain.SmartOp, value string, _ int64) (string, []any) {
+			return creditRule(domain.CreditActor, op, value)
+		},
+	},
+	domain.SmartStudio: {
+		label: "Studio",
+		value: smartValuePerson,
+		ops:   []domain.SmartOp{domain.SmartIs, domain.SmartIsNot, domain.SmartContains},
+		compile: func(op domain.SmartOp, value string, _ int64) (string, []any) {
+			return matchText("i.studio", op, value)
 		},
 	},
 	domain.SmartYear: {
@@ -418,6 +448,16 @@ func validateRule(rule domain.SmartRule) error {
 		if value == "" && rule.Field != domain.SmartCertificate {
 			return fmt.Errorf("%s needs something to compare against", strings.ToLower(spec.label))
 		}
+	case smartValuePerson:
+		// Not checked against the library, for the reason a genre is not: a
+		// rule is a question asked every time it is read, and a director
+		// nothing is credited to today may be tomorrow.
+		if value == "" {
+			return fmt.Errorf("%s needs a name", strings.ToLower(spec.label))
+		}
+		if len(value) > maxPersonNameLength {
+			return fmt.Errorf("%q is too long to be a name", rule.Value)
+		}
 	case smartValueGenre:
 		// Not checked against the genres in the library on purpose. A rule
 		// is a question asked of the library every time it is read, and a
@@ -536,7 +576,8 @@ type SmartFieldInfo struct {
 func SmartFields() []SmartFieldInfo {
 	order := []domain.SmartField{
 		domain.SmartLibrary, domain.SmartKind, domain.SmartTitle, domain.SmartSummary,
-		domain.SmartPerformer, domain.SmartGenre, domain.SmartYear, domain.SmartCertificate, domain.SmartAge,
+		domain.SmartPerformer, domain.SmartGenre, domain.SmartDirector, domain.SmartActor,
+		domain.SmartStudio, domain.SmartYear, domain.SmartCertificate, domain.SmartAge,
 		domain.SmartAdded, domain.SmartDuration, domain.SmartResolution,
 		domain.SmartContainer, domain.SmartEdition, domain.SmartWatched,
 	}
@@ -603,4 +644,18 @@ func (d *DB) SmartPreview(ctx context.Context, s domain.Smart, page Page) ([]dom
 		return nil, 0, err
 	}
 	return d.smartItems(ctx, s, page)
+}
+
+// creditRule is a rule about who worked on something.
+//
+// Correlated on the item, like the genre rule and for the same reason: a
+// film with two credits for one name would otherwise be counted twice.
+func creditRule(role domain.CreditRole, op domain.SmartOp, value string) (string, []any) {
+	credited := `EXISTS (SELECT 1 FROM item_people ip
+	              JOIN people p ON p.id = ip.person_id
+	             WHERE ip.item_id = i.id AND ip.role = ? AND p.name = ?)`
+	if op == domain.SmartIsNot {
+		return `NOT ` + credited, []any{string(role), value}
+	}
+	return credited, []any{string(role), value}
 }
