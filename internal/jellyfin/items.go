@@ -51,6 +51,12 @@ type item struct {
 	// controls read.
 	OfficialRating string `json:"OfficialRating,omitempty"`
 
+	// Genres is what this is about, and GenreItems the same list with the
+	// ids a client needs to turn one into a link. Both, because Jellyfin
+	// sends both and clients read whichever they were written against.
+	Genres     []string   `json:"Genres,omitempty"`
+	GenreItems []namedID  `json:"GenreItems,omitempty"`
+
 	ProductionYear int    `json:"ProductionYear,omitempty"`
 	Overview       string `json:"Overview,omitempty"`
 	PremiereDate   string `json:"PremiereDate,omitempty"`
@@ -97,6 +103,13 @@ type item struct {
 	CollectionType string `json:"CollectionType,omitempty"`
 
 	LocationType string `json:"LocationType,omitempty"`
+}
+
+// namedID is a thing with a name and a handle, which is the shape Jellyfin
+// uses for the tags beside an item: genres, studios, people.
+type namedID struct {
+	Name string `json:"Name"`
+	ID   string `json:"Id"`
 }
 
 // userData is where this viewer is in this item. Per account, which is the
@@ -300,6 +313,17 @@ func (s *Server) render(it domain.Item, rel related, progress domain.Progress) i
 		LocationType:   "FileSystem",
 	}
 	out.OfficialRating = it.Rating
+	if len(it.Genres) > 0 {
+		out.Genres = it.Genres
+		out.GenreItems = make([]namedID, 0, len(it.Genres))
+		for _, name := range it.Genres {
+			// The id is the name. Jellyfin's are opaque strings and a client
+			// only ever hands one back as a filter value, which is the same
+			// request as filtering by the name — so there is nothing to look
+			// up and nothing to keep in step.
+			out.GenreItems = append(out.GenreItems, namedID{Name: name, ID: name})
+		}
+	}
 	if it.Kind == domain.KindSeason && out.Name == "" {
 		out.Name = "Season " + strconv.Itoa(it.Index)
 	}

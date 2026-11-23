@@ -589,6 +589,30 @@ var migrations = []string{
 	// Empty or not is the whole of the distinction between the two kinds of
 	// collection, and a smart one has no rows in collection_items at all.
 	`ALTER TABLE collections ADD COLUMN rules TEXT NOT NULL DEFAULT ''`,
+
+	// What a thing is about, as the words a provider or a file's own tags use.
+	//
+	// A table of names and a joining table rather than a column of text,
+	// because a genre is asked two questions a delimited string cannot answer
+	// cheaply: which things are this genre, and what genres does this library
+	// have. Both are an index lookup here and a scan of every row there.
+	//
+	// The name is unique without regard to case, because the same genre
+	// arrives spelled differently from different places — a provider's
+	// "Science Fiction" and a file tag's "science fiction" are one shelf, and
+	// two rows would make it two.
+	`CREATE TABLE genres (
+		id   INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL COLLATE NOCASE UNIQUE
+	)`,
+	`CREATE TABLE item_genres (
+		item_id  INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+		genre_id INTEGER NOT NULL REFERENCES genres(id) ON DELETE CASCADE,
+		PRIMARY KEY (item_id, genre_id)
+	)`,
+	// The other direction: everything of one genre, which is what a client's
+	// filter asks and what the primary key above cannot answer.
+	`CREATE INDEX item_genres_genre ON item_genres(genre_id)`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

@@ -106,6 +106,12 @@ type Edit struct {
 	Year    *int
 	Summary *string
 
+	// Genres is the whole list, replaced as one: a correction says what this
+	// is about, not which word to add. An empty slice therefore means "it is
+	// about nothing", which is a thing somebody can genuinely mean, while a
+	// nil pointer means they did not touch the genres at all.
+	Genres *[]string
+
 	// Locked says whether the enrichment pass should leave this item alone.
 	// Editing anything locks it by default — the point of a correction is
 	// that it stays corrected — and this is how it is unlocked again.
@@ -146,13 +152,30 @@ func (d *DB) EditItem(ctx context.Context, itemID int64, edit Edit) error {
 	args = append(args, boolToInt(locked), millis(time.Now().UTC()))
 	args = append(args, itemID)
 
-	res, err := d.sql.ExecContext(ctx,
+	tx, err := d.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("edit item: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
 		`UPDATE items SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
 	if err != nil {
 		return fmt.Errorf("edit item: %w", err)
 	}
 	if affected, err := res.RowsAffected(); err == nil && affected == 0 {
 		return ErrNotFound
+	}
+	// The genres go with the row they describe, in the same transaction: a
+	// correction that half applied would leave an item whose title somebody
+	// fixed and whose shelf they did not.
+	if edit.Genres != nil {
+		if err := replaceGenresTx(ctx, tx, itemID, *edit.Genres); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("edit item: %w", err)
 	}
 	return nil
 }

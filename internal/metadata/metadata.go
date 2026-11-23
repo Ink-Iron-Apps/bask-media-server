@@ -33,6 +33,11 @@ type Match struct {
 	// fact rather than a failure — plenty of films were never submitted to a
 	// board anywhere.
 	Rating string
+
+	// Genres are what the provider says this is about, in its own words.
+	// Empty when it has none, which must not erase genres that are already
+	// stored: see the note where the enrichment pass writes them.
+	Genres []string
 }
 
 // Provider answers questions about movies and shows.

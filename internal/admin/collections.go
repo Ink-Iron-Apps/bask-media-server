@@ -229,11 +229,29 @@ func readRules(raw json.RawMessage) (*domain.Smart, error) {
 // this one until somebody adds a field, and then offers a rule that will not
 // save.
 func (s *Server) vocabulary(w http.ResponseWriter, r *http.Request) {
+	fields := store.SmartFields()
+
+	// Genre is the one field whose choices the library decides rather than
+	// the server: the words come from a provider and from the files
+	// themselves, so the editor is handed the ones actually in use. Offered
+	// as suggestions and not as the only allowed values — a rule may name a
+	// genre nothing holds yet, and the shelf fills when something does.
+	genres, err := s.viewing(r).GenreNames(r.Context())
+	if err != nil {
+		s.fail(w, "list genres", err)
+		return
+	}
+	for i := range fields {
+		if fields[i].Field == domain.SmartGenre {
+			fields[i].Choices = genres
+		}
+	}
+
 	writeJSON(w, http.StatusOK, struct {
 		Fields  []store.SmartFieldInfo `json:"fields"`
 		Sorts   []domain.SmartSort     `json:"sorts"`
 		Matches []domain.SmartMatch    `json:"matches"`
-	}{store.SmartFields(), store.SmartSorts(), store.SmartMatches()})
+	}{fields, store.SmartSorts(), store.SmartMatches()})
 }
 
 // previewRules answers a rule set without storing it, so somebody can see

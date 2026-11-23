@@ -46,6 +46,11 @@ type Client struct {
 	key    string
 	bearer bool
 
+	// movieGenreNames and showGenreNames turn the genre ids a search result
+	// carries into words, fetched once each. See genres.go.
+	movieGenreNames genreNames
+	showGenreNames  genreNames
+
 	// gate bounds concurrent requests. TMDB's published limit is generous, but
 	// an enrichment pass over a cold library would otherwise open a connection
 	// per worker and hold a response buffer for each.
@@ -90,6 +95,9 @@ type searchResponse struct {
 		FirstAirDate string `json:"first_air_date"`
 		PosterPath   string `json:"poster_path"`
 		BackdropPath string `json:"backdrop_path"`
+		// GenreIDs are ids into a list of names fetched separately: the
+		// search endpoint carries the numbers only.
+		GenreIDs []int64 `json:"genre_ids"`
 	} `json:"results"`
 }
 
@@ -137,6 +145,7 @@ func (c *Client) Movie(ctx context.Context, title string, year int) (metadata.Ma
 		// One more request, because the search endpoint does not carry a
 		// certification and a rating ceiling is worth nothing without one.
 		Rating: c.movieRating(ctx, id),
+		Genres: c.movieGenres(ctx, first.GenreIDs),
 	}, nil
 }
 
@@ -171,6 +180,7 @@ func (c *Client) Show(ctx context.Context, title string, year int) (metadata.Mat
 		PosterURL:   imageURL(posterBase, first.PosterPath),
 		BackdropURL: imageURL(backdropBase, first.BackdropPath),
 		Rating:      c.showRating(ctx, id),
+		Genres:      c.showGenres(ctx, first.GenreIDs),
 	}, nil
 }
 

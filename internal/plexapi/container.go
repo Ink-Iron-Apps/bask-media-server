@@ -79,6 +79,17 @@ type entry struct {
 	Title string `xml:"title,attr,omitempty" json:"title,omitempty"`
 	Agent string `xml:"agent,attr,omitempty" json:"agent,omitempty"`
 
+	// Filter, FilterType and FastKey belong to the rows of a filter menu: a
+	// Plex client reads which field a row narrows, what sort of value it
+	// takes, and — on a value — the listing it stands for.
+	Filter     string `xml:"filter,attr,omitempty" json:"filter,omitempty"`
+	FilterType string `xml:"filterType,attr,omitempty" json:"filterType,omitempty"`
+	FastKey    string `xml:"fastKey,attr,omitempty" json:"fastKey,omitempty"`
+
+	// Size on an entry is how many things are behind it, which is what a
+	// filter value carries. Not to be confused with the container's own Size.
+	Size int `xml:"size,attr,omitempty" json:"size,omitempty"`
+
 	Scanner  string `xml:"scanner,attr,omitempty" json:"scanner,omitempty"`
 	Language string `xml:"language,attr,omitempty" json:"language,omitempty"`
 	UUID     string `xml:"uuid,attr,omitempty" json:"uuid,omitempty"`
@@ -143,10 +154,27 @@ type entry struct {
 	// one has to be able to say which.
 	PlaylistItemID string `xml:"playlistItemID,attr,omitempty" json:"playlistItemID,omitempty"`
 
+	// Genre is what a thing is about, as the tag elements Plex clients read.
+	// A list rather than an attribute because a film has several, which is
+	// the whole shape of the Plex media tag.
+	Genre []tag `xml:"Genre,omitempty" json:"Genre,omitempty"`
+
 	Media    []media    `xml:"Media,omitempty" json:"Media,omitempty"`
 	Location []location `xml:"Location,omitempty" json:"Location,omitempty"`
 	Marker   []marker   `xml:"Marker,omitempty" json:"Marker,omitempty"`
 	Chapter  []chapter  `xml:"Chapter,omitempty" json:"Chapter,omitempty"`
+}
+
+// tag is one of Plex's media tags: a genre, and the same shape a studio or a
+// director would take.
+//
+// Filter is the query a client appends to the library's own listing to see
+// everything carrying this tag, which is how a genre on a film's page
+// becomes a link to the rest of the shelf.
+type tag struct {
+	ID     int64  `xml:"id,attr,omitempty" json:"id,omitempty"`
+	Tag    string `xml:"tag,attr" json:"tag"`
+	Filter string `xml:"filter,attr,omitempty" json:"filter,omitempty"`
 }
 
 // marker is a stretch a client offers to skip. The attribute names are Plex's,

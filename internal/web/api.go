@@ -32,6 +32,12 @@ type itemView struct {
 	// a title.
 	Rating string `json:"rating,omitempty"`
 
+	// Genres are what it is about, for the chips under the summary — and
+	// each one is a link back into the library filtered by it, which is what
+	// LibraryID is here for.
+	Genres    []string `json:"genres,omitempty"`
+	LibraryID int64    `json:"libraryId,omitempty"`
+
 	// Watchlist is whether this account means to watch it, so the button is
 	// drawn in the state it is in.
 	Watchlist bool `json:"watchlist,omitempty"`
@@ -112,6 +118,7 @@ func (s *Server) views(ctx context.Context, items []domain.Item, userID int64) (
 		view := itemView{
 			ID: it.ID, Kind: string(it.Kind), Title: it.Title, Year: it.Year,
 			Index: it.Index, Disc: it.Disc, Summary: it.Summary, Rating: it.Rating,
+			Genres: it.Genres, LibraryID: it.SectionID,
 			DurationMS: it.Duration.Milliseconds(),
 			Favourite:  favourites[it.ID],
 			Watchlist:  wanted[it.ID],
@@ -239,7 +246,12 @@ func (s *Server) section(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page := store.Page{Start: intQuery(r, "start"), Size: intQuery(r, "size")}
+	page := store.Page{
+		Start: intQuery(r, "start"), Size: intQuery(r, "size"),
+		// A genre a viewer clicked on a film's page, which is what turns a
+		// chip into the rest of the shelf.
+		Genres: genresWanted(r),
+	}
 	kind := section.Kind.TopKind()
 	items, total, err := s.db(r.Context()).SectionItems(r.Context(), id, kind, page)
 	if err != nil {
@@ -252,10 +264,37 @@ func (s *Server) section(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The genres in the library, so the page can offer them without a second
+	// request — and the one being filtered by, so it can show which.
+	genres, err := s.db(r.Context()).SectionGenres(r.Context(), section.ID, string(kind))
+	if err != nil {
+		s.fail(w, "list genres", err)
+		return
+	}
+	names := make([]string, 0, len(genres))
+	for _, genre := range genres {
+		names = append(names, genre.Name)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id": section.ID, "title": section.Title, "kind": string(section.Kind),
 		"total": total, "start": page.Start, "items": views,
+		"genres": names, "genre": strings.Join(page.Genres, ","),
 	})
+}
+
+// genresWanted reads the genre a viewer is narrowing a library by.
+//
+// A comma separated list, matched as "any of these", because that is what
+// ticking two boxes means and what every other surface here accepts.
+func genresWanted(r *http.Request) []string {
+	var out []string
+	for _, value := range strings.Split(r.URL.Query().Get("genre"), ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // item is one thing and what is under it: a show's seasons, a season's

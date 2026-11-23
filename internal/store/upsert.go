@@ -94,6 +94,12 @@ type Found struct {
 	// labelled chapters gets Skip Intro out of a plain scan.
 	Chapters []domain.Chapter
 
+	// Genres are what the file's own tags say this is about, as a music file
+	// carries them. Nil means the scan had nothing to say — no probe, or no
+	// tag — and must not clear what is already stored; a film's genres come
+	// from a provider instead, so this is empty for one.
+	Genres []string
+
 	// Subtitles are the streams inside the file and the sidecar files beside
 	// it, as the scan found them. Nil means nothing was looked for — a scan
 	// with no probe — and an empty slice means nothing was found, which are
@@ -249,6 +255,9 @@ func (w *Writer) Add(ctx context.Context, f Found) error {
 			return fmt.Errorf("reopen season for detection: %w", err)
 		}
 	}
+	if err := w.applyGenres(ctx, itemID, spec, f); err != nil {
+		return err
+	}
 	if err := w.applyChapters(ctx, itemID, f); err != nil {
 		return err
 	}
@@ -262,6 +271,43 @@ func (w *Writer) Add(ctx context.Context, f Found) error {
 		return w.Commit(ctx)
 	}
 	return nil
+}
+
+// applyGenres records what the file's tags say this is about, and gives the
+// containers above it the same words where they have none.
+//
+// Skipped entirely when the scan had nothing to say, for the reason on
+// [Found.Genres]: a scan without a probe must not erase a library's genres.
+//
+// The track gets exactly its tag's genres; the album and the artist above it
+// get them only if they are empty. Replacing a container's genres per track
+// would leave an album filed under whichever track the walk reached last,
+// and a compilation under whichever genre its final song happened to be.
+func (w *Writer) applyGenres(ctx context.Context, itemID int64, spec itemSpec, f Found) error {
+	if len(f.Genres) == 0 {
+		return nil
+	}
+	if err := replaceGenresTx(ctx, w.tx, itemID, f.Genres); err != nil {
+		return err
+	}
+	if spec.parentID == nil {
+		return nil
+	}
+	if err := addGenresTx(ctx, w.tx, *spec.parentID, f.Genres); err != nil {
+		return err
+	}
+	// And the level above that, which is the artist over an album. Read
+	// rather than remembered, because the writer's parent cache holds ids
+	// and not the chain between them.
+	var grandparent sql.NullInt64
+	if err := w.tx.QueryRowContext(ctx,
+		`SELECT parent_id FROM items WHERE id = ?`, *spec.parentID).Scan(&grandparent); err != nil {
+		return fmt.Errorf("read the level above: %w", err)
+	}
+	if !grandparent.Valid {
+		return nil
+	}
+	return addGenresTx(ctx, w.tx, grandparent.Int64, f.Genres)
 }
 
 // applyChapters stores what the file said and what that implies.

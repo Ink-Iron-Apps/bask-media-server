@@ -110,6 +110,14 @@ func (s *Server) routes() []route {
 		{"GET /Users/{user}/Items/Resume", s.resume, false},
 		{"GET /Users/{user}/Items/{item}", s.item, false},
 		{"GET /Items", s.items, false},
+		// What a library can be narrowed by, which is what fills a client's
+		// filter sheet. `/Items/Filters` is the one request that answers for
+		// every facet at once; `/Genres` is what a client reaches for when
+		// that endpoint is not there.
+		{"GET /Items/Filters", s.filters, false},
+		{"GET /Items/Filters2", s.filters, false},
+		{"GET /Genres", s.genres, false},
+		{"GET /Users/{user}/Items/Filters", s.filters, false},
 		{"GET /Items/{item}/Images/{type}", s.image, false},
 		{"GET /Items/{item}/PlaybackInfo", s.playbackInfo, false},
 		{"POST /Items/{item}/PlaybackInfo", s.playbackInfo, false},

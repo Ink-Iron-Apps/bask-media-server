@@ -20,6 +20,16 @@ import (
 type Page struct {
 	Start int
 	Size  int
+
+	// Genres narrows a listing to the items carrying any one of them, and
+	// empty means every item. A filter rather than a window, carried here
+	// because every listing already takes a Page and a client that is
+	// filtering is paging through the filtered list rather than the whole
+	// one: the two cannot be decided apart.
+	//
+	// Any one of them rather than all, because that is what a client's
+	// filter menu means when somebody ticks two boxes.
+	Genres []string
 }
 
 // Window returns the page clamped to something sane: a non-negative start and
@@ -158,19 +168,23 @@ func (d *DB) SectionItems(ctx context.Context, sectionID int64, kind domain.Kind
 	// The library is already known to be allowed; the rating still has to be
 	// applied to what is inside it.
 	rated, ceiling := d.onlyRated("section_id")
+	genre, wanted := d.genreClause(ctx, page.Genres)
 
 	var total int
+	count := append([]any{sectionID, string(kind)}, ceiling...)
+	count = append(count, wanted...)
 	if err := d.sql.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM items WHERE section_id = ? AND kind = ? AND parent_id IS NULL`+rated,
-		append([]any{sectionID, string(kind)}, ceiling...)...).Scan(&total); err != nil {
+		`SELECT COUNT(*) FROM items WHERE section_id = ? AND kind = ? AND parent_id IS NULL`+rated+genre,
+		count...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count section items: %w", err)
 	}
 
 	offset, limit := page.Window(500)
 	args := append([]any{sectionID, string(kind)}, ceiling...)
+	args = append(args, wanted...)
 	args = append(args, limit, offset)
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT `+itemColumns+` FROM items WHERE section_id = ? AND kind = ? AND parent_id IS NULL`+rated+`
+		`SELECT `+itemColumns+` FROM items WHERE section_id = ? AND kind = ? AND parent_id IS NULL`+rated+genre+`
 		 ORDER BY sort_title, year LIMIT ? OFFSET ?`,
 		args...)
 	if err != nil {
@@ -240,6 +254,11 @@ func (d *DB) Item(ctx context.Context, id int64) (*domain.Item, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read item: %w", err)
 	}
+	genres, err := d.Genres(ctx, it.ID)
+	if err != nil {
+		return nil, err
+	}
+	it.Genres = genres
 	if it.Playable() {
 		parts, err := d.Parts(ctx, it.ID)
 		if err != nil {
@@ -316,6 +335,26 @@ func (d *DB) collect(ctx context.Context, rows *sql.Rows) ([]domain.Item, error)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if len(items) == 0 {
+		return items, nil
+	}
+
+	// Genres for the whole page in one query, for the same reason the parts
+	// below are: a grid of forty films draws forty lines of chips, and a
+	// query per row would make listing a library cost a round trip per
+	// poster.
+	all := make([]int64, 0, len(items))
+	for _, it := range items {
+		all = append(all, it.ID)
+	}
+	genres, err := d.genresFor(ctx, all)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i].Genres = genres[items[i].ID]
+	}
+
 	if len(playable) == 0 {
 		return items, nil
 	}
@@ -544,7 +583,7 @@ func (d *DB) AlbumCover(ctx context.Context, itemID int64) (*domain.Part, error)
 //
 // A client's "all episodes" row asks for exactly this, and walking the tree
 // to build it would be a query per show and a query per season.
-func (d *DB) SectionItemsOfKind(ctx context.Context, sectionID int64, kind domain.Kind, limit int) ([]domain.Item, error) {
+func (d *DB) SectionItemsOfKind(ctx context.Context, sectionID int64, kind domain.Kind, genres []string, limit int) ([]domain.Item, error) {
 	if !d.canSee(sectionID) {
 		return nil, nil
 	}
@@ -552,10 +591,12 @@ func (d *DB) SectionItemsOfKind(ctx context.Context, sectionID int64, kind domai
 		limit = 1000
 	}
 	rated, ceiling := d.onlyRated("section_id")
+	genre, wanted := d.genreClause(ctx, genres)
 	args := append([]any{sectionID, string(kind)}, ceiling...)
+	args = append(args, wanted...)
 	args = append(args, limit)
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT `+itemColumns+` FROM items WHERE section_id = ? AND kind = ?`+rated+`
+		`SELECT `+itemColumns+` FROM items WHERE section_id = ? AND kind = ?`+rated+genre+`
 		 ORDER BY sort_title, disc, idx, taken_at LIMIT ?`,
 		args...)
 	if err != nil {

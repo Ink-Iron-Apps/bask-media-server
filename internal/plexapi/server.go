@@ -73,6 +73,10 @@ func (s *Server) Handler() http.Handler {
 
 	authed("GET /library/sections", s.sections)
 	authed("GET /library/sections/{id}/all", s.sectionAll)
+	// What a library can be narrowed by, and the values of each: a client's
+	// filter sheet is two requests, the menu and then the shelf.
+	authed("GET /library/sections/{id}/filters", s.filters)
+	authed("GET /library/sections/{id}/genre", s.genreValues)
 	authed("GET /library/metadata/{key}", s.metadata)
 	authed("GET /library/metadata/{key}/children", s.children)
 	authed("GET /library/metadata/{key}/extras", s.extrasOf)
@@ -284,6 +288,7 @@ func (s *Server) sectionAll(w http.ResponseWriter, r *http.Request) {
 	viewGroup := string(kind)
 
 	page := pageFrom(r)
+	page.Genres = genresWanted(r)
 	items, total, err := s.db(r.Context()).SectionItems(r.Context(), id, kind, page)
 	if err != nil {
 		s.fail(w, "list items", err)
@@ -895,6 +900,12 @@ func (s *Server) renderItem(
 	}
 	if n := rel.counts[it.ID]; n > 0 {
 		e.ChildCount = n
+	}
+	for _, name := range it.Genres {
+		// No id: Plex's tag ids are its own, and the only thing a client
+		// does with one here is put it in the filter below, which takes the
+		// name. The listing at /library/sections/{id}/genre accepts either.
+		e.Genre = append(e.Genre, tag{Tag: name, Filter: "genre=" + url.QueryEscape(name)})
 	}
 	if it.Disc > 0 {
 		// Plex carries a track's disc as the parent's index, because the disc

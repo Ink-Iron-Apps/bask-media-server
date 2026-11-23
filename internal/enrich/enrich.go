@@ -179,6 +179,14 @@ func (e *Enricher) one(ctx context.Context, item domain.Item) (matched bool, ima
 			return false, images, err
 		}
 	}
+	// Genres, for the same reason and with the same rule: an empty list is a
+	// provider that did not say, and a provider that did not say must not
+	// clear the genres a file's own tags or somebody's correction put there.
+	if len(match.Genres) > 0 {
+		if err := e.DB.SetGenres(ctx, item.ID, match.Genres); err != nil {
+			return false, images, err
+		}
+	}
 	return true, images, nil
 }
 

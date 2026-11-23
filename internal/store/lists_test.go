@@ -95,7 +95,7 @@ func (s *shelf) find(t *testing.T, section int64, kind domain.Kind, title string
 
 func (s *shelf) findDeep(t *testing.T, section int64, kind domain.Kind, title string) int64 {
 	t.Helper()
-	items, err := s.db.SectionItemsOfKind(s.ctx, section, kind, 50)
+	items, err := s.db.SectionItemsOfKind(s.ctx, section, kind, nil, 50)
 	if err != nil {
 		t.Fatal(err)
 	}

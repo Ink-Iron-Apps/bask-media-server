@@ -202,6 +202,16 @@ type Item struct {
 	Rating    string
 	RatingAge int
 
+	// Genres are what this is about, in the words a provider or the file's
+	// own tags used: "Comedy", "Science Fiction", "Shoegaze". Sorted, and
+	// empty for anything nothing has said about yet — which is every item in
+	// a library with no provider configured and no tags in its files.
+	//
+	// On the thing that has them and not on what is inside it. A provider
+	// gives a series its genres and says nothing about episode four, so an
+	// episode carries none.
+	Genres []string
+
 	// Parts are the files behind a playable item. A movie or episode normally
 	// has exactly one; more than one means multiple versions of the same thing.
 	Parts []Part
@@ -588,6 +598,7 @@ const (
 	SmartTitle       SmartField = "title"
 	SmartSummary     SmartField = "summary"
 	SmartPerformer   SmartField = "performer"
+	SmartGenre       SmartField = "genre"
 	SmartYear        SmartField = "year"
 	SmartCertificate SmartField = "certificate"
 	SmartAge         SmartField = "age"

@@ -58,6 +58,12 @@ type Track struct {
 	Disc   int
 	Number int
 	Title  string
+
+	// Genres are what the file's own tags say it is. A tag routinely holds
+	// several, separated by a semicolon, a slash or a comma, and some hold
+	// one name that contains a slash — "Rock/Pop" is two genres, "R&B" is
+	// one — so the split is deliberate and documented at [splitGenres].
+	Genres []string
 }
 
 var (
@@ -91,6 +97,7 @@ func ParseTrack(root, path string, tags Tags) Track {
 		Number:    tags.Track,
 		Title:     strings.TrimSpace(tags.Title),
 		Year:      yearOf(tags.Date),
+		Genres:    splitGenres(tags.Genre),
 	}
 	if out.Artist == "" {
 		out.Artist = out.Performer
@@ -219,4 +226,31 @@ func withinRoot(root, dir string) bool {
 		return false
 	}
 	return rel != "." && !strings.HasPrefix(rel, "..")
+}
+
+// splitGenres reads one genre tag as the list it usually is.
+//
+// A genre tag is free text and the people who write them disagree: a single
+// name, several separated by a semicolon, several separated by a slash, or
+// several separated by a comma. All three separators are honoured, because a
+// file tagged "Rock; Pop" and one tagged "Rock/Pop" mean the same thing and
+// filing one of them under a genre called "Rock/Pop" would put it on a shelf
+// of its own.
+//
+// An ampersand is left alone: "R&B" and "Drum & Bass" are one genre each,
+// and splitting on it would invent two that nobody means.
+func splitGenres(tag string) []string {
+	if strings.TrimSpace(tag) == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(tag, func(r rune) bool {
+		return r == ';' || r == '/' || r == ',' || r == '|'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.Join(strings.Fields(part), " "); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }

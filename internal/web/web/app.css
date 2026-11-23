@@ -381,3 +381,20 @@ h2 .more {
   text-decoration: none;
 }
 h2 .more:hover { color: var(--accent); }
+
+/* Chips are the genre shelves: a row of links narrow enough to wrap, and the
+   one in force drawn as pressed rather than merely highlighted, so it is
+   obvious which of them is doing something. */
+.chips { flex-wrap: wrap; gap: .4rem; margin: .6rem 0 1rem; }
+.chip {
+  display: inline-block;
+  padding: .2rem .7rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: .85rem;
+  text-decoration: none;
+}
+.chip:hover { color: var(--text); border-color: var(--muted); }
+.chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.hero .over .chips { margin: .5rem 0 .8rem; }

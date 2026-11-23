@@ -229,7 +229,15 @@ async function render() {
   const hash = location.hash || '#/';
   markLibrary(hash);
   try {
-    if (hash.startsWith('#/library/')) return await libraryView(Number(hash.slice(10)));
+    if (hash.startsWith('#/library/')) {
+      // A library, optionally narrowed to one genre: #/library/3/genre/Comedy.
+      const rest = hash.slice(10);
+      const cut = rest.indexOf('/genre/');
+      if (cut >= 0) {
+        return await libraryView(Number(rest.slice(0, cut)), decodeURIComponent(rest.slice(cut + 7)));
+      }
+      return await libraryView(Number(rest), '');
+    }
     if (hash.startsWith('#/item/')) return await itemView(Number(hash.slice(7)));
     if (hash.startsWith('#/search/')) return await searchView(decodeURIComponent(hash.slice(9)));
     if (hash.startsWith('#/playlist/')) return await playlistView(Number(hash.slice(11)));
@@ -461,12 +469,17 @@ function holds(kind, n) {
   return n + ' ' + word + (n === 1 ? '' : 's');
 }
 
-async function libraryView(id) {
-  const page = await api('GET', '/sections/' + id + '?size=120');
+async function libraryView(id, genre) {
+  const narrow = genre ? '&genre=' + encodeURIComponent(genre) : '';
+  const page = await api('GET', '/sections/' + id + '?size=120' + narrow);
+  const empty = genre
+    ? 'Nothing in this library is filed under ' + genre + '.'
+    : 'Nothing here yet. It may not have been scanned.';
   fill(main(),
     el('h1', { text: page.title }),
-    el('p', { class: 'muted', text: holds(page.kind, page.total) }),
-    page.items.length ? grid(page.items) : el('p', { class: 'empty', text: 'Nothing here yet. It may not have been scanned.' }));
+    el('p', { class: 'muted', text: holds(page.kind, page.total) + (genre ? ' · ' + genre : '') }),
+    genreBar(id, page.genres || [], genre),
+    page.items.length ? grid(page.items) : el('p', { class: 'empty', text: empty }));
 
   // More of the library, a page at a time, because the server pages and so
   // should the scrolling.
@@ -477,7 +490,8 @@ async function libraryView(id) {
         click: async () => {
           more.disabled = true;
           try {
-            const next = await api('GET', '/sections/' + id + '?size=120&start=' + document.querySelectorAll('.grid .card').length);
+            const next = await api('GET', '/sections/' + id + '?size=120' + narrow +
+              '&start=' + document.querySelectorAll('.grid .card').length);
             document.querySelector('.grid').append(...next.items.map(card));
             if (document.querySelectorAll('.grid .card').length >= next.total) more.remove();
             else more.disabled = false;
@@ -487,6 +501,34 @@ async function libraryView(id) {
     });
     main().append(el('div', { class: 'row more' }, more));
   }
+}
+
+// genreBar is the row of shelves a library can be narrowed to.
+//
+// Drawn only when there is more than one genre to choose between: a library
+// where everything is a comedy offers nothing by letting somebody pick
+// comedy, and the row would be page furniture.
+function genreBar(id, genres, active) {
+  if (genres.length < 2) return null;
+  const chip = (text, href, on) => el('a', {
+    class: 'chip' + (on ? ' on' : ''), href: href, text: text,
+  });
+  return el('div', { class: 'row chips' },
+    chip('All', '#/library/' + id, !active),
+    ...genres.map((genre) => chip(
+      genre, '#/library/' + id + '/genre/' + encodeURIComponent(genre), genre === active)));
+}
+
+// genreChips are what one thing is about, each a link to the rest of its
+// shelf. Nothing at all when nobody has said — an empty row of chips would
+// read as a library that lost its genres rather than one that never had them.
+function genreChips(item) {
+  if (!item.genres || !item.genres.length || !item.libraryId) return null;
+  return el('div', { class: 'row chips' }, item.genres.map((genre) => el('a', {
+    class: 'chip',
+    href: '#/library/' + item.libraryId + '/genre/' + encodeURIComponent(genre),
+    text: genre,
+  })));
 }
 
 async function searchView(query) {
@@ -550,6 +592,7 @@ async function itemView(id) {
     el('h1', { text: item.title }),
     meta ? el('div', { class: 'meta', text: meta }) : null,
     item.summary ? el('p', { class: 'summary', text: item.summary }) : null,
+    genreChips(item),
     actions));
 
   const episodes = children.filter((child) => child.kind === 'episode');

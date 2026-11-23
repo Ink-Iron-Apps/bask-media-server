@@ -45,6 +45,14 @@ const (
 	smartValueLibrary smartKind = "library" // a library id
 	smartValueChoice  smartKind = "choice"  // one of a fixed list
 	smartValueText    smartKind = "text"
+
+	// smartValueGenre is a word, like text, but one of a list the library
+	// decides rather than one this file can name: the editor is handed the
+	// genres actually in use, and a rule may still carry a genre nothing
+	// holds yet — a film tagged tomorrow joins the shelf by itself, which is
+	// the whole point of a collection that fills itself.
+	smartValueGenre smartKind = "genre"
+
 	smartValueNumber  smartKind = "number"
 	smartValueDays    smartKind = "days"
 	smartValueMinutes smartKind = "minutes"
@@ -145,6 +153,26 @@ var smartFields = map[domain.SmartField]smartSpec{
 		ops:   []domain.SmartOp{domain.SmartContains, domain.SmartIs},
 		compile: func(op domain.SmartOp, value string, _ int64) (string, []any) {
 			return matchText("i.performer", op, value)
+		},
+	},
+	domain.SmartGenre: {
+		label: "Genre",
+		value: smartValueGenre,
+		ops:   []domain.SmartOp{domain.SmartIs, domain.SmartIsNot},
+		compile: func(op domain.SmartOp, value string, _ int64) (string, []any) {
+			// Correlated rather than joined: a film in two genres would
+			// otherwise be two rows, and a collection would hold it twice.
+			//
+			// The item's own genres, not its children's — see the note at
+			// the top of genres.go on why genres are not inherited. Every
+			// kind a collection can hold carries its own.
+			carries := `EXISTS (SELECT 1 FROM item_genres ig
+			              JOIN genres g ON g.id = ig.genre_id
+			             WHERE ig.item_id = i.id AND g.name = ?)`
+			if op == domain.SmartIsNot {
+				return `NOT ` + carries, []any{value}
+			}
+			return carries, []any{value}
 		},
 	},
 	domain.SmartYear: {
@@ -390,6 +418,18 @@ func validateRule(rule domain.SmartRule) error {
 		if value == "" && rule.Field != domain.SmartCertificate {
 			return fmt.Errorf("%s needs something to compare against", strings.ToLower(spec.label))
 		}
+	case smartValueGenre:
+		// Not checked against the genres in the library on purpose. A rule
+		// is a question asked of the library every time it is read, and a
+		// library that has no science fiction today may have some tomorrow:
+		// refusing the rule would be refusing the empty shelf that fills
+		// itself later.
+		if value == "" {
+			return fmt.Errorf("a genre rule needs a genre")
+		}
+		if len(value) > maxGenreLength {
+			return fmt.Errorf("%q is too long to be a genre", rule.Value)
+		}
 	}
 	return nil
 }
@@ -496,7 +536,7 @@ type SmartFieldInfo struct {
 func SmartFields() []SmartFieldInfo {
 	order := []domain.SmartField{
 		domain.SmartLibrary, domain.SmartKind, domain.SmartTitle, domain.SmartSummary,
-		domain.SmartPerformer, domain.SmartYear, domain.SmartCertificate, domain.SmartAge,
+		domain.SmartPerformer, domain.SmartGenre, domain.SmartYear, domain.SmartCertificate, domain.SmartAge,
 		domain.SmartAdded, domain.SmartDuration, domain.SmartResolution,
 		domain.SmartContainer, domain.SmartEdition, domain.SmartWatched,
 	}

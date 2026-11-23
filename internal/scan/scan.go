@@ -516,6 +516,7 @@ func (s *Scanner) trackFound(ctx context.Context, section domain.Section, f foun
 		Album:        track.Album,
 		Disc:         track.Disc,
 		TrackNum:     track.Number,
+		Genres:       track.Genres,
 		AlbumPoster:  s.cover(f.cover, f.path),
 		ArtistPoster: s.adopt(f.artistCover),
 	}, true

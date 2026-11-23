@@ -42,7 +42,10 @@ func (s *Server) items(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	page := store.Page{Start: intQuery(r, "StartIndex"), Size: intQuery(r, "Limit")}
+	page := store.Page{
+		Start: intQuery(r, "StartIndex"), Size: intQuery(r, "Limit"),
+		Genres: genresWanted(r),
+	}
 	wanted, aside, understood := wantedKinds(query.Get("IncludeItemTypes"))
 	if !understood {
 		nothing(w, page)
@@ -219,7 +222,8 @@ func (s *Server) everything(w http.ResponseWriter, r *http.Request, wanted map[d
 		for _, kind := range kinds {
 			// Paged per section and then cut to the window, because the page
 			// is a window over the whole answer rather than over one library.
-			list, _, err := s.db(r.Context()).SectionItems(r.Context(), section.ID, kind, store.Page{Size: 500})
+			list, _, err := s.db(r.Context()).SectionItems(r.Context(), section.ID, kind,
+				store.Page{Size: 500, Genres: page.Genres})
 			if err != nil {
 				s.fail(w, "list section", err)
 				return
@@ -246,7 +250,7 @@ func (s *Server) sectionRecursive(w http.ResponseWriter, r *http.Request, sectio
 
 	var all []domain.Item
 	for _, kind := range kinds {
-		list, err := s.db(r.Context()).SectionItemsOfKind(r.Context(), section.ID, kind, 1000)
+		list, err := s.db(r.Context()).SectionItemsOfKind(r.Context(), section.ID, kind, page.Genres, 1000)
 		if err != nil {
 			s.fail(w, "list library", err)
 			return

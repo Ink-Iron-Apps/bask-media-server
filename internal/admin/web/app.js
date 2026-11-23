@@ -631,6 +631,10 @@ async function editItem(id) {
   const year = el('input', { value: detail.year || '', type: 'number' });
   const summary = el('textarea', { rows: '4' });
   summary.value = detail.summary || '';
+  // Genres as one line of comma-separated words rather than a row of
+  // removable chips: the list is three or four words, typing is faster than
+  // clicking, and the field reads the same way it is stored.
+  const genres = el('input', { value: (detail.genres || []).join(', '), spellcheck: 'false' });
   const locked = el('input', { type: 'checkbox', id: 'locked-' + id });
   locked.checked = !!detail.locked;
 
@@ -650,6 +654,7 @@ async function editItem(id) {
         title: title.value,
         year: Number(year.value) || 0,
         summary: summary.value,
+        genres: genres.value.split(',').map((word) => word.trim()).filter(Boolean),
         locked: locked.checked,
       });
       toast(locked.checked ? 'Saved and locked, so a metadata pass will leave it alone.' : 'Saved.');
@@ -688,6 +693,8 @@ async function editItem(id) {
       el('label', { text: 'Title' }), title,
       el('label', { text: 'Year' }), year,
       el('label', { text: 'Summary' }), summary,
+      el('label', { text: 'Genres' }), genres,
+      el('p', { class: 'muted', text: 'Separated by commas. Saved as typed, so a metadata pass will not add to them until this is unlocked.' }),
       el('div', { class: 'row' },
         locked,
         el('label', { for: 'locked-' + id, text: 'Leave this alone when fetching metadata' })),
@@ -1081,6 +1088,19 @@ function rulesCard(rules, vocabulary, libraries, label, turnHand) {
         if (!rule.value && (spec.choices || []).length) { rule.value = spec.choices[0]; pick.value = rule.value; }
         pick.addEventListener('change', () => { rule.value = pick.value; ask(); });
         return pick;
+      }
+      case 'genre': {
+        // A text box with the library's own genres offered beside it, not a
+        // menu of them: a rule may name a genre nothing carries yet, and the
+        // shelf then fills the day something does.
+        const listID = 'genres-' + Math.random().toString(36).slice(2, 8);
+        const box = el('input', {
+          value: rule.value || '', list: listID, spellcheck: 'false',
+          placeholder: (spec.choices || []).length ? spec.choices[0] : 'Comedy',
+        });
+        box.addEventListener('input', () => { rule.value = box.value; ask(); });
+        return [box, el('datalist', { id: listID }, (spec.choices || []).map((choice) =>
+          el('option', { value: choice })))];
       }
       case 'number': case 'days': case 'minutes': {
         const box = el('input', { type: 'number', min: '0', value: rule.value || '' });

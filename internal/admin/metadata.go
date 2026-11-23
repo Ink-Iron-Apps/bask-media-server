@@ -39,6 +39,10 @@ type itemDetail struct {
 	ScannedTitle string `json:"scannedTitle"`
 	ScannedYear  int    `json:"scannedYear,omitempty"`
 
+	// Genres are what it is about, so somebody can see what a provider said
+	// and correct it.
+	Genres []string `json:"genres,omitempty"`
+
 	ProviderID string `json:"providerId,omitempty"`
 	Locked     bool   `json:"locked"`
 	Matched    bool   `json:"matched"`
@@ -92,6 +96,7 @@ func (s *Server) readItem(w http.ResponseWriter, r *http.Request) {
 		ID: item.ID, Kind: string(item.Kind), Library: named[item.SectionID],
 		Title: item.Title, Year: item.Year, Summary: item.Summary,
 		ScannedTitle: scannedTitle, ScannedYear: scannedYear,
+		Genres:     item.Genres,
 		ProviderID: item.ProviderID, Locked: item.Locked,
 		Matched: item.ProviderID != "", Files: files,
 	}
@@ -110,16 +115,18 @@ func (s *Server) editItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Title   *string `json:"title"`
-		Year    *int    `json:"year"`
-		Summary *string `json:"summary"`
-		Locked  *bool   `json:"locked"`
+		Title   *string   `json:"title"`
+		Year    *int      `json:"year"`
+		Summary *string   `json:"summary"`
+		Genres  *[]string `json:"genres"`
+		Locked  *bool     `json:"locked"`
 	}
 	if !decode(w, r, &body) {
 		return
 	}
 	err := s.DB.EditItem(r.Context(), id, store.Edit{
-		Title: body.Title, Year: body.Year, Summary: body.Summary, Locked: body.Locked,
+		Title: body.Title, Year: body.Year, Summary: body.Summary,
+		Genres: body.Genres, Locked: body.Locked,
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "no such item")
