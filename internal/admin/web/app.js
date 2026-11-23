@@ -690,6 +690,15 @@ function editSection(sec) {
 views.metadata = async function (main) {
   const box = el('input', { placeholder: 'A title', spellcheck: 'false' });
   const results = el('div', {});
+  const bulk = el('div', {});
+
+  // What is ticked, by id, kept across a redraw of the rows so somebody can
+  // search twice and edit both sets of results together.
+  const picked = new Map();
+
+  const drawBulk = () => {
+    fill(bulk, picked.size ? bulkCard(picked, () => { picked.clear(); search(); }) : null);
+  };
 
   const search = async () => {
     const term = box.value.trim();
@@ -700,11 +709,36 @@ views.metadata = async function (main) {
     try {
       const found = (await api('GET', '/items?q=' + encodeURIComponent(term))) || [];
       fill(results, found.length
-        ? el('table', {}, el('tbody', {}, found.map((item) => el('tr', {},
-          el('td', {}, el('strong', { text: item.title + (item.year ? ' (' + item.year + ')' : '') }),
-            el('div', { class: 'muted', text: [item.kind, item.library].filter(Boolean).join('  ·  ') })),
-          el('td', { class: 'right' }, el('button', { text: 'Edit', on: { click: () => editItem(item.id) } }))))))
+        ? el('div', {},
+          el('div', { class: 'row' },
+            el('button', {
+              text: 'Select all ' + found.length,
+              on: {
+                click: () => {
+                  found.forEach((item) => picked.set(item.id, item));
+                  search();
+                },
+              },
+            }),
+            picked.size
+              ? el('button', { text: 'Clear selection', on: { click: () => { picked.clear(); search(); } } })
+              : null),
+          el('table', {}, el('tbody', {}, found.map((item) => {
+            const tick = el('input', { type: 'checkbox', id: 'pick-' + item.id });
+            tick.checked = picked.has(item.id);
+            tick.addEventListener('change', () => {
+              if (tick.checked) picked.set(item.id, item);
+              else picked.delete(item.id);
+              drawBulk();
+            });
+            return el('tr', {},
+              el('td', { class: 'tick' }, tick),
+              el('td', {}, el('strong', { text: item.title + (item.year ? ' (' + item.year + ')' : '') }),
+                el('div', { class: 'muted', text: [item.kind, item.library].filter(Boolean).join('  ·  ') })),
+              el('td', { class: 'right' }, el('button', { text: 'Edit', on: { click: () => editItem(item.id) } })));
+          }))))
         : el('p', { class: 'muted', text: 'Nothing by that name.' }));
+      drawBulk();
     } catch (err) { failed(err); }
   };
 
@@ -712,13 +746,91 @@ views.metadata = async function (main) {
 
   fill(main,
     el('div', { class: 'head' }, el('div', {}, el('h1', { text: 'Metadata' }),
-      el('p', { class: 'muted', text: 'Correct a title, or pick the right entry when the provider chose the wrong one.' }))),
+      el('p', { class: 'muted', text: 'Correct a title, or pick the right entry when the provider chose the wrong one. Tick several to change the same thing about all of them.' }))),
     el('div', { class: 'card' },
       el('label', { text: 'Find something' }),
       el('div', { class: 'row' }, box, el('button', { class: 'primary', text: 'Search', on: { click: search } })),
-      results));
+      results),
+    bulk);
   box.focus();
 };
+
+// bulkCard is one change applied to everything ticked.
+//
+// Words are added and taken away rather than replaced, which is the whole
+// point of editing a search result: "also label these Christmas". Replacing
+// would mean every other label on every one of them was lost to a field
+// somebody left empty — and replacing is right there in the one-at-a-time
+// editor, where the page can show what is already on it.
+//
+// No title, no year, no summary. Forty items with one title is forty items
+// nobody can tell apart, so those are the editor's job and this does not
+// offer them.
+function bulkCard(picked, done) {
+  const commas = (box) => box.value.split(',').map((word) => word.trim()).filter(Boolean);
+
+  const fields = {};
+  const pair = (key, label) => {
+    fields['add' + key] = el('input', { placeholder: 'add…', spellcheck: 'false' });
+    fields['remove' + key] = el('input', { placeholder: 'remove…', spellcheck: 'false' });
+    return el('div', {},
+      el('label', { text: label }),
+      el('div', { class: 'row' }, fields['add' + key], fields['remove' + key]));
+  };
+
+  const studio = el('input', { placeholder: 'leave empty to change nothing', spellcheck: 'false' });
+  const rating = el('input', { placeholder: 'leave empty to change nothing', spellcheck: 'false' });
+  const lock = el('select', {},
+    el('option', { value: '', text: 'Leave as they are' }),
+    el('option', { value: 'yes', text: 'Lock, so a metadata pass leaves them alone' }),
+    el('option', { value: 'no', text: 'Unlock, so the next pass can fetch for them' }));
+
+  const titles = [...picked.values()].slice(0, 6).map((item) => item.title);
+  const andMore = picked.size > titles.length ? ' and ' + (picked.size - titles.length) + ' more' : '';
+
+  return el('div', { class: 'card' },
+    el('h2', { text: count(picked.size, 'item') + ' selected' }),
+    el('p', { class: 'muted', text: titles.join(', ') + andMore }),
+
+    pair('Genres', 'Genres'),
+    pair('Tags', 'Tags'),
+    pair('Labels', 'Labels'),
+    pair('Moods', 'Moods'),
+    pair('Styles', 'Styles'),
+    el('p', { class: 'muted', text: 'Separated by commas. A word in both boxes is removed \u2014 predictable beats clever.' }),
+
+    el('label', { text: 'Studio' }), studio,
+    el('label', { text: 'Certificate' }), rating,
+    el('p', { class: 'muted', text: 'A certificate here sets both the label a client shows and the age a rating ceiling compares against, so the two cannot disagree.' }),
+    el('label', { text: 'Metadata passes' }), lock,
+
+    el('div', { class: 'row' },
+      el('button', {
+        class: 'primary',
+        text: 'Apply to ' + count(picked.size, 'item'),
+        on: {
+          click: async () => {
+            const body = { items: [...picked.keys()] };
+            for (const [key, input] of Object.entries(fields)) {
+              const words = commas(input);
+              if (words.length) body[key] = words;
+            }
+            if (studio.value.trim()) body.studio = studio.value.trim();
+            if (rating.value.trim()) body.rating = rating.value.trim();
+            if (lock.value) body.locked = lock.value === 'yes';
+
+            if (Object.keys(body).length === 1) { toast('Nothing to change.', true); return; }
+            if (!confirm('Change ' + count(picked.size, 'item') + '?\n\nThis applies to all of them at once.')) return;
+            try {
+              const answer = await api('POST', '/items/bulk', body);
+              toast((answer && answer.note) || 'Done.');
+              done();
+            } catch (err) { failed(err); }
+          },
+        },
+      }),
+      el('button', { text: 'Cancel', on: { click: done } })));
+}
 
 // editItem is the editor for one item: the fields, and the provider's other
 // entries.

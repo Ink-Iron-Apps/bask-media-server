@@ -264,3 +264,7 @@ input.short { width: 6em; }
 .art.wide { grid-column: span 2; }
 .art img { display: block; width: 100%; border-radius: 4px; }
 .art span { display: block; margin-top: .25rem; font-size: .72rem; line-height: 1.3; }
+
+/* The tick column in a selectable list: narrow, so the title still gets the
+   width, and the box centred against a two-line row. */
+td.tick { width: 2rem; vertical-align: middle; }

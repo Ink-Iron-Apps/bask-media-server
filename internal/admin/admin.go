@@ -167,6 +167,8 @@ func (s *Server) Handler() http.Handler {
 	authed("PATCH /admin/api/collections/{id}", s.updateCollection)
 	authed("DELETE /admin/api/collections/{id}", s.deleteCollection)
 	authed("GET /admin/api/items", s.findItems)
+	// One change to many items, for the work that is forty identical edits.
+	authed("POST /admin/api/items/bulk", s.bulkEdit)
 	authed("GET /admin/api/items/{id}", s.readItem)
 	authed("PATCH /admin/api/items/{id}", s.editItem)
 	authed("POST /admin/api/items/{id}/revert", s.revertItem)
