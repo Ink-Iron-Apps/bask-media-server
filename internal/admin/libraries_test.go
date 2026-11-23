@@ -482,3 +482,56 @@ func TestSettingsLeftOutOfAPatchAreLeftAlone(t *testing.T) {
 		t.Fatalf("settings after clearing = %v", cleared["settings"])
 	}
 }
+
+func TestThePassSchedulesAreSavedAndRefused(t *testing.T) {
+	h := newHarness(t)
+	h.signIn(h.adminToken)
+
+	res, before := h.call(http.MethodGet, "/admin/api/settings", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("settings = %d", res.StatusCode)
+	}
+	// Never, which is what every server did until these existed.
+	if int(before["enrichEvery"].(float64)) != 0 || int(before["markersEvery"].(float64)) != 0 {
+		t.Fatalf("intervals = %v / %v", before["enrichEvery"], before["markersEvery"])
+	}
+
+	res, body := h.call(http.MethodPatch, "/admin/api/settings",
+		map[string]any{"enrichEvery": 360, "markersEvery": 1440})
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("save = %d: %v", res.StatusCode, body)
+	}
+	res, after := h.call(http.MethodGet, "/admin/api/settings", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("settings = %d", res.StatusCode)
+	}
+	if int(after["enrichEvery"].(float64)) != 360 || int(after["markersEvery"].(float64)) != 1440 {
+		t.Fatalf("intervals = %v / %v", after["enrichEvery"], after["markersEvery"])
+	}
+
+	// The same floor a library's scan has, refused with its reason rather
+	// than clamped.
+	for _, bad := range []map[string]any{
+		{"enrichEvery": 5},
+		{"markersEvery": -1},
+		{"enrichEvery": 8 * 24 * 60},
+	} {
+		res, answer := h.call(http.MethodPatch, "/admin/api/settings", bad)
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%v = %d: %v", bad, res.StatusCode, answer)
+		}
+	}
+
+	// And zero is never, which is how somebody turns one off.
+	if res, body := h.call(http.MethodPatch, "/admin/api/settings",
+		map[string]any{"enrichEvery": 0}); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("clear = %d: %v", res.StatusCode, body)
+	}
+	res, cleared := h.call(http.MethodGet, "/admin/api/settings", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("settings = %d", res.StatusCode)
+	}
+	if int(cleared["enrichEvery"].(float64)) != 0 {
+		t.Fatalf("enrichEvery = %v after clearing", cleared["enrichEvery"])
+	}
+}

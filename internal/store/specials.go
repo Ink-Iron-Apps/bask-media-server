@@ -33,6 +33,16 @@ import (
 // A special with none of the three goes last rather than first. Nothing is
 // known about where it belongs, and the end of the list is the one place
 // that cannot be mistaken for a deliberate answer.
+//
+// And one thing none of the three can tell apart: a story episode from a
+// minisode. Doctor Who's Tardisodes are a minute each, went out between the
+// episodes of series two, and both the air date and TheTVDB place them
+// there — faithfully, and not at all what somebody watching the series
+// wants. The only fact that separates "The Christmas Invasion" from
+// "Tardisode 1" is that one is an hour and the other is a minute, so the
+// length is what decides: see [tooShortToWeave]. It is a heuristic and it
+// is wrong sometimes, which is what the hand placement is for — and a hand
+// placement overrides the length as well.
 
 // SetAired records when an episode first went out.
 //
@@ -162,8 +172,25 @@ func weave(regular, specials []domain.Item, seasons []domain.Item) []domain.Item
 	// cannot be read as a deliberate answer.
 	var trailing []domain.Item
 
+	// How long a typical episode of this show is, so a minisode can be told
+	// from an episode.
+	typical := typicalLength(regular)
+
 	for _, special := range specials {
 		placement := special.Placement
+		switch {
+		// A hand placement wins over everything, the length included:
+		// somebody who places a seven-minute special between two series
+		// means it.
+		case placement.ByHand && placement.Known():
+			// Fall through to the cases below, which read the same fields.
+		case tooShortToWeave(special.Duration, typical):
+			// A minisode, a webisode, a charity sketch: it goes in the list
+			// so it can still be played, but at the end rather than in the
+			// middle of a series it is not part of.
+			trailing = append(trailing, special)
+			continue
+		}
 		switch {
 		case placement.BeforeSeason != domain.NoPlacement:
 			episode := placement.BeforeEpisode
@@ -277,4 +304,51 @@ func (d *DB) Specials(ctx context.Context, showID int64) ([]domain.Item, error) 
 	}
 	defer rows.Close()
 	return d.collect(ctx, rows)
+}
+
+// typicalLength is how long an episode of this show runs, as the median of
+// the regular episodes.
+//
+// The median rather than the mean, because a feature-length finale or a
+// double-length pilot would drag a mean up and start excluding real
+// episodes. Zero when nothing has a duration yet, which is a library that
+// has not been probed and where nothing can be judged by length.
+func typicalLength(regular []domain.Item) time.Duration {
+	lengths := make([]time.Duration, 0, len(regular))
+	for _, episode := range regular {
+		if episode.Duration > 0 {
+			lengths = append(lengths, episode.Duration)
+		}
+	}
+	if len(lengths) == 0 {
+		return 0
+	}
+	sort.Slice(lengths, func(i, j int) bool { return lengths[i] < lengths[j] })
+	return lengths[len(lengths)/2]
+}
+
+// weaveFloor is the fraction of a typical episode a special has to reach to
+// be woven in among them.
+//
+// A third. Doctor Who's episodes run about 45 minutes, so a special has to
+// be a quarter of an hour to count — which keeps the Tardisodes, the
+// Children in Need sketches and the behind-the-scenes featurettes out of a
+// series, and lets every Christmas special in.
+//
+// Relative rather than absolute because an absolute floor is wrong for a
+// show of short episodes: eleven minutes is a full episode of some comedies,
+// and a flat "under fifteen minutes" would exclude the entire series.
+const weaveFloor = 3
+
+// tooShortToWeave reports whether a special is too short to be a story
+// episode of this show.
+//
+// False when the show's own length is unknown: a library that has not been
+// probed cannot judge anything by length, and leaving every special out of
+// the order would be worse than leaving them in.
+func tooShortToWeave(length, typical time.Duration) bool {
+	if typical <= 0 || length <= 0 {
+		return false
+	}
+	return length*weaveFloor < typical
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -388,4 +389,54 @@ func (d *DB) FirstLetters(ctx context.Context, sectionID int64, kind domain.Kind
 		}
 	}
 	return out, nil
+}
+
+// Minutes reads a setting that is an interval in minutes, and zero for one
+// that is unset or unreadable.
+//
+// Zero for unreadable rather than an error, because every one of these means
+// "never" at zero: a corrupted interval should stop a pass running by itself
+// rather than stop the server starting.
+func (d *DB) Minutes(ctx context.Context, key string) (int, error) {
+	raw, err := d.ServerValue(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	minutes, err := strconv.Atoi(raw)
+	if err != nil || minutes < 0 {
+		return 0, nil
+	}
+	return minutes, nil
+}
+
+// lastRunKey is where a pass's own clock is kept, beside its interval.
+func lastRunKey(key string) string { return key + "_last" }
+
+// LastRun is when a scheduled pass last started, and the zero time for one
+// that never has.
+func (d *DB) LastRun(ctx context.Context, key string) (time.Time, error) {
+	raw, err := d.ServerValue(ctx, lastRunKey(key))
+	if err != nil {
+		return time.Time{}, err
+	}
+	if strings.TrimSpace(raw) == "" {
+		return time.Time{}, nil
+	}
+	millis, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return time.Time{}, nil
+	}
+	return fromMillis(millis), nil
+}
+
+// MarkRun records that a scheduled pass started.
+//
+// Written before the pass runs, for the reason a library's visit is: a pass
+// that fails must be retried at its own interval rather than every minute.
+func (d *DB) MarkRun(ctx context.Context, key string, when time.Time) error {
+	return d.SetServerValue(ctx, lastRunKey(key), strconv.FormatInt(millis(when), 10))
 }

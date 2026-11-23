@@ -46,6 +46,23 @@ const (
 	// searching is off, which is the default: nothing about a library
 	// reaches a third party until somebody puts a key here.
 	KeyOpenSubtitles = "opensubtitles_key"
+
+	// KeyEnrichEvery and KeyMarkersEvery are how often the server-wide
+	// passes run without being asked, in minutes, and empty or zero means
+	// never.
+	//
+	// Server-wide rather than per library, unlike the scan interval,
+	// because these passes are: each one asks the whole database what is
+	// still unanswered and works through it, so an interval per library
+	// would be several schedules competing for one queue. Which libraries
+	// they touch is the per-library setting.
+	//
+	// A scan that finds nothing to do costs a stat per file; these cost
+	// nothing at all when there is nothing waiting, which is the usual
+	// case — so the interval is about how long a newly scanned film waits
+	// for its poster, not about load.
+	KeyEnrichEvery  = "enrich_every"
+	KeyMarkersEvery = "markers_every"
 )
 
 // SessionTTL is how long a browser stays signed in without asking again.

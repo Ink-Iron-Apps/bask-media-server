@@ -389,3 +389,142 @@ func nextTitle(t *testing.T, d *doctor) string {
 	}
 	return up[0].Title
 }
+
+// tardisode adds a one-minute webisode that went out three days before New
+// Earth, which is the case the length floor exists for.
+func (d *doctor) tardisode(t *testing.T, number int, title string, length time.Duration) {
+	t.Helper()
+	writer := d.db.NewWriter(5)
+	if err := writer.Add(d.ctx, store.Found{
+		SectionID: d.shows, Kind: domain.KindEpisode,
+		Show: "Doctor Who", ShowYear: 2005, SeasonNum: 0, EpisodeNum: number,
+		Title: title, Duration: length,
+		Path: t.TempDir() + "/" + title + ".mkv", Container: "mkv", Size: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Commit(d.ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// realDates gives the series and the Christmas specials the dates they
+// actually went out on.
+func (d *doctor) realDates(t *testing.T) {
+	t.Helper()
+	dates := map[string]string{
+		"Rose":                    "2005-03-26",
+		"The Parting of the Ways": "2005-06-18",
+		"The Christmas Invasion":  "2005-12-25",
+		"New Earth":               "2006-04-15",
+		"Doomsday":                "2006-07-08",
+		"The Runaway Bride":       "2006-12-25",
+		"Smith and Jones":         "2007-03-31",
+		"Tardisode 1":             "2006-04-12",
+		"Night of the Doctor":     "2013-11-14",
+	}
+	for _, episode := range mustOrder(t, d) {
+		if date, found := dates[episode.Title]; found {
+			setAired(t, d, episode.ID, date)
+		}
+	}
+}
+
+func TestAMinisodeDoesNotInterruptASeries(t *testing.T) {
+	d := newDoctor(t)
+	// One minute, against episodes of forty-five.
+	d.tardisode(t, 20, "Tardisode 1", time.Minute)
+	d.realDates(t)
+
+	got := d.titles(t)
+	want := []string{
+		"Rose", "The Parting of the Ways",
+		"The Christmas Invasion",
+		"New Earth", "Doomsday",
+		"The Runaway Bride",
+		"Smith and Jones",
+		// At the end, where it can still be played deliberately but is not
+		// in the way of the series it is not part of.
+		"Tardisode 1",
+	}
+	for i := range want {
+		if i >= len(got) || got[i] != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
+	// And the hour-long Christmas special is still woven in, which is the
+	// whole point of judging by length rather than by season.
+	if got[2] != "The Christmas Invasion" {
+		t.Fatalf("the Christmas special moved: %v", got)
+	}
+}
+
+func TestAHandPlacementBeatsTheLengthFloor(t *testing.T) {
+	d := newDoctor(t)
+	// Seven minutes: a real story episode by any reading, and far too short
+	// for the floor to let through on its own.
+	d.tardisode(t, 30, "Night of the Doctor", 7*time.Minute)
+	d.realDates(t)
+
+	var short int64
+	for _, episode := range mustOrder(t, d) {
+		if episode.Title == "Night of the Doctor" {
+			short = episode.ID
+		}
+	}
+	if err := d.db.SetPlacement(d.ctx, short, domain.Placement{
+		AfterSeason: 2, BeforeSeason: domain.NoPlacement, BeforeEpisode: domain.NoPlacement,
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	got := d.titles(t)
+	// Somebody said it goes after series two, so it does — the floor is a
+	// guess and this is not.
+	for i, title := range got {
+		if title == "Night of the Doctor" {
+			if i == len(got)-1 {
+				t.Fatalf("a hand placement lost to the length floor: %v", got)
+			}
+			if got[i-1] != "Doomsday" {
+				t.Fatalf("placed after %q, want after Doomsday: %v", got[i-1], got)
+			}
+			return
+		}
+	}
+	t.Fatalf("the special vanished: %v", got)
+}
+
+func TestWithNoDurationsNothingIsJudgedByLength(t *testing.T) {
+	d := newDoctor(t)
+	// A library that has not been probed: no episode has a duration, so
+	// nothing can be judged by length and leaving every special out would
+	// be worse than leaving them in.
+	writer := d.db.NewWriter(5)
+	if err := writer.Add(d.ctx, store.Found{
+		SectionID: d.shows, Kind: domain.KindEpisode,
+		Show: "Hinterland", ShowYear: 2013, SeasonNum: 1, EpisodeNum: 1, Title: "Arrivals",
+		Path: t.TempDir() + "/arrivals.mkv", Container: "mkv", Size: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Add(d.ctx, store.Found{
+		SectionID: d.shows, Kind: domain.KindEpisode,
+		Show: "Hinterland", ShowYear: 2013, SeasonNum: 0, EpisodeNum: 1, Title: "A Short Thing",
+		Path: t.TempDir() + "/short.mkv", Container: "mkv", Size: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Commit(d.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	show := d.find(t, d.shows, domain.KindShow, "Hinterland")
+	episodes, err := d.db.EpisodeOrder(d.ctx, show)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(episodes) != 2 {
+		t.Fatalf("episodes = %v", episodes)
+	}
+}

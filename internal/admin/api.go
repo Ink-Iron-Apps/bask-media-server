@@ -796,6 +796,17 @@ func (s *Server) readSettings(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "read settings", err)
 		return
 	}
+	enrichEvery, err := s.DB.Minutes(r.Context(), store.KeyEnrichEvery)
+	if err != nil {
+		s.fail(w, "read settings", err)
+		return
+	}
+	markersEvery, err := s.DB.Minutes(r.Context(), store.KeyMarkersEvery)
+	if err != nil {
+		s.fail(w, "read settings", err)
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":        s.friendlyName(r),
 		"nameDefault": s.Name,
@@ -817,6 +828,12 @@ func (s *Server) readSettings(w http.ResponseWriter, r *http.Request) {
 		"ffprobe":       s.Jobs.Prober != nil,
 		"ffmpeg":        s.Jobs.Printer != nil,
 		"sessionDays":   int(s.sessionTTL().Hours() / 24),
+		// How often the server-wide passes run by themselves. Zero means
+		// never, which is what they did until now: a scan that finds a new
+		// film is only half of what somebody wants if nothing then fetches
+		// its poster.
+		"enrichEvery":  enrichEvery,
+		"markersEvery": markersEvery,
 	})
 }
 
@@ -827,6 +844,11 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 		SubtitleKey *string `json:"subtitleKey"`
 		TVDBKey     *string `json:"tvdbKey"`
 		TVDBPIN     *string `json:"tvdbPin"`
+
+		// How often the server-wide passes run, in minutes, and zero for
+		// never.
+		EnrichEvery  *int `json:"enrichEvery"`
+		MarkersEvery *int `json:"markersEvery"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -867,6 +889,45 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 		// refused rather than ignored, which is why it is stored apart.
 		if err := s.DB.SetServerValue(r.Context(), store.KeyTVDBPIN, strings.TrimSpace(*body.TVDBPIN)); err != nil {
 			s.fail(w, "set key", err)
+			return
+		}
+	}
+	for _, interval := range []struct {
+		key   string
+		value *int
+		what  string
+	}{
+		{store.KeyEnrichEvery, body.EnrichEvery, "a metadata pass"},
+		{store.KeyMarkersEvery, body.MarkersEvery, "a marker pass"},
+	} {
+		if interval.value == nil {
+			continue
+		}
+		minutes := *interval.value
+		if minutes < 0 {
+			writeError(w, http.StatusBadRequest, "an interval cannot be negative")
+			return
+		}
+		// The same floor a library's scan has, and refused rather than
+		// clamped for the same reason: a quarter of an hour is the shortest
+		// interval worth having, and a message is more use than a number
+		// quietly changing.
+		if minutes > 0 && minutes < 15 {
+			writeError(w, http.StatusBadRequest,
+				"a pass cannot run more often than every 15 minutes")
+			return
+		}
+		if minutes > 7*24*60 {
+			writeError(w, http.StatusBadRequest,
+				"longer than a week means never — set it to zero for that")
+			return
+		}
+		stored := ""
+		if minutes > 0 {
+			stored = strconv.Itoa(minutes)
+		}
+		if err := s.DB.SetServerValue(r.Context(), interval.key, stored); err != nil {
+			s.fail(w, "set "+interval.what, err)
 			return
 		}
 	}

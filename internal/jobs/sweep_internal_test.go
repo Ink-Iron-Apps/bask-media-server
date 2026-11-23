@@ -126,3 +126,116 @@ func TestASweepStopsWhenTheServerIsGoingDown(t *testing.T) {
 		t.Fatalf("the library was not still due: %v", due)
 	}
 }
+
+func TestAScheduledPassRunsWhenSomethingIsWaiting(t *testing.T) {
+	db, runner, section, ctx := sweepable(t)
+
+	// A film waiting to be enriched. Written straight in rather than
+	// scanned for, because a scan is asynchronous and what is under test is
+	// the decision to start a pass, not the walk that filled the queue.
+	writer := db.NewWriter(5)
+	if err := writer.Add(ctx, store.Found{
+		SectionID: section, Kind: domain.KindMovie, Title: "Big Hill", Year: 2026,
+		Path: t.TempDir() + "/big-hill.mkv", Container: "mkv", Size: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := db.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.NeedsMetadata == 0 {
+		t.Fatal("the scan found nothing to enrich")
+	}
+
+	// No schedule: nothing runs, which is what every server did until now.
+	runner.sweepPasses(ctx, runner.logger())
+	if len(runner.Jobs()) != 0 {
+		t.Fatalf("a pass ran with no schedule set: %v", runner.Jobs())
+	}
+
+	if err := db.SetServerValue(ctx, store.KeyEnrichEvery, "60"); err != nil {
+		t.Fatal(err)
+	}
+	// Still nothing: there is no metadata provider, so the pass cannot run
+	// and must not have its clock reset by being started and refused.
+	runner.sweepPasses(ctx, runner.logger())
+	if len(runner.Jobs()) != 0 {
+		t.Fatalf("a pass ran with no provider: %v", runner.Jobs())
+	}
+	if last, err := db.LastRun(ctx, store.KeyEnrichEvery); err != nil {
+		t.Fatal(err)
+	} else if !last.IsZero() {
+		t.Fatal("a pass that could not run reset its own clock")
+	}
+}
+
+func TestAScheduledPassDoesNotRunOnAnEmptyQueue(t *testing.T) {
+	db, runner, _, ctx := sweepable(t)
+
+	if err := db.SetServerValue(ctx, store.KeyMarkersEvery, "60"); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing has been scanned, so nothing is waiting. A pass with an empty
+	// queue would appear in Activity, finish immediately and reset its
+	// clock: a log line every interval saying nothing happened.
+	runner.sweepPasses(ctx, runner.logger())
+	if len(runner.Jobs()) != 0 {
+		t.Fatalf("a pass ran on an empty queue: %v", runner.Jobs())
+	}
+	if last, err := db.LastRun(ctx, store.KeyMarkersEvery); err != nil {
+		t.Fatal(err)
+	} else if !last.IsZero() {
+		t.Fatal("a pass that had nothing to do reset its own clock")
+	}
+}
+
+func TestAPassIsNotStartedAgainWhileItsIntervalRuns(t *testing.T) {
+	db, runner, _, ctx := sweepable(t)
+
+	if err := db.SetServerValue(ctx, store.KeyEnrichEvery, "60"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := db.MarkRun(ctx, store.KeyEnrichEvery, now); err != nil {
+		t.Fatal(err)
+	}
+
+	last, err := db.LastRun(ctx, store.KeyEnrichEvery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last.IsZero() || last.Before(now.Add(-time.Minute)) {
+		t.Fatalf("the clock did not round-trip: %v", last)
+	}
+
+	runner.sweepPasses(ctx, runner.logger())
+	if len(runner.Jobs()) != 0 {
+		t.Fatalf("a pass ran inside its own interval: %v", runner.Jobs())
+	}
+}
+
+func TestAnIntervalThatCannotBeReadMeansNever(t *testing.T) {
+	db, runner, _, ctx := sweepable(t)
+
+	// A corrupted interval should stop a pass running by itself rather than
+	// stop the server starting.
+	if err := db.SetServerValue(ctx, store.KeyEnrichEvery, "every six hours"); err != nil {
+		t.Fatal(err)
+	}
+	minutes, err := db.Minutes(ctx, store.KeyEnrichEvery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if minutes != 0 {
+		t.Fatalf("minutes = %d, want never", minutes)
+	}
+	runner.sweepPasses(ctx, runner.logger())
+	if len(runner.Jobs()) != 0 {
+		t.Fatalf("a pass ran on an unreadable interval: %v", runner.Jobs())
+	}
+}

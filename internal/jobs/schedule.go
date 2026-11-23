@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"time"
+
+	"github.com/inknironapps/bask-media-server/internal/store"
 )
 
 // Scanning a library without being asked.
@@ -30,6 +32,21 @@ import (
 // against a table with a handful of rows.
 const sweepEvery = time.Minute
 
+// serverPasses are the passes with one schedule for the whole server, as
+// opposed to the scan, which has one per library.
+//
+// Server-wide because that is what they are: each asks the whole database
+// what is still unanswered and works through it, so an interval per library
+// would be several schedules competing for one queue. Which libraries they
+// touch is the per-library setting.
+var serverPasses = []struct {
+	kind Kind
+	key  string
+}{
+	{KindEnrich, store.KeyEnrichEvery},
+	{KindMarkers, store.KeyMarkersEvery},
+}
+
 // Schedule scans the libraries that asked to be scanned, until the context
 // ends.
 //
@@ -46,14 +63,100 @@ func (r *Runner) Schedule(ctx context.Context) {
 	// picks up a library that was due while it was down. The alternative is
 	// a restart quietly costing one interval.
 	r.sweep(ctx, log)
+	r.sweepPasses(ctx, log)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			r.sweep(ctx, log)
+			r.sweepPasses(ctx, log)
 		}
 	}
+}
+
+// sweepPasses starts the server-wide passes that are due.
+//
+// A scan that finds a new film is only half of what somebody wants: without
+// this, the film sits there with no poster and no summary until somebody
+// presses the button, which is the same gap automatic scanning was meant to
+// close.
+//
+// Each pass tracks when it last ran in the server table, written before the
+// pass starts for the reason a library's visit is: a pass that fails must be
+// retried at its own interval rather than every minute.
+func (r *Runner) sweepPasses(ctx context.Context, log *slog.Logger) {
+	if err := ctx.Err(); err != nil {
+		return
+	}
+	now := time.Now().UTC()
+
+	for _, pass := range serverPasses {
+		every, err := r.DB.Minutes(ctx, pass.key)
+		if err != nil {
+			log.Warn("could not read a pass schedule", "pass", pass.kind, "error", err)
+			continue
+		}
+		if every <= 0 {
+			continue
+		}
+		last, err := r.DB.LastRun(ctx, pass.key)
+		if err != nil {
+			log.Warn("could not read when a pass last ran", "pass", pass.kind, "error", err)
+			continue
+		}
+		if !last.IsZero() && now.Before(last.Add(time.Duration(every)*time.Minute)) {
+			continue
+		}
+
+		// Nothing to do is not worth starting. A pass with an empty queue
+		// would appear in Activity, finish immediately and reset its clock,
+		// which is a log line every interval saying nothing happened.
+		if r.Can(ctx, pass.kind) != nil {
+			continue
+		}
+		waiting, err := r.waiting(ctx, pass.kind)
+		if err != nil {
+			log.Warn("could not count what a pass has to do", "pass", pass.kind, "error", err)
+			continue
+		}
+		if waiting == 0 {
+			continue
+		}
+
+		if err := r.DB.MarkRun(ctx, pass.key, now); err != nil {
+			log.Warn("could not record a pass", "pass", pass.kind, "error", err)
+			continue
+		}
+		job, err := r.Start(ctx, pass.kind, 0)
+		switch {
+		case errors.Is(err, ErrBusy):
+			// Somebody pressed the button, or the last one is still going.
+			continue
+		case err != nil:
+			log.Warn("could not start a scheduled pass", "pass", pass.kind, "error", err)
+			continue
+		}
+		log.Info("running a pass on schedule",
+			"pass", pass.kind, "job", job.ID, "waiting", waiting,
+			"every", (time.Duration(every) * time.Minute).String())
+	}
+}
+
+// waiting is how much a pass has to do, so one with an empty queue is not
+// started at all.
+func (r *Runner) waiting(ctx context.Context, kind Kind) (int, error) {
+	stats, err := r.DB.Stats(ctx)
+	if err != nil {
+		return 0, err
+	}
+	switch kind {
+	case KindEnrich:
+		return stats.NeedsMetadata, nil
+	case KindMarkers:
+		return stats.NeedsMarkers, nil
+	}
+	return 0, nil
 }
 
 // sweep starts a scan for the first library that is due.

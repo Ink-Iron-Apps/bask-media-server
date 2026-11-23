@@ -2071,6 +2071,17 @@ views.settings = async function (main) {
     id: 'tvdb-key', type: 'password',
     placeholder: settings.tvdbKeyStored ? 'stored' : 'not set', spellcheck: 'false',
   });
+  // The same choices a library's scan offers, so the two schedules are
+  // described in one vocabulary.
+  const passEvery = (id, value) => el('select', { id: id }, SCAN_INTERVALS.map(([minutes, label]) =>
+    el('option', {
+      value: String(minutes),
+      text: minutes === 0 ? 'Only when asked' : label,
+      selected: (value || 0) === minutes,
+    })));
+  const enrichEvery = passEvery('enrich-every', settings.enrichEvery);
+  const markersEvery = passEvery('markers-every', settings.markersEvery);
+
   const tvdbPin = el('input', {
     id: 'tvdb-pin', type: 'password',
     placeholder: settings.tvdbPinStored ? 'stored' : 'only for a subscriber key', spellcheck: 'false',
@@ -2148,6 +2159,29 @@ views.settings = async function (main) {
             },
           })
           : null)),
+    el('div', { class: 'card' },
+      el('h2', { text: 'Passes' }),
+      el('p', { class: 'muted', text: 'A library that scans itself finds a new film and then leaves it with no poster until somebody presses a button. These are the passes that finish the job, and they run only when something is actually waiting \u2014 an empty queue starts nothing.' }),
+      el('label', { for: 'enrich-every', text: 'Fetch metadata' }), enrichEvery,
+      el('label', { for: 'markers-every', text: 'Find intros and credits' }), markersEvery,
+      el('p', { class: 'muted', text: 'Each library decides whether these touch it at all, in its own settings.' }),
+      el('div', { class: 'row' },
+        el('button', {
+          class: 'primary',
+          text: 'Save',
+          on: {
+            click: async () => {
+              try {
+                await api('PATCH', '/settings', {
+                  enrichEvery: Number(enrichEvery.value) || 0,
+                  markersEvery: Number(markersEvery.value) || 0,
+                });
+                toast('Saved.');
+                render();
+              } catch (err) { failed(err); }
+            },
+          },
+        }))),
     el('div', { class: 'card' },
       el('h2', { text: 'Artwork' }),
       el('p', { class: 'muted', text: 'TMDB\u2019s pictures come with the key above. TheTVDB is a second source for the artwork chooser only \u2014 it is never used to match a title, because a library matched against two services would need a rule for which one wins.' }),
