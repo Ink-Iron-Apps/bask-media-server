@@ -531,11 +531,26 @@ func fit(srcW, srcH, wantW, wantH int) (int, int) {
 	}
 }
 
-// Sweep evicts least-recently-used files until the store is under its cap.
+// Sweep evicts files until the store is under its cap, renditions before
+// originals and least-recently-used first within each.
 //
-// Called after an enrichment pass rather than on every request: eviction wants
-// a whole-directory view, and doing that per request would be the expensive
-// kind of tidy.
+// Called after an enrichment pass rather than on every request: eviction
+// wants a whole-directory view, and doing that per request would be the
+// expensive kind of tidy.
+//
+// The order is the point, and it is not a tidiness preference. A rendition
+// costs a decode to make again and nothing else, so losing one is invisible.
+// An original is the only copy: an item stores a cache key and not the
+// address the picture came from, so an evicted original is a poster that
+// cannot be recovered without somebody choosing it again. That matters most
+// for exactly the pictures somebody chose by hand — those items are locked,
+// so no later pass will refetch them, and a flat least-recently-used sweep
+// would quietly delete the one poster in the library that was a decision.
+//
+// Originals are still evicted if clearing every rendition is not enough,
+// because a cache that refuses to honour its own cap is not a cache. By then
+// the cap is smaller than the library's posters and the honest fix is a
+// larger cap.
 func (c *Cache) Sweep() (freed int64, err error) {
 	type entry struct {
 		path string
@@ -543,11 +558,16 @@ func (c *Cache) Sweep() (freed int64, err error) {
 		used time.Time
 	}
 	var (
-		files []entry
-		total int64
+		renditions []entry
+		originals  []entry
+		total      int64
 	)
 	for _, dir := range []string{"originals", "renditions"} {
 		root := filepath.Join(c.Root, dir)
+		into := &originals
+		if dir == "renditions" {
+			into = &renditions
+		}
 		walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return nil
@@ -556,7 +576,7 @@ func (c *Cache) Sweep() (freed int64, err error) {
 			if err != nil {
 				return nil
 			}
-			files = append(files, entry{path: path, size: info.Size(), used: info.ModTime()})
+			*into = append(*into, entry{path: path, size: info.Size(), used: info.ModTime()})
 			total += info.Size()
 			return nil
 		})
@@ -568,15 +588,17 @@ func (c *Cache) Sweep() (freed int64, err error) {
 		return 0, nil
 	}
 
-	sort.Slice(files, func(i, j int) bool { return files[i].used.Before(files[j].used) })
-	for _, f := range files {
-		if total-freed <= c.MaxBytes {
-			break
+	for _, group := range [][]entry{renditions, originals} {
+		sort.Slice(group, func(i, j int) bool { return group[i].used.Before(group[j].used) })
+		for _, f := range group {
+			if total-freed <= c.MaxBytes {
+				return freed, nil
+			}
+			if err := os.Remove(f.path); err != nil {
+				continue
+			}
+			freed += f.size
 		}
-		if err := os.Remove(f.path); err != nil {
-			continue
-		}
-		freed += f.size
 	}
 	return freed, nil
 }
