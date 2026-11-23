@@ -235,3 +235,32 @@ progress.bar::-moz-progress-bar { background: var(--accent); }
 
 /* A field that holds a language code, not a sentence. */
 input.short { width: 6em; }
+
+/* The artwork chooser. A grid of candidates, each a button, because clicking
+   one is the whole interaction: posters at their own shape and backdrops
+   spanning two columns, so a wide picture is not squeezed into a tall slot
+   and judged on the wrong crop. */
+.art-now { gap: 1rem; align-items: flex-start; margin-bottom: .5rem; }
+.art-now figure { margin: 0; }
+.art-now img { display: block; border-radius: 6px; border: 1px solid var(--line); max-width: 260px; }
+.art-now figcaption { margin-top: .25rem; font-size: .8rem; }
+
+.art-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: .6rem;
+  margin: .6rem 0;
+}
+.art {
+  display: block;
+  padding: .3rem;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+.art:hover { border-color: var(--accent); }
+.art.wide { grid-column: span 2; }
+.art img { display: block; width: 100%; border-radius: 4px; }
+.art span { display: block; margin-top: .25rem; font-size: .72rem; line-height: 1.3; }

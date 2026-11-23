@@ -720,6 +720,16 @@ func (s *Server) readSettings(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "read settings", err)
 		return
 	}
+	tvdbKey, err := s.DB.ServerValue(r.Context(), store.KeyTVDB)
+	if err != nil {
+		s.fail(w, "read settings", err)
+		return
+	}
+	tvdbPIN, err := s.DB.ServerValue(r.Context(), store.KeyTVDBPIN)
+	if err != nil {
+		s.fail(w, "read settings", err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":        s.friendlyName(r),
 		"nameDefault": s.Name,
@@ -733,9 +743,14 @@ func (s *Server) readSettings(w http.ResponseWriter, r *http.Request) {
 		// The subtitle service, which is off until there is a key: nothing
 		// about this library reaches a third party before that.
 		"subtitleKeyStored": subtitleKey != "",
-		"ffprobe":           s.Jobs.Prober != nil,
-		"ffmpeg":            s.Jobs.Printer != nil,
-		"sessionDays":       int(s.sessionTTL().Hours() / 24),
+		// TheTVDB, which is artwork only: BMS matches a library against one
+		// service, and a second set of ids and titles would need a rule for
+		// which wins. A key here adds a shelf of pictures, nothing else.
+		"tvdbKeyStored": tvdbKey != "",
+		"tvdbPinStored": tvdbPIN != "",
+		"ffprobe":       s.Jobs.Prober != nil,
+		"ffmpeg":        s.Jobs.Printer != nil,
+		"sessionDays":   int(s.sessionTTL().Hours() / 24),
 	})
 }
 
@@ -744,6 +759,8 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 		Name        *string `json:"name"`
 		TMDBKey     *string `json:"tmdbKey"`
 		SubtitleKey *string `json:"subtitleKey"`
+		TVDBKey     *string `json:"tvdbKey"`
+		TVDBPIN     *string `json:"tvdbPin"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -765,6 +782,24 @@ func (s *Server) writeSettings(w http.ResponseWriter, r *http.Request) {
 		// the file that holds every token hash, and encrypting it would mean a
 		// second secret kept next to the first.
 		if err := s.DB.SetServerValue(r.Context(), store.KeyTMDB, strings.TrimSpace(*body.TMDBKey)); err != nil {
+			s.fail(w, "set key", err)
+			return
+		}
+	}
+	if body.TVDBKey != nil {
+		// Saving one adds TheTVDB to the artwork chooser and clearing it
+		// takes it away again, the same arrangement as the subtitle key: a
+		// key with nothing using it is a worse thing to leave behind than
+		// none.
+		if err := s.DB.SetServerValue(r.Context(), store.KeyTVDB, strings.TrimSpace(*body.TVDBKey)); err != nil {
+			s.fail(w, "set key", err)
+			return
+		}
+	}
+	if body.TVDBPIN != nil {
+		// Only a user-supported key needs this, and sending an empty one is
+		// refused rather than ignored, which is why it is stored apart.
+		if err := s.DB.SetServerValue(r.Context(), store.KeyTVDBPIN, strings.TrimSpace(*body.TVDBPIN)); err != nil {
 			s.fail(w, "set key", err)
 			return
 		}

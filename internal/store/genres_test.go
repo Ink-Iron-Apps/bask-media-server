@@ -327,7 +327,7 @@ func TestAScanWithNoTagsLeavesGenresAlone(t *testing.T) {
 	if err := writer.Add(s.ctx, store.Found{
 		SectionID: s.music, Kind: domain.KindTrack, Title: "Anthem",
 		Artist: "The Band", Album: "The Album",
-		Path:   t.TempDir() + "/Anthem.flac", Container: "flac", Size: 1,
+		Path: t.TempDir() + "/Anthem.flac", Container: "flac", Size: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}

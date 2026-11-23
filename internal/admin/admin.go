@@ -172,6 +172,12 @@ func (s *Server) Handler() http.Handler {
 	authed("POST /admin/api/items/{id}/revert", s.revertItem)
 	authed("GET /admin/api/items/{id}/candidates", s.candidates)
 	authed("POST /admin/api/items/{id}/match", s.rematchItem)
+	// Choosing the picture on an item: what every service has, and the three
+	// ways one is applied.
+	authed("GET /admin/api/items/{id}/image", s.itemImage)
+	authed("GET /admin/api/items/{id}/artwork", s.artwork)
+	authed("POST /admin/api/items/{id}/artwork", s.chooseArtwork)
+	authed("POST /admin/api/items/{id}/artwork/upload", s.uploadArtwork)
 	authed("GET /admin/api/items/{id}/subtitles", s.findSubtitles)
 	authed("POST /admin/api/items/{id}/subtitles", s.fetchSubtitle)
 

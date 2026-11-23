@@ -35,6 +35,13 @@ const (
 	// KeyTMDB is the metadata provider's key, stored so it survives a restart
 	// and can be set without one.
 	KeyTMDB = "tmdb_key"
+	// KeyTVDB and KeyTVDBPIN are TheTVDB's credentials, used for artwork
+	// only. Empty means that source is not offered, which is the default:
+	// nothing about a library reaches a third party until somebody puts a
+	// key here. The PIN is wanted only by a user-supported key, and sending
+	// an empty one is refused rather than ignored, so it is stored apart.
+	KeyTVDB    = "tvdb_key"
+	KeyTVDBPIN = "tvdb_pin"
 	// KeyOpenSubtitles is the subtitle service's key. Empty means subtitle
 	// searching is off, which is the default: nothing about a library
 	// reaches a third party until somebody puts a key here.

@@ -147,6 +147,11 @@ type Runner struct {
 
 	Artwork *artwork.Cache
 
+	// Sources is where artwork can be browsed, resolved when a chooser is
+	// opened — see [ArtworkSources]. Nil, or an empty list, means the editor
+	// offers a link box and nothing to browse.
+	Sources func(ctx context.Context) []metadata.ArtworkSource
+
 	// Workers is how many files marker detection fingerprints at once. Zero
 	// leaves the detector's own default, which is half the CPUs.
 	Workers int

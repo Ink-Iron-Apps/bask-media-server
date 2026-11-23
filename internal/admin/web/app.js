@@ -32,6 +32,28 @@ async function api(method, path, body) {
   return data;
 }
 
+// upload sends raw bytes rather than JSON, which is what an image is.
+//
+// Its own function rather than a flag on api(): the body is not encoded, the
+// content type comes from the file, and conflating the two would mean a
+// JSON.stringify of a Blob on the next careless call.
+async function upload(path, file) {
+  const res = await fetch(API + path, {
+    method: 'POST',
+    headers: { 'X-BMS-Admin': '1', 'Content-Type': file.type || 'application/octet-stream' },
+    credentials: 'same-origin',
+    body: file,
+  });
+  if (res.status === 401) {
+    showSignIn();
+    throw new Error('signed out');
+  }
+  let data = {};
+  try { data = await res.json(); } catch (e) { /* an empty body is fine */ }
+  if (!res.ok) throw new Error(data.error || 'that did not work (' + res.status + ')');
+  return data;
+}
+
 // fill replaces a parent's contents, dropping the nothings.
 //
 // replaceChildren turns a null into the text "null" on the page, which is
@@ -717,6 +739,8 @@ async function editItem(id) {
         ? el('div', { class: 'muted mono files' }, (detail.files || []).map((path) => el('div', { text: path })))
         : null),
 
+    artworkCard(id, detail),
+
     subtitleCard(id, detail),
 
     el('div', { class: 'card' },
@@ -728,6 +752,123 @@ async function editItem(id) {
             el('button', { text: 'Search the provider', on: { click: searchProvider } })),
           matches)
         : el('p', { class: 'muted', text: detail.why || 'This item cannot be matched to a provider.' })));
+}
+
+// artworkCard is where the picture on an item is chosen.
+//
+// Three ways in, because the services work three different ways: a grid of
+// what TMDB and TheTVDB have, a box for a pasted address — which is the only
+// way ThePosterDB can be used, since it has no search API — and a file off
+// this machine. Whichever is used, the picture is fetched into the server's
+// own cache, so a shelf does not go blank when somebody else reorganises a
+// CDN.
+//
+// The grid is not fetched with the page. Opening an editor would otherwise
+// cost two requests to a third party every time, for a chooser most visits
+// never open.
+function artworkCard(id, detail) {
+  const shown = el('div', { class: 'art-now row' },
+    el('figure', {},
+      el('img', { src: '/admin/api/items/' + id + '/image?kind=poster&w=140&v=' + Date.now(), alt: '' }),
+      el('figcaption', { class: 'muted', text: 'Poster' })),
+    el('figure', {},
+      el('img', { src: '/admin/api/items/' + id + '/image?kind=art&w=260&v=' + Date.now(), alt: '' }),
+      el('figcaption', { class: 'muted', text: 'Backdrop' })));
+
+  const grid = el('div', {});
+  const link = el('input', { placeholder: 'https://theposterdb.com/poster/…', spellcheck: 'false' });
+  const linkKind = el('select', {},
+    el('option', { value: 'poster', text: 'as the poster' }),
+    el('option', { value: 'backdrop', text: 'as the backdrop' }));
+  const file = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+  const fileKind = el('select', {},
+    el('option', { value: 'poster', text: 'as the poster' }),
+    el('option', { value: 'backdrop', text: 'as the backdrop' }));
+
+  // One place that applies a choice, so the three ways in agree about what
+  // happens afterwards: a word, and the editor redrawn so the pictures at
+  // the top are the new ones.
+  const applied = (answer) => {
+    toast((answer && answer.note) || 'Saved.');
+    editItem(id);
+  };
+
+  const browse = async () => {
+    fill(grid, el('p', { class: 'muted', text: 'Asking the artwork services…' }));
+    try {
+      const answer = await api('GET', '/items/' + id + '/artwork');
+      const art = (answer && answer.art) || [];
+      const notes = [];
+      if (answer.why) notes.push(answer.why);
+      (answer.failed || []).forEach((line) => notes.push(line));
+      if (!art.length && !notes.length) {
+        notes.push('None of ' + (answer.sources || []).join(', ') + ' has a picture of this.');
+      }
+
+      fill(grid,
+        ...notes.map((line) => el('p', { class: 'muted', text: line })),
+        art.length ? el('div', { class: 'art-grid' }, art.map((one) => {
+          const label = [
+            one.source,
+            one.language ? one.language : 'no text',
+            one.width ? one.width + '×' + one.height : '',
+          ].filter(Boolean).join(' · ');
+          return el('button', {
+            class: 'art' + (one.kind === 'backdrop' ? ' wide' : ''),
+            title: 'Use this ' + one.kind,
+            on: {
+              click: async () => {
+                try {
+                  applied(await api('POST', '/items/' + id + '/artwork', { kind: one.kind, url: one.url }));
+                } catch (err) { failed(err); }
+              },
+            },
+          },
+          el('img', { src: one.thumbUrl || one.url, alt: '', loading: 'lazy' }),
+          el('span', { class: 'muted', text: label }));
+        })) : null);
+    } catch (err) { failed(err); fill(grid, el('p', { class: 'muted', text: err.message })); }
+  };
+
+  return el('div', { class: 'card' },
+    el('h2', { text: 'Artwork' }),
+    shown,
+    el('p', { class: 'muted', text: 'Whatever is chosen is copied into this server’s own cache, and choosing one locks the item so a metadata pass will not replace it.' }),
+
+    el('div', { class: 'row' },
+      el('button', { text: 'Show what the services have', on: { click: browse } })),
+    grid,
+
+    el('h3', { text: 'From a link' }),
+    el('p', { class: 'muted', text: 'ThePosterDB has no search API and asks not to be crawled, so there is nothing to browse there — open the poster you want and paste its address. Any other image address works too.' }),
+    el('div', { class: 'row' }, link, linkKind,
+      el('button', {
+        text: 'Use it',
+        on: {
+          click: async () => {
+            if (!link.value.trim()) { toast('Paste an address first.', true); return; }
+            try {
+              applied(await api('POST', '/items/' + id + '/artwork',
+                { kind: linkKind.value, url: link.value.trim() }));
+            } catch (err) { failed(err); }
+          },
+        },
+      })),
+
+    el('h3', { text: 'From this machine' }),
+    el('div', { class: 'row' }, file, fileKind,
+      el('button', {
+        text: 'Upload it',
+        on: {
+          click: async () => {
+            const chosen = file.files && file.files[0];
+            if (!chosen) { toast('Pick a picture first.', true); return; }
+            try {
+              applied(await upload('/items/' + id + '/artwork/upload?kind=' + fileKind.value, chosen));
+            } catch (err) { failed(err); }
+          },
+        },
+      })));
 }
 
 // subtitleCard finds a subtitle for a film that has none.
@@ -1628,6 +1769,14 @@ views.settings = async function (main) {
   ]);
   const name = el('input', { id: 'server-name', value: settings.name || '' });
   const key = el('input', { id: 'tmdb-key', type: 'password', placeholder: settings.tmdbKeyStored ? 'stored' : 'not set', spellcheck: 'false' });
+  const tvdbKey = el('input', {
+    id: 'tvdb-key', type: 'password',
+    placeholder: settings.tvdbKeyStored ? 'stored' : 'not set', spellcheck: 'false',
+  });
+  const tvdbPin = el('input', {
+    id: 'tvdb-pin', type: 'password',
+    placeholder: settings.tvdbPinStored ? 'stored' : 'only for a subscriber key', spellcheck: 'false',
+  });
   const subtitleKey = el('input', {
     id: 'subtitle-key', type: 'password',
     placeholder: settings.subtitleKeyStored ? 'stored' : 'not set', spellcheck: 'false',
@@ -1695,6 +1844,52 @@ views.settings = async function (main) {
                 try {
                   await api('PATCH', '/settings', { tmdbKey: '' });
                   toast('Forgotten.');
+                  render();
+                } catch (err) { failed(err); }
+              },
+            },
+          })
+          : null)),
+    el('div', { class: 'card' },
+      el('h2', { text: 'Artwork' }),
+      el('p', { class: 'muted', text: 'TMDB\u2019s pictures come with the key above. TheTVDB is a second source for the artwork chooser only \u2014 it is never used to match a title, because a library matched against two services would need a rule for which one wins.' }),
+      el('label', { for: 'tvdb-key', text: 'TheTVDB API key' }), tvdbKey,
+      el('label', { for: 'tvdb-pin', text: 'Subscriber PIN' }), tvdbPin,
+      el('p', {
+        class: 'muted',
+        text: settings.tvdbKeyStored
+          ? 'A key is stored, so TheTVDB appears in the artwork chooser. The PIN is only wanted by a user-supported key.'
+          : 'Without a key, the chooser offers TMDB and the link box. ThePosterDB needs no key: it has no search API, so a poster is used by pasting its address.',
+      }),
+      el('div', { class: 'row' },
+        el('button', {
+          class: 'primary',
+          text: 'Save key',
+          on: {
+            click: async () => {
+              try {
+                const patch = {};
+                if (tvdbKey.value) patch.tvdbKey = tvdbKey.value;
+                if (tvdbPin.value) patch.tvdbPin = tvdbPin.value;
+                if (!Object.keys(patch).length) { toast('Nothing typed.', true); return; }
+                await api('PATCH', '/settings', patch);
+                tvdbKey.value = '';
+                tvdbPin.value = '';
+                toast('Saved.');
+                render();
+              } catch (err) { failed(err); }
+            },
+          },
+        }),
+        settings.tvdbKeyStored
+          ? el('button', {
+            class: 'danger',
+            text: 'Forget the stored key',
+            on: {
+              click: async () => {
+                try {
+                  await api('PATCH', '/settings', { tvdbKey: '', tvdbPin: '' });
+                  toast('Forgotten. TheTVDB is no longer offered.');
                   render();
                 } catch (err) { failed(err); }
               },

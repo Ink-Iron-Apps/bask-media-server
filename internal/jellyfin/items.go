@@ -54,8 +54,8 @@ type item struct {
 	// Genres is what this is about, and GenreItems the same list with the
 	// ids a client needs to turn one into a link. Both, because Jellyfin
 	// sends both and clients read whichever they were written against.
-	Genres     []string   `json:"Genres,omitempty"`
-	GenreItems []namedID  `json:"GenreItems,omitempty"`
+	Genres     []string  `json:"Genres,omitempty"`
+	GenreItems []namedID `json:"GenreItems,omitempty"`
 
 	ProductionYear int    `json:"ProductionYear,omitempty"`
 	Overview       string `json:"Overview,omitempty"`

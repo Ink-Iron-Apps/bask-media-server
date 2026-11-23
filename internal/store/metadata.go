@@ -68,6 +68,38 @@ func (d *DB) SaveMetadata(ctx context.Context, itemID int64, providerID, summary
 	return nil
 }
 
+// SetArtwork points an item at pictures somebody chose.
+//
+// Each key is written only when it is given, so choosing a poster does not
+// clear the backdrop. Locked at the same time, for the same reason editing a
+// field locks: the point of choosing a picture by hand is that the next
+// metadata pass does not replace it, and the lock is the one switch that
+// already means exactly that.
+//
+// metadata_at is left alone. A chosen poster is not an answer about what
+// this film is, so an item nobody has matched yet is still unmatched and the
+// next pass still looks at it — it simply cannot overwrite the picture.
+func (d *DB) SetArtwork(ctx context.Context, itemID int64, posterKey, artKey string) error {
+	if posterKey == "" && artKey == "" {
+		return fmt.Errorf("set artwork: nothing to set")
+	}
+	res, err := d.sql.ExecContext(ctx,
+		`UPDATE items SET
+		   poster_key = CASE WHEN ? <> '' THEN ? ELSE poster_key END,
+		   art_key    = CASE WHEN ? <> '' THEN ? ELSE art_key END,
+		   locked     = 1,
+		   updated_at = ?
+		 WHERE id = ?`,
+		posterKey, posterKey, artKey, artKey, millis(time.Now().UTC()), itemID)
+	if err != nil {
+		return fmt.Errorf("set artwork: %w", err)
+	}
+	if affected, err := res.RowsAffected(); err == nil && affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // MarkMetadataAttempted records that a provider was asked and had nothing, so
 // the next pass does not ask again about every unmatched title forever.
 func (d *DB) MarkMetadataAttempted(ctx context.Context, itemID int64) error {
