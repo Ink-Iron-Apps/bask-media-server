@@ -289,6 +289,20 @@ type Item struct {
 	// episode carries none.
 	Genres []string
 
+	// Tags, Labels, Moods and Styles are the other words attached to a
+	// thing, and the same shape as Genres. Genre is a provider's and a
+	// file's; tag and label are a person's, which is what makes them worth
+	// having — a shelf nobody else decides. Mood and style are music's,
+	// shown in their own rows by a music client.
+	//
+	// Read only where a whole item is read. A listing fills Genres alone,
+	// because a grid draws one row of chips and four more queries per page
+	// would buy nothing anybody can see.
+	Tags   []string
+	Labels []string
+	Moods  []string
+	Styles []string
+
 	// Parts are the files behind a playable item. A movie or episode normally
 	// has exactly one; more than one means multiple versions of the same thing.
 	Parts []Part

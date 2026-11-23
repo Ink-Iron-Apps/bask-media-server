@@ -733,10 +733,23 @@ async function editItem(id) {
   const year = el('input', { value: detail.year || '', type: 'number' });
   const summary = el('textarea', { rows: '4' });
   summary.value = detail.summary || '';
-  // Genres as one line of comma-separated words rather than a row of
-  // removable chips: the list is three or four words, typing is faster than
+  // Words as one line of comma-separated values each, rather than rows of
+  // removable chips: a list is three or four words, typing is faster than
   // clicking, and the field reads the same way it is stored.
-  const genres = el('input', { value: (detail.genres || []).join(', '), spellcheck: 'false' });
+  //
+  // Five kinds, kept apart because they are written by different people. A
+  // genre comes from a catalogue or a file's own tags; a tag and a label are
+  // somebody's here, which is what makes them worth having. Mood and style
+  // are music's, and a music client draws them in their own rows.
+  const words = (name) => el('input', {
+    value: (detail[name] || []).join(', '), spellcheck: 'false',
+  });
+  const genres = words('genres');
+  const tags = words('tags');
+  const labels = words('labels');
+  const moods = words('moods');
+  const styles = words('styles');
+  const commas = (box) => box.value.split(',').map((word) => word.trim()).filter(Boolean);
   const locked = el('input', { type: 'checkbox', id: 'locked-' + id });
   locked.checked = !!detail.locked;
 
@@ -756,7 +769,11 @@ async function editItem(id) {
         title: title.value,
         year: Number(year.value) || 0,
         summary: summary.value,
-        genres: genres.value.split(',').map((word) => word.trim()).filter(Boolean),
+        genres: commas(genres),
+        tags: commas(tags),
+        labels: commas(labels),
+        moods: commas(moods),
+        styles: commas(styles),
         locked: locked.checked,
       });
       toast(locked.checked ? 'Saved and locked, so a metadata pass will leave it alone.' : 'Saved.');
@@ -797,6 +814,12 @@ async function editItem(id) {
       el('label', { text: 'Summary' }), summary,
       el('label', { text: 'Genres' }), genres,
       el('p', { class: 'muted', text: 'Separated by commas. Saved as typed, so a metadata pass will not add to them until this is unlocked.' }),
+      el('label', { text: 'Tags' }), tags,
+      el('label', { text: 'Labels' }), labels,
+      el('p', { class: 'muted', text: 'Tags and labels are yours \u2014 nothing fetches or overwrites them. Plex clients read both as labels, because their wire has one field for a word somebody attached; Jellyfin reads both as tags.' }),
+      el('label', { text: 'Moods' }), moods,
+      el('label', { text: 'Styles' }), styles,
+      el('p', { class: 'muted', text: 'What a music client shows beside an album. Melancholy is a mood, not a genre.' }),
       el('div', { class: 'row' },
         locked,
         el('label', { for: 'locked-' + id, text: 'Leave this alone when fetching metadata' })),

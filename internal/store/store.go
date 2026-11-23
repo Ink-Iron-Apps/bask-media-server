@@ -631,6 +631,44 @@ var migrations = []string{
 	// fails every time would be retried in a tight loop, and one whose scan
 	// is slower than its interval would be started again while it ran.
 	`ALTER TABLE sections ADD COLUMN swept_at INTEGER NOT NULL DEFAULT 0`,
+
+	// Genres turn out to have been one case of a general thing.
+	//
+	// A genre, a tag, a label, a mood and a style are all the same shape: a
+	// word, a set of things carrying it, and a client that wants the list of
+	// words in use. They differ only in who writes them and what a client
+	// calls them. So there is one pair of tables with a kind on it, rather
+	// than four more pairs that would each need their own batch read, their
+	// own listing and their own filter.
+	//
+	// New tables and a copy rather than a rename, because the genres table
+	// declared its name UNIQUE inline and SQLite cannot drop a constraint
+	// that was written into a column definition. Identity has to become the
+	// kind and the name together — otherwise "Comedy" the genre and
+	// "Comedy" the label would be one row, and a correction would silently
+	// edit a provider's answer. The old tables are copied across and
+	// dropped, child first so nothing references a table that is going.
+	`CREATE TABLE tags (
+		id   INTEGER PRIMARY KEY AUTOINCREMENT,
+		kind TEXT NOT NULL,
+		name TEXT NOT NULL COLLATE NOCASE
+	)`,
+	`CREATE UNIQUE INDEX tags_identity ON tags(kind, name)`,
+	`CREATE TABLE item_tags (
+		item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+		tag_id  INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+		PRIMARY KEY (item_id, tag_id)
+	)`,
+	// The other direction: everything carrying one word, which is what a
+	// client's filter asks and what the primary key above cannot answer.
+	`CREATE INDEX item_tags_tag ON item_tags(tag_id)`,
+
+	// The ids are carried over, so the joining rows copy across unchanged
+	// and a client holding a genre's id from before still resolves it.
+	`INSERT INTO tags (id, kind, name) SELECT id, 'genre', name FROM genres`,
+	`INSERT INTO item_tags (item_id, tag_id) SELECT item_id, genre_id FROM item_genres`,
+	`DROP TABLE item_genres`,
+	`DROP TABLE genres`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

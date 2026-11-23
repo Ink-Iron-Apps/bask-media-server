@@ -31,6 +31,16 @@ type Page struct {
 	// filter menu means when somebody ticks two boxes.
 	Genres []string
 
+	// Words is the other kinds a client can narrow by: a label, a tag, a
+	// mood, a style. One entry per menu somebody used.
+	//
+	// Values within an entry are OR — ticking two boxes in one menu — and
+	// the entries themselves are AND, because ticking a box in two menus
+	// means both. An entry naming several kinds matches a thing carrying the
+	// word as any of them, which is what Jellyfin's single Tags parameter
+	// means when BMS keeps labels and tags apart.
+	Words []WordFilter
+
 	// Sort is the order to list in, and the empty key means by title, which
 	// is the order every listing had before clients could ask. Carried here
 	// with the window for the same reason the filter is: a client paging
@@ -184,6 +194,13 @@ func (d *DB) SectionItems(ctx context.Context, sectionID int64, kind domain.Kind
 	// applied to what is inside it.
 	rated, ceiling := d.onlyRated("section_id")
 	genre, wanted := d.genreClause(ctx, page.Genres)
+	// One predicate per menu used, so two menus narrow to the things that
+	// satisfy both.
+	for _, filter := range page.Words {
+		clause, args := d.wordClause(ctx, filter)
+		genre += clause
+		wanted = append(wanted, args...)
+	}
 
 	var total int
 	count := append([]any{sectionID, string(kind)}, ceiling...)
@@ -269,11 +286,17 @@ func (d *DB) Item(ctx context.Context, id int64) (*domain.Item, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read item: %w", err)
 	}
-	genres, err := d.Genres(ctx, it.ID)
+	// Every kind, because this is one item read whole: an item page draws
+	// all of them, and five queries for one row is five queries.
+	words, err := d.allTagsFor(ctx, []int64{it.ID})
 	if err != nil {
 		return nil, err
 	}
-	it.Genres = genres
+	it.Genres = words[TagGenre][it.ID]
+	it.Tags = words[TagTag][it.ID]
+	it.Labels = words[TagLabel][it.ID]
+	it.Moods = words[TagMood][it.ID]
+	it.Styles = words[TagStyle][it.ID]
 	if it.Playable() {
 		parts, err := d.Parts(ctx, it.ID)
 		if err != nil {

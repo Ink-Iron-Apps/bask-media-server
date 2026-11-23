@@ -166,9 +166,9 @@ var smartFields = map[domain.SmartField]smartSpec{
 			// The item's own genres, not its children's — see the note at
 			// the top of genres.go on why genres are not inherited. Every
 			// kind a collection can hold carries its own.
-			carries := `EXISTS (SELECT 1 FROM item_genres ig
-			              JOIN genres g ON g.id = ig.genre_id
-			             WHERE ig.item_id = i.id AND g.name = ?)`
+			carries := `EXISTS (SELECT 1 FROM item_tags it
+			              JOIN tags t ON t.id = it.tag_id
+			             WHERE it.item_id = i.id AND t.kind = 'genre' AND t.name = ?)`
 			if op == domain.SmartIsNot {
 				return `NOT ` + carries, []any{value}
 			}

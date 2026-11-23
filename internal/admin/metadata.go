@@ -40,8 +40,14 @@ type itemDetail struct {
 	ScannedYear  int    `json:"scannedYear,omitempty"`
 
 	// Genres are what it is about, so somebody can see what a provider said
-	// and correct it.
+	// and correct it. The rest are the words that are a person's: a tag and
+	// a label nobody else decides, and the mood and style a music client
+	// shows beside an album.
 	Genres []string `json:"genres,omitempty"`
+	Tags   []string `json:"tags,omitempty"`
+	Labels []string `json:"labels,omitempty"`
+	Moods  []string `json:"moods,omitempty"`
+	Styles []string `json:"styles,omitempty"`
 
 	ProviderID string `json:"providerId,omitempty"`
 	Locked     bool   `json:"locked"`
@@ -97,6 +103,10 @@ func (s *Server) readItem(w http.ResponseWriter, r *http.Request) {
 		Title: item.Title, Year: item.Year, Summary: item.Summary,
 		ScannedTitle: scannedTitle, ScannedYear: scannedYear,
 		Genres:     item.Genres,
+		Tags:       item.Tags,
+		Labels:     item.Labels,
+		Moods:      item.Moods,
+		Styles:     item.Styles,
 		ProviderID: item.ProviderID, Locked: item.Locked,
 		Matched: item.ProviderID != "", Files: files,
 	}
@@ -119,6 +129,10 @@ func (s *Server) editItem(w http.ResponseWriter, r *http.Request) {
 		Year    *int      `json:"year"`
 		Summary *string   `json:"summary"`
 		Genres  *[]string `json:"genres"`
+		Tags    *[]string `json:"tags"`
+		Labels  *[]string `json:"labels"`
+		Moods   *[]string `json:"moods"`
+		Styles  *[]string `json:"styles"`
 		Locked  *bool     `json:"locked"`
 	}
 	if !decode(w, r, &body) {
@@ -126,7 +140,9 @@ func (s *Server) editItem(w http.ResponseWriter, r *http.Request) {
 	}
 	err := s.DB.EditItem(r.Context(), id, store.Edit{
 		Title: body.Title, Year: body.Year, Summary: body.Summary,
-		Genres: body.Genres, Locked: body.Locked,
+		Genres: body.Genres, Tags: body.Tags, Labels: body.Labels,
+		Moods: body.Moods, Styles: body.Styles,
+		Locked: body.Locked,
 	})
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "no such item")

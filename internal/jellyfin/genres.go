@@ -27,6 +27,27 @@ func genresWanted(r *http.Request) []string {
 	return out
 }
 
+// wordsWanted reads the free-word filter off a request.
+//
+// Jellyfin's Tags parameter covers what BMS keeps as two kinds, so a client
+// asking for one word is asking about either: a label or a tag of that name
+// both count. Returned per kind so the store can combine them with OR within
+// each and AND across, which here means a thing matches if it carries the
+// word as either kind.
+func wordsWanted(r *http.Request) []store.WordFilter {
+	values := splitList(r.URL.Query().Get("Tags"))
+	if len(values) == 0 {
+		return nil
+	}
+	// Both kinds in one filter, so a thing matches if it carries the word as
+	// either. Two filters would instead require it to carry the word twice,
+	// once as each, which nothing does.
+	return []store.WordFilter{{
+		Kinds:  []store.TagKind{store.TagLabel, store.TagTag},
+		Values: values,
+	}}
+}
+
 func splitList(value string) []string {
 	if strings.TrimSpace(value) == "" {
 		return nil
@@ -94,6 +115,20 @@ func (s *Server) filters(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, genre := range genres {
 		out.Genres = append(out.Genres, genre.Name)
+	}
+
+	// Tags and labels both fill Jellyfin's Tags list, for the same reason
+	// the item's own field does: there is one free-word field on this wire
+	// and both kinds are free words.
+	for _, word := range []store.TagKind{store.TagLabel, store.TagTag} {
+		words, err := s.db(r.Context()).SectionTags(r.Context(), section.ID, string(kind), word)
+		if err != nil {
+			s.fail(w, "list "+string(word)+"s", err)
+			return
+		}
+		for _, one := range words {
+			out.Tags = append(out.Tags, one.Name)
+		}
 	}
 
 	facets, err := s.db(r.Context()).SectionFacets(r.Context(), section.ID, string(kind))

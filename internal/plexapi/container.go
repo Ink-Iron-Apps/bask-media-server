@@ -164,7 +164,17 @@ type entry struct {
 	// Genre is what a thing is about, as the tag elements Plex clients read.
 	// A list rather than an attribute because a film has several, which is
 	// the whole shape of the Plex media tag.
+	//
+	// Label, Mood and Style are the same shape and the same mechanism: a
+	// label is a word somebody here attached, and a mood and a style are
+	// what a music client draws beside an album. Plex has no element for a
+	// free "tag" on an item — its clients read those from Label — so BMS's
+	// tags are sent as labels, which is also how a Plex client would have
+	// written them.
 	Genre []tag `xml:"Genre,omitempty" json:"Genre,omitempty"`
+	Label []tag `xml:"Label,omitempty" json:"Label,omitempty"`
+	Mood  []tag `xml:"Mood,omitempty" json:"Mood,omitempty"`
+	Style []tag `xml:"Style,omitempty" json:"Style,omitempty"`
 
 	Media    []media    `xml:"Media,omitempty" json:"Media,omitempty"`
 	Location []location `xml:"Location,omitempty" json:"Location,omitempty"`

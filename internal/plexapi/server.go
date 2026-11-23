@@ -77,6 +77,12 @@ func (s *Server) Handler() http.Handler {
 	// filter sheet is two requests, the menu and then the shelf.
 	authed("GET /library/sections/{id}/filters", s.filters)
 	authed("GET /library/sections/{id}/genre", s.genreValues)
+	// The other words a library can be narrowed by, on the routes Plex's
+	// clients already ask for.
+	authed("GET /library/sections/{id}/label", s.labelValues)
+	authed("GET /library/sections/{id}/tag", s.tagValues)
+	authed("GET /library/sections/{id}/mood", s.moodValues)
+	authed("GET /library/sections/{id}/style", s.styleValues)
 	// The rest of the furniture around a grid: what it sorts by, which
 	// letters its titles start with, and the per-library settings request a
 	// client makes on opening one.
@@ -295,6 +301,16 @@ func (s *Server) sectionAll(w http.ResponseWriter, r *http.Request) {
 
 	page := pageFrom(r)
 	page.Genres = genresWanted(r)
+	for _, kind := range store.TagKinds() {
+		if kind == store.TagGenre {
+			continue
+		}
+		if values := wordsWanted(r, kind); len(values) > 0 {
+			page.Words = append(page.Words, store.WordFilter{
+				Kinds: []store.TagKind{kind}, Values: values,
+			})
+		}
+	}
 	page.Sort, page.Desc = store.ParseSort(r.URL.Query().Get("sort"))
 	items, total, err := s.db(r.Context()).SectionItems(r.Context(), id, kind, page)
 	if err != nil {
@@ -908,11 +924,27 @@ func (s *Server) renderItem(
 	if n := rel.counts[it.ID]; n > 0 {
 		e.ChildCount = n
 	}
+	// No ids: Plex's tag ids are its own, and the only thing a client does
+	// with one here is put it in the filter, which takes the name. The
+	// listings at /library/sections/{id}/{genre,label,mood,style} accept
+	// either.
 	for _, name := range it.Genres {
-		// No id: Plex's tag ids are its own, and the only thing a client
-		// does with one here is put it in the filter below, which takes the
-		// name. The listing at /library/sections/{id}/genre accepts either.
 		e.Genre = append(e.Genre, tag{Tag: name, Filter: "genre=" + url.QueryEscape(name)})
+	}
+	// A label and a tag both arrive as Label, because Plex's clients have no
+	// element for the second and read a free word from the first. The order
+	// puts labels before tags, which is the order they were written in.
+	for _, name := range it.Labels {
+		e.Label = append(e.Label, tag{Tag: name, Filter: "label=" + url.QueryEscape(name)})
+	}
+	for _, name := range it.Tags {
+		e.Label = append(e.Label, tag{Tag: name, Filter: "tag=" + url.QueryEscape(name)})
+	}
+	for _, name := range it.Moods {
+		e.Mood = append(e.Mood, tag{Tag: name, Filter: "mood=" + url.QueryEscape(name)})
+	}
+	for _, name := range it.Styles {
+		e.Style = append(e.Style, tag{Tag: name, Filter: "style=" + url.QueryEscape(name)})
 	}
 	if it.Disc > 0 {
 		// Plex carries a track's disc as the parent's index, because the disc

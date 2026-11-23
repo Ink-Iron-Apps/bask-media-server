@@ -38,6 +38,14 @@ type itemView struct {
 	Genres    []string `json:"genres,omitempty"`
 	LibraryID int64    `json:"libraryId,omitempty"`
 
+	// Tags and Labels are the words somebody here attached, and Moods and
+	// Styles what a music client would show. Only ever filled on an item
+	// read whole: a grid draws genres and nothing else.
+	Tags   []string `json:"tags,omitempty"`
+	Labels []string `json:"labels,omitempty"`
+	Moods  []string `json:"moods,omitempty"`
+	Styles []string `json:"styles,omitempty"`
+
 	// Watchlist is whether this account means to watch it, so the button is
 	// drawn in the state it is in.
 	Watchlist bool `json:"watchlist,omitempty"`
@@ -119,6 +127,7 @@ func (s *Server) views(ctx context.Context, items []domain.Item, userID int64) (
 			ID: it.ID, Kind: string(it.Kind), Title: it.Title, Year: it.Year,
 			Index: it.Index, Disc: it.Disc, Summary: it.Summary, Rating: it.Rating,
 			Genres: it.Genres, LibraryID: it.SectionID,
+			Tags: it.Tags, Labels: it.Labels, Moods: it.Moods, Styles: it.Styles,
 			DurationMS: it.Duration.Milliseconds(),
 			Favourite:  favourites[it.ID],
 			Watchlist:  wanted[it.ID],

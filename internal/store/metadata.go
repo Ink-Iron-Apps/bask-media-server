@@ -158,6 +158,13 @@ type Edit struct {
 	// nil pointer means they did not touch the genres at all.
 	Genres *[]string
 
+	// Tags, Labels, Moods and Styles work the same way, and are the words
+	// that are a person's rather than a provider's.
+	Tags   *[]string
+	Labels *[]string
+	Moods  *[]string
+	Styles *[]string
+
 	// Locked says whether the enrichment pass should leave this item alone.
 	// Editing anything locks it by default — the point of a correction is
 	// that it stays corrected — and this is how it is unlocked again.
@@ -215,8 +222,14 @@ func (d *DB) EditItem(ctx context.Context, itemID int64, edit Edit) error {
 	// The genres go with the row they describe, in the same transaction: a
 	// correction that half applied would leave an item whose title somebody
 	// fixed and whose shelf they did not.
-	if edit.Genres != nil {
-		if err := replaceGenresTx(ctx, tx, itemID, *edit.Genres); err != nil {
+	for kind, names := range map[TagKind]*[]string{
+		TagGenre: edit.Genres, TagTag: edit.Tags, TagLabel: edit.Labels,
+		TagMood: edit.Moods, TagStyle: edit.Styles,
+	} {
+		if names == nil {
+			continue
+		}
+		if err := replaceTagsTx(ctx, tx, kind, itemID, *names); err != nil {
 			return err
 		}
 	}

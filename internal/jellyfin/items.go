@@ -57,6 +57,12 @@ type item struct {
 	Genres     []string  `json:"Genres,omitempty"`
 	GenreItems []namedID `json:"GenreItems,omitempty"`
 
+	// Tags is Jellyfin's free-word field, and the one its clients filter on.
+	// BMS's tags and labels both arrive here: Jellyfin has no separate
+	// notion of a label, and a word somebody attached is a word somebody
+	// attached.
+	Tags []string `json:"Tags,omitempty"`
+
 	ProductionYear int    `json:"ProductionYear,omitempty"`
 	Overview       string `json:"Overview,omitempty"`
 	PremiereDate   string `json:"PremiereDate,omitempty"`
@@ -313,6 +319,9 @@ func (s *Server) render(it domain.Item, rel related, progress domain.Progress) i
 		LocationType:   "FileSystem",
 	}
 	out.OfficialRating = it.Rating
+	if len(it.Tags) > 0 || len(it.Labels) > 0 {
+		out.Tags = append(append([]string{}, it.Labels...), it.Tags...)
+	}
 	if len(it.Genres) > 0 {
 		out.Genres = it.Genres
 		out.GenreItems = make([]namedID, 0, len(it.Genres))

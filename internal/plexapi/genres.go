@@ -17,9 +17,18 @@ import (
 // id sends the id while one that was handed a name sends the name. Both
 // reach the store, which resolves whichever arrived.
 func genresWanted(r *http.Request) []string {
+	return wordsWanted(r, store.TagGenre)
+}
+
+// wordsWanted reads one kind's filter off a request.
+//
+// Plex separates values with a comma, and a client that was handed a row's
+// id sends the id while one that was handed a name sends the name. Both
+// reach the store, which resolves whichever arrived.
+func wordsWanted(r *http.Request, kind store.TagKind) []string {
 	var out []string
 	query := r.URL.Query()
-	for _, name := range []string{"genre", "genre!"} {
+	for _, name := range []string{string(kind), string(kind) + "!"} {
 		for _, value := range strings.Split(query.Get(name), ",") {
 			if value = strings.TrimSpace(value); value != "" {
 				out = append(out, value)
@@ -48,11 +57,25 @@ func (s *Server) filters(w http.ResponseWriter, r *http.Request) {
 		LibrarySectionTitle: section.Title,
 		Title1:              section.Title,
 	}
-	out.Directory = []entry{{
-		Elem: "Directory", Type: "filter",
-		Filter: "genre", FilterType: "string",
-		Key: base + "/genre", Title: "Genre",
-	}}
+	// Only the kinds something in this library actually carries. A filter
+	// row leading to an empty list of values is a menu entry that wastes a
+	// tap and says nothing.
+	top := string(section.Kind.TopKind())
+	for _, kind := range store.TagKinds() {
+		values, err := s.db(r.Context()).SectionTags(r.Context(), section.ID, top, kind)
+		if err != nil {
+			s.fail(w, "list "+string(kind)+"s", err)
+			return
+		}
+		if len(values) == 0 {
+			continue
+		}
+		out.Directory = append(out.Directory, entry{
+			Elem: "Directory", Type: "filter",
+			Filter: string(kind), FilterType: "string",
+			Key: base + "/" + string(kind), Title: kind.Label(),
+		})
+	}
 	out.Size = len(out.Directory)
 	out.TotalSize = out.Size
 	write(w, r, out)
@@ -66,14 +89,35 @@ func (s *Server) filters(w http.ResponseWriter, r *http.Request) {
 // the same place, and the listing accepts the name as well, because BMS's own
 // pages hand a name back.
 func (s *Server) genreValues(w http.ResponseWriter, r *http.Request) {
+	s.tagValuesOf(w, r, store.TagGenre)
+}
+
+func (s *Server) labelValues(w http.ResponseWriter, r *http.Request) {
+	s.tagValuesOf(w, r, store.TagLabel)
+}
+
+func (s *Server) tagValues(w http.ResponseWriter, r *http.Request) {
+	s.tagValuesOf(w, r, store.TagTag)
+}
+
+func (s *Server) moodValues(w http.ResponseWriter, r *http.Request) {
+	s.tagValuesOf(w, r, store.TagMood)
+}
+
+func (s *Server) styleValues(w http.ResponseWriter, r *http.Request) {
+	s.tagValuesOf(w, r, store.TagStyle)
+}
+
+// tagValuesOf lists one kind of word in use in one library.
+func (s *Server) tagValuesOf(w http.ResponseWriter, r *http.Request, kind store.TagKind) {
 	section, ok := s.sectionOf(w, r)
 	if !ok {
 		return
 	}
-	kind := section.Kind.TopKind()
-	genres, err := s.db(r.Context()).SectionGenres(r.Context(), section.ID, string(kind))
+	top := section.Kind.TopKind()
+	genres, err := s.db(r.Context()).SectionTags(r.Context(), section.ID, string(top), kind)
 	if err != nil {
-		s.fail(w, "list genres", err)
+		s.fail(w, "list "+string(kind)+"s", err)
 		return
 	}
 
@@ -83,8 +127,8 @@ func (s *Server) genreValues(w http.ResponseWriter, r *http.Request) {
 		LibrarySectionID:    section.ID,
 		LibrarySectionTitle: section.Title,
 		Title1:              section.Title,
-		Title2:              "Genre",
-		ViewGroup:           "genre",
+		Title2:              kind.Label(),
+		ViewGroup:           string(kind),
 	}
 	for _, genre := range genres {
 		out.Directory = append(out.Directory, entry{
@@ -94,7 +138,7 @@ func (s *Server) genreValues(w http.ResponseWriter, r *http.Request) {
 			// How many things carry it, which is what a client draws beside
 			// the name so somebody can see the shelf is worth opening.
 			Size:    genre.Held,
-			FastKey: base + "/all?genre=" + url.QueryEscape(genre.Name),
+			FastKey: base + "/all?" + string(kind) + "=" + url.QueryEscape(genre.Name),
 		})
 	}
 	out.Size = len(out.Directory)
