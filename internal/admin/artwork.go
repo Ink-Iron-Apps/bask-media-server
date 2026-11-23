@@ -171,6 +171,14 @@ func (s *Server) chooseArtwork(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key, err := s.Artwork.Fetch(r.Context(), address)
+	if errors.Is(err, artwork.ErrNotAnImage) {
+		// The commonest way a pasted link fails, and the one worth its own
+		// words: the address led to a page rather than to a picture, which
+		// is what a login wall or a dead link answers with.
+		writeError(w, http.StatusBadRequest,
+			"that address led to a page rather than a picture — open the image itself and copy its address")
+		return
+	}
 	if err != nil {
 		// The reason is shown: a 404 from the service and a refused
 		// connection want different things done about them.
@@ -229,9 +237,11 @@ func (s *Server) uploadArtwork(w http.ResponseWriter, r *http.Request) {
 	}
 	// Checked by its own first bytes rather than by what the page claimed:
 	// the cache renders what it is given, and a PDF named poster.jpg would
-	// be a broken shelf discovered later.
-	if !isImage(data) {
-		writeError(w, http.StatusBadRequest, "that file is not a JPEG, PNG or WebP picture")
+	// be a broken shelf discovered later. The same test a pasted link's
+	// download is held to, and for the same reason — this is a file from
+	// outside the library.
+	if !artwork.IsImage(data) {
+		writeError(w, http.StatusBadRequest, "that file is not a JPEG or PNG picture")
 		return
 	}
 
@@ -313,20 +323,6 @@ func imageAddress(raw string) (string, error) {
 		return "", errors.New("that address names no site")
 	}
 	return parsed.String(), nil
-}
-
-// isImage reports whether these bytes begin like a picture this server can
-// render: JPEG, PNG or WebP, which is what the cache decodes.
-func isImage(data []byte) bool {
-	switch {
-	case len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF:
-		return true // JPEG
-	case len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n":
-		return true // PNG
-	case len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP":
-		return true
-	}
-	return false
 }
 
 // itemImage serves the picture an item has now, for the editor to show

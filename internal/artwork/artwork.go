@@ -9,6 +9,7 @@
 package artwork
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -29,6 +30,46 @@ import (
 
 // ErrNotCached means the image has never been fetched.
 var ErrNotCached = errors.New("not cached")
+
+// ErrNotAnImage means what arrived was not a picture this cache can render.
+//
+// Its own error because it is the one failure a person can do something
+// about: a link that leads to a login page or an error page answers with a
+// perfectly good 200 and a body full of HTML.
+var ErrNotAnImage = errors.New("not a picture this server can read")
+
+// UserAgent is how this program names itself when fetching a picture.
+//
+// A name and a purpose and nothing else. It never carries anything about
+// whose library this is, and it exists at all because an unnamed client is
+// refused by a good part of the web.
+const UserAgent = "BaskMediaServer/1.0 (+artwork)"
+
+// sniffBytes is how much of a file is needed to tell what it is. The longest
+// signature checked below is eight bytes; sixteen leaves room without
+// holding a buffer worth thinking about.
+const sniffBytes = 16
+
+// IsImage reports whether these first bytes begin a picture this cache can
+// decode.
+//
+// JPEG and PNG, which are what the decoders registered in this package read.
+// Deliberately not WebP: nothing here can decode one, and accepting a file
+// that stores happily and then renders as nothing would be a poster that
+// looks saved and is not.
+//
+// By the bytes rather than by a Content-Type header or a file extension,
+// because both of those are what somebody else said and neither is what the
+// resizer will be handed.
+func IsImage(data []byte) bool {
+	switch {
+	case len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF:
+		return true // JPEG
+	case len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n":
+		return true // PNG
+	}
+	return false
+}
 
 // maxImageBytes caps what will be stored as one image, whether it came over
 // the network or off this machine. A poster is tens of kilobytes and a scan
@@ -126,6 +167,13 @@ func (c *Cache) Fetch(ctx context.Context, url string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("artwork request: %w", err)
 	}
+	// Named and asking for a picture. Go's default user agent is refused
+	// outright by a good deal of the web — anything behind a general-purpose
+	// bot filter — and a poster site is exactly the sort of place that does
+	// it. The name is this program and its purpose and nothing about whose
+	// library it is.
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("Accept", "image/avif,image/webp,image/jpeg,image/png,image/*;q=0.8,*/*;q=0.5")
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetch artwork: %w", err)
@@ -143,7 +191,24 @@ func (c *Cache) Fetch(ctx context.Context, url string) (string, error) {
 	}
 	defer os.Remove(tmp.Name())
 
-	if _, err := io.Copy(tmp, io.LimitReader(resp.Body, maxImageBytes)); err != nil {
+	// Sniffed before anything is written, because a 200 is not a promise of
+	// a picture: a site that wants a login, or a link that has gone to an
+	// error page, answers with HTML and a cheerful status. Storing that
+	// would be a poster that is a file on disk and a blank square forever.
+	lead := make([]byte, sniffBytes)
+	read, err := io.ReadFull(io.LimitReader(resp.Body, sniffBytes), lead)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		tmp.Close()
+		return "", fmt.Errorf("fetch artwork: %w", err)
+	}
+	lead = lead[:read]
+	if !IsImage(lead) {
+		tmp.Close()
+		return "", ErrNotAnImage
+	}
+
+	body := io.MultiReader(bytes.NewReader(lead), resp.Body)
+	if _, err := io.Copy(tmp, io.LimitReader(body, maxImageBytes)); err != nil {
 		tmp.Close()
 		return "", fmt.Errorf("store artwork: %w", err)
 	}
@@ -161,6 +226,14 @@ func (c *Cache) Fetch(ctx context.Context, url string) (string, error) {
 //
 // Keyed by the bytes themselves, so an album whose every track carries the
 // same cover stores it once however many tracks there are.
+//
+// Deliberately not checked against [IsImage]. These bytes came out of a file
+// already in the library, and a tagger that wrote a format this program
+// cannot decode should cost that album its cover and nothing else — the
+// scan carries on and the square is blank, which is what it would be
+// anyway. A caller taking bytes from somewhere less trustworthy checks them
+// first: see the admin interface's upload, and [Cache.Fetch], which is
+// reading from a URL somebody typed.
 func (c *Cache) Store(data []byte) (string, error) {
 	if len(data) == 0 {
 		return "", errors.New("no image data")

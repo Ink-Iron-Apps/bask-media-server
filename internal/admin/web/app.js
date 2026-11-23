@@ -780,7 +780,7 @@ function artworkCard(id, detail) {
   const linkKind = el('select', {},
     el('option', { value: 'poster', text: 'as the poster' }),
     el('option', { value: 'backdrop', text: 'as the backdrop' }));
-  const file = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+  const file = el('input', { type: 'file', accept: 'image/jpeg,image/png' });
   const fileKind = el('select', {},
     el('option', { value: 'poster', text: 'as the poster' }),
     el('option', { value: 'backdrop', text: 'as the backdrop' }));

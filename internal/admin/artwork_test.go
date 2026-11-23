@@ -12,6 +12,8 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/inknironapps/bask-media-server/internal/artwork"
@@ -61,6 +63,11 @@ func pixels(t *testing.T) []byte {
 	return out.Bytes()
 }
 
+// seenAgent is the user agent the last fetch sent, so a test can show this
+// program names itself: the Go default is refused outright by a good deal of
+// the web, a poster site among them.
+var seenAgent atomic.Value
+
 // dressable gives the harness an artwork cache, a library with one film, and
 // a place that serves pictures.
 func dressable(t *testing.T, h *harness) (filmID int64, pictures *httptest.Server) {
@@ -87,8 +94,15 @@ func dressable(t *testing.T, h *harness) (filmID int64, pictures *httptest.Serve
 
 	body := pixels(t)
 	pictures = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/missing.jpg" {
+		seenAgent.Store(r.Header.Get("User-Agent"))
+		switch r.URL.Path {
+		case "/missing.jpg":
 			http.Error(w, "gone", http.StatusNotFound)
+			return
+		case "/login.jpg":
+			// A login wall or a dead link: a cheerful 200 and a page.
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("<!doctype html><title>Please sign in</title>"))
 			return
 		}
 		w.Header().Set("Content-Type", "image/png")
@@ -594,4 +608,60 @@ func names(sources []metadata.ArtworkSource) []string {
 		out = append(out, source.Name())
 	}
 	return out
+}
+
+func TestALinkToAPageRatherThanAPictureIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.signIn(h.adminToken)
+	id, pictures := dressable(t, h)
+
+	// The commonest way a pasted address fails: it leads to a login wall or
+	// a dead link, which answers 200 with HTML. Storing that would be a
+	// poster that is a file on disk and a blank square forever.
+	res, body := h.call(http.MethodPost,
+		"/admin/api/items/"+strconv.FormatInt(id, 10)+"/artwork",
+		map[string]any{"kind": "poster", "url": pictures.URL + "/login.jpg"})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a page = %d: %v", res.StatusCode, body)
+	}
+	// And the message says what to do instead, because this is the failure
+	// somebody can actually act on.
+	message, _ := body["error"].(string)
+	if !strings.Contains(message, "copy its address") {
+		t.Fatalf("error = %q", message)
+	}
+
+	item, err := h.db.Item(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.PosterKey != "" || item.Locked {
+		t.Fatal("a page was stored as a poster")
+	}
+}
+
+func TestThisProgramNamesItselfWhenFetchingAPicture(t *testing.T) {
+	h := newHarness(t)
+	h.signIn(h.adminToken)
+	id, pictures := dressable(t, h)
+
+	seenAgent.Store("")
+	res, body := h.call(http.MethodPost,
+		"/admin/api/items/"+strconv.FormatInt(id, 10)+"/artwork",
+		map[string]any{"kind": "poster", "url": pictures.URL + "/a.png"})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("choose = %d: %v", res.StatusCode, body)
+	}
+
+	agent, _ := seenAgent.Load().(string)
+	if agent != artwork.UserAgent {
+		t.Fatalf("user agent = %q, want this program's own name", agent)
+	}
+	// And nothing about whose library this is: the name is the program and
+	// its purpose, which is all a third party is told.
+	for _, leak := range []string{"Big Hill", "admin", "Films"} {
+		if strings.Contains(agent, leak) {
+			t.Fatalf("the user agent carries %q: %q", leak, agent)
+		}
+	}
 }
