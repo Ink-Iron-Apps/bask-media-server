@@ -504,6 +504,14 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 		go backupOnSchedule(ctx, runner, cfg.backupEvery, log)
 	}
 
+	// The libraries that asked to scan themselves, scanned without being
+	// asked. Always started, and not conditional on anything: a server where
+	// no library has a schedule has a loop that queries a table of a handful
+	// of rows once a minute, which is cheaper than a flag deciding whether
+	// to start it — and it means turning a schedule on in the interface
+	// takes effect without a restart.
+	go runner.Schedule(ctx)
+
 	select {
 	case err := <-errs:
 		return err

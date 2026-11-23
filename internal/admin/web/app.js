@@ -432,7 +432,11 @@ views.libraries = async function (main) {
           : null),
       el('td', {}, el('span', { class: 'badge', text: sec.kind })),
       el('td', {}, counts, el('div', { class: 'muted', text: count(sec.files, 'file') + ' · ' + size(sec.bytes) })),
-      el('td', { class: 'muted', text: when(sec.scannedAt) }),
+      el('td', { class: 'muted' },
+        el('div', { text: when(sec.scannedAt) }),
+        sec.settings && sec.settings.scanEvery
+          ? el('div', { class: 'badge', text: scanEveryLabel(sec.settings.scanEvery) })
+          : null),
       el('td', { class: 'right' },
         el('div', { class: 'row actions' },
           el('button', {
@@ -475,6 +479,13 @@ views.libraries = async function (main) {
     addSectionCard(),
   );
 };
+
+// scanEveryLabel is the menu's own wording for an interval, so the listing
+// and the editor never describe the same number differently.
+function scanEveryLabel(minutes) {
+  const found = SCAN_INTERVALS.find(([value]) => value === minutes);
+  return found ? found[1] : 'Every ' + minutes + ' minutes';
+}
 
 // contents is the one line that says how big a library is, in the words of
 // whatever it holds.
@@ -566,15 +577,75 @@ async function browseInto(container, input, path) {
   } catch (err) { failed(err); }
 }
 
+// SCAN_INTERVALS are the choices offered for scanning a library without
+// being asked.
+//
+// A menu rather than a number box: the useful answers are a handful, the
+// server refuses anything under a quarter of an hour anyway, and a box
+// invites somebody to type 1 and wonder why it was refused.
+const SCAN_INTERVALS = [
+  [0, 'Only when asked'],
+  [15, 'Every 15 minutes'],
+  [30, 'Every half hour'],
+  [60, 'Every hour'],
+  [180, 'Every 3 hours'],
+  [360, 'Every 6 hours'],
+  [720, 'Every 12 hours'],
+  [1440, 'Once a day'],
+];
+
 function editSection(sec) {
   const title = el('input', { value: sec.title });
   const roots = el('input', { value: (sec.roots || []).join(' | '), spellcheck: 'false' });
   const picker = el('div', {});
 
+  const settings = sec.settings || {};
+  const every = el('select', {}, SCAN_INTERVALS.map(([minutes, label]) =>
+    el('option', {
+      value: String(minutes), text: label,
+      selected: (settings.scanEvery || 0) === minutes,
+    })));
+
+  // Tri-state on the wire, two states here: these are "on unless somebody
+  // said otherwise", so the box is ticked when the setting is absent and
+  // sending false is the only thing that turns one off.
+  const toggle = (id, label, value, note) => {
+    const box = el('input', { type: 'checkbox', id: id + '-' + sec.id });
+    box.checked = value !== false;
+    return {
+      box,
+      row: el('div', {},
+        el('div', { class: 'row' }, box, el('label', { for: id + '-' + sec.id, text: label })),
+        note ? el('p', { class: 'muted', text: note }) : null),
+    };
+  };
+
+  const enrich = toggle('enrich', 'Fetch titles, summaries and artwork', settings.enrich,
+    'Off for a library no catalogue knows — home videos, recordings, anything whose names are not a catalogue\u2019s names.');
+  const people = toggle('people', 'Fetch cast and crew', settings.people,
+    'The expensive half: a request per title on top of the match. Never asked for music or photographs.');
+  const markers = toggle('markers', 'Look for intros and credits', settings.markers,
+    'Reads the audio of every episode, which is the slowest thing this server does. Off for a library of films \u2014 there is nothing to skip into.');
+
+  const nextLine = sec.nextScan
+    ? el('p', { class: 'muted', text: 'Next scan ' + when(sec.nextScan) + '.' })
+    : null;
+
   const card = el('div', { class: 'card' },
     el('h2', { text: 'Edit ' + sec.title }),
     el('label', { text: 'Name' }), title,
     el('label', { text: 'Folders, separated by |' }), roots,
+
+    el('h3', { text: 'Scanning' }),
+    el('label', { text: 'Scan this library' }), every,
+    el('p', { class: 'muted', text: 'A rescan of a library nothing changed in costs a stat per file and no writes, so a schedule is about how soon a new film appears rather than how much work the server does. Folders are not watched: a library on a network share produces no change events at all, so a watch would work only on the setups that need it least.' }),
+    nextLine,
+
+    el('h3', { text: 'What to do with it' }),
+    enrich.row,
+    people.row,
+    markers.row,
+
     el('div', { class: 'row' },
       el('button', { text: 'Browse…', on: { click: () => browseInto(picker, roots) } }),
       el('button', {
@@ -586,6 +657,15 @@ function editSection(sec) {
               await api('PATCH', '/sections/' + sec.id, {
                 title: title.value,
                 roots: roots.value.split('|').map((r) => r.trim()).filter(Boolean),
+                // Only the switches that are off are sent. An absent setting
+                // is the default, so a library left alone stores nothing and
+                // reads back the same as one that predates these controls.
+                settings: {
+                  scanEvery: Number(every.value) || 0,
+                  ...(enrich.box.checked ? {} : { enrich: false }),
+                  ...(people.box.checked ? {} : { people: false }),
+                  ...(markers.box.checked ? {} : { markers: false }),
+                },
               });
               toast('Saved. Scan it to pick up what changed.');
               render();

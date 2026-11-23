@@ -69,7 +69,7 @@ func (d *DB) Sections(ctx context.Context) ([]domain.Section, error) {
 	// inside it are filtered when they are asked for.
 	only, args := d.onlySections("id")
 	rows, err := d.sql.QueryContext(ctx,
-		`SELECT id, title, kind, roots, scanned_at, created_at, updated_at
+		`SELECT id, title, kind, roots, scanned_at, created_at, updated_at, settings, swept_at
 		   FROM sections WHERE 1 = 1`+only+` ORDER BY id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list sections: %w", err)
@@ -79,18 +79,25 @@ func (d *DB) Sections(ctx context.Context) ([]domain.Section, error) {
 	var out []domain.Section
 	for rows.Next() {
 		var (
-			s                               domain.Section
-			kind, roots                     string
-			scannedAt, createdAt, updatedAt int64
+			s                                        domain.Section
+			kind, roots, settings                    string
+			scannedAt, createdAt, updatedAt, sweptAt int64
 		)
-		if err := rows.Scan(&s.ID, &s.Title, &kind, &roots, &scannedAt, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&s.ID, &s.Title, &kind, &roots, &scannedAt, &createdAt, &updatedAt,
+			&settings, &sweptAt); err != nil {
 			return nil, fmt.Errorf("scan section: %w", err)
 		}
 		s.Kind = domain.SectionKind(kind)
 		if roots != "" {
 			s.Roots = strings.Split(roots, "\n")
 		}
+		// Settings that cannot be read are the defaults rather than an
+		// error: a library whose settings column was corrupted should still
+		// be browsable and playable, and the page that rewrites them is the
+		// place to notice.
+		s.Settings = parseSectionSettings(settings)
 		s.ScannedAt, s.CreatedAt, s.UpdatedAt = fromMillis(scannedAt), fromMillis(createdAt), fromMillis(updatedAt)
+		s.SweptAt = fromMillis(sweptAt)
 		out = append(out, s)
 	}
 	return out, rows.Err()

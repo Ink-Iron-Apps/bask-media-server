@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -91,6 +92,16 @@ type sectionView struct {
 	Files     int       `json:"files"`
 	Bytes     int64     `json:"bytes"`
 	Missing   []string  `json:"missing,omitempty"`
+
+	// Settings is what this library wants done to it. Always sent, even when
+	// it is every default, so the page can draw the controls in the state
+	// they are in rather than guessing.
+	Settings domain.SectionSettings `json:"settings"`
+
+	// NextScan is when the scheduler will next look at this library, and
+	// absent for one that does not scan itself. On the listing because
+	// "every 6 hours" is only half the answer somebody wants.
+	NextScan *time.Time `json:"nextScan,omitempty"`
 }
 
 func (s *Server) listSections(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +116,19 @@ func (s *Server) listSections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// When each library is next due, which the runner works out from the
+	// same settings the listing reports.
+	due := map[int64]time.Time{}
+	if s.Jobs != nil {
+		if upcoming, err := s.Jobs.Upcoming(r.Context()); err == nil {
+			for _, one := range upcoming {
+				due[one.SectionID] = one.Next
+			}
+		} else {
+			s.logger().Warn("could not read the scan schedule", "error", err)
+		}
+	}
+
 	out := make([]sectionView, 0, len(sections))
 	for _, sec := range sections {
 		stats := counts[sec.ID]
@@ -113,6 +137,10 @@ func (s *Server) listSections(w http.ResponseWriter, r *http.Request) {
 			ScannedAt: sec.ScannedAt,
 			Items:     stats.Items, Leaves: stats.Leaves, Episodes: stats.Episodes,
 			Files: stats.Files, Bytes: stats.Bytes,
+			Settings: sec.Settings,
+		}
+		if next, found := due[sec.ID]; found {
+			view.NextScan = &next
 		}
 		// A root that is not there is the single most common reason a library
 		// empties itself: an unplugged disk, or a drive letter that moved. Say
@@ -158,6 +186,12 @@ func (s *Server) updateSection(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title string   `json:"title"`
 		Roots []string `json:"roots"`
+
+		// Settings is absent, null or an object, and the three mean
+		// different things: leave them alone, put them back to the
+		// defaults, or set them to this. A patch that could not say "leave
+		// alone" would make the page send every setting on every rename.
+		Settings json.RawMessage `json:"settings"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -182,7 +216,39 @@ func (s *Server) updateSection(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "update section", err)
 		return
 	}
+	if body.Settings != nil {
+		settings, err := readSectionSettings(body.Settings)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := s.DB.SetSectionSettings(r.Context(), id, settings); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "no such library")
+				return
+			}
+			// The store refuses an interval it cannot honour and says why,
+			// which is more use than a number quietly becoming fifteen.
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// readSectionSettings turns the patch's settings field into a value.
+//
+// An explicit null is the defaults, which is how somebody turns a library's
+// own arrangements off again without knowing what every field was.
+func readSectionSettings(raw json.RawMessage) (domain.SectionSettings, error) {
+	if string(raw) == "null" {
+		return domain.SectionSettings{}, nil
+	}
+	var out domain.SectionSettings
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return domain.SectionSettings{}, errors.New("those settings are not readable")
+	}
+	return out, nil
 }
 
 func (s *Server) validSection(w http.ResponseWriter, title, kind string, roots []string) (string, domain.SectionKind, []string, bool) {

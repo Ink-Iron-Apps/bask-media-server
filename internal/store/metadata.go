@@ -29,11 +29,25 @@ func (d *DB) NeedsMetadata(ctx context.Context, limit int) ([]domain.Item, error
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
+	// Libraries whose settings turn enrichment off are left out entirely. A
+	// folder of home videos matched against a film catalogue is a request
+	// per title spent learning that nothing matches, and it is the setting
+	// somebody reaches for precisely because of that.
+	allowed, all, err := d.allowedSections(ctx, func(section domain.Section) bool {
+		return section.Settings.EnrichWanted()
+	})
+	if err != nil {
+		return nil, err
+	}
+	only, scope := sectionFilter("section_id", allowed, all)
+
+	args := append([]any{}, scope...)
+	args = append(args, limit)
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT `+itemColumns+` FROM items
-		  WHERE metadata_at = 0 AND locked = 0 AND kind IN ('movie','show','season','episode')
+		  WHERE metadata_at = 0 AND locked = 0 AND kind IN ('movie','show','season','episode')`+only+`
 		  ORDER BY CASE kind WHEN 'show' THEN 0 WHEN 'movie' THEN 1 WHEN 'season' THEN 2 ELSE 3 END, id
-		  LIMIT ?`, limit)
+		  LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list unenriched: %w", err)
 	}

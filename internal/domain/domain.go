@@ -120,8 +120,85 @@ type Section struct {
 	Kind      SectionKind
 	Roots     []string
 	ScannedAt time.Time
+
+	// Settings is what this library wants done to it. Never nil when a
+	// section comes out of the store: an unset column reads as the defaults,
+	// so every caller can read these without a check.
+	Settings SectionSettings
+
+	// SweptAt is when the scheduler last looked at this library, as opposed
+	// to [Section.ScannedAt], which is when a scan last finished. The two
+	// differ for a library whose scan failed or is still running, and
+	// keeping them apart is what stops a failing library being retried in a
+	// tight loop.
+	SweptAt time.Time
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// SectionSettings is what one library wants done to it, as opposed to what is
+// true of the whole server.
+//
+// JSON tags on purpose: one shape for the column, the admin API and the page
+// that edits it, the same arrangement a smart collection's rules use.
+//
+// Every zero value is the behaviour BMS had before these existed, so a
+// library that predates the column is a library with the old behaviour and
+// no migration had to guess at anything.
+type SectionSettings struct {
+	// ScanEvery is how often to scan this library without being asked, and
+	// zero means never — which is what every library did until now.
+	//
+	// Minutes rather than a duration, because it arrives from a form and
+	// goes into JSON, and because the useful range is a quarter of an hour
+	// to a day.
+	ScanEvery int `json:"scanEvery,omitempty"`
+
+	// Enrich says whether to ask the metadata provider about this library at
+	// all. Off is for the libraries no provider knows: home videos, a folder
+	// of recordings, anything whose titles are not a catalogue's titles.
+	// Nil means on, because that is what every library did before.
+	Enrich *bool `json:"enrich,omitempty"`
+
+	// People says whether to fetch cast and crew for this library. Its own
+	// setting rather than part of Enrich because it is the expensive half —
+	// a request per title on top of the match — and a music or photo library
+	// has no use for it at all.
+	People *bool `json:"people,omitempty"`
+
+	// Markers says whether to look for intros and credits here. Off for a
+	// library of films, where there is nothing to skip into and the audio
+	// pass is the slowest thing this server does.
+	Markers *bool `json:"markers,omitempty"`
+}
+
+// EnrichWanted reports whether a metadata pass should touch this library.
+func (s SectionSettings) EnrichWanted() bool { return s.Enrich == nil || *s.Enrich }
+
+// PeopleWanted reports whether cast and crew should be fetched here.
+//
+// Defaults to on for the kinds a provider has people for, and is never on
+// for music or photographs: TMDB has nothing to say about an album, and
+// asking would spend a request to find out.
+func (s SectionSettings) PeopleWanted(kind SectionKind) bool {
+	switch kind {
+	case SectionMovies, SectionShows:
+	default:
+		return false
+	}
+	return s.People == nil || *s.People
+}
+
+// MarkersWanted reports whether marker detection should run here.
+func (s SectionSettings) MarkersWanted() bool { return s.Markers == nil || *s.Markers }
+
+// ScanInterval is how often this library scans itself, and zero for never.
+func (s SectionSettings) ScanInterval() time.Duration {
+	if s.ScanEvery <= 0 {
+		return 0
+	}
+	return time.Duration(s.ScanEvery) * time.Minute
 }
 
 // Item is anything a client can browse or play: a movie, a show, one of its

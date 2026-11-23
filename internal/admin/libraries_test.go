@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/inknironapps/bask-media-server/internal/domain"
@@ -369,5 +370,115 @@ func TestDeletingACollectionKeepsTheFilms(t *testing.T) {
 	}
 	if _, err := h.db.Item(ctx, all[0].ID); err != nil {
 		t.Fatalf("the film went with the collection: %v", err)
+	}
+}
+
+func TestALibrarysSettingsAreSavedAndReportedBack(t *testing.T) {
+	h := newHarness(t)
+	h.signIn(h.adminToken)
+	section := films(t, h)
+	key := "/admin/api/sections/" + strconv.FormatInt(section, 10)
+
+	// A fresh library reports the defaults rather than nothing, so the page
+	// can draw its controls in the state they are in.
+	listed := h.list("/admin/api/sections")
+	first := listed[0]
+	if first["settings"] == nil {
+		t.Fatal("a library reported no settings at all")
+	}
+	if first["nextScan"] != nil {
+		t.Fatalf("a library with no schedule reported a next scan: %v", first["nextScan"])
+	}
+
+	res, body := h.call(http.MethodPatch, key, map[string]any{
+		"title": "Films",
+		"roots": first["roots"],
+		"settings": map[string]any{
+			"scanEvery": 360,
+			"enrich":    false,
+		},
+	})
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("save = %d: %v", res.StatusCode, body)
+	}
+
+	listed = h.list("/admin/api/sections")
+	after := listed[0]
+	settings, _ := after["settings"].(map[string]any)
+	if int(settings["scanEvery"].(float64)) != 360 {
+		t.Fatalf("scanEvery = %v", settings["scanEvery"])
+	}
+	if settings["enrich"] != false {
+		t.Fatalf("enrich = %v", settings["enrich"])
+	}
+	// Now it has a schedule, so the listing says when it is next due — "every
+	// 6 hours" being only half of what somebody wants to know.
+	if after["nextScan"] == nil {
+		t.Fatal("a library with a schedule reported no next scan")
+	}
+}
+
+func TestAnIntervalTheServerCannotHonourIsRefusedWithItsReason(t *testing.T) {
+	h := newHarness(t)
+	h.signIn(h.adminToken)
+	section := films(t, h)
+	key := "/admin/api/sections/" + strconv.FormatInt(section, 10)
+
+	res, body := h.call(http.MethodPatch, key, map[string]any{
+		"title":    "Films",
+		"roots":    []string{t.TempDir()},
+		"settings": map[string]any{"scanEvery": 2},
+	})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("two minutes = %d: %v", res.StatusCode, body)
+	}
+	// The message says what the floor is, rather than the number quietly
+	// becoming fifteen.
+	if message, _ := body["error"].(string); !strings.Contains(message, "15") {
+		t.Fatalf("error = %q", message)
+	}
+}
+
+func TestSettingsLeftOutOfAPatchAreLeftAlone(t *testing.T) {
+	h := newHarness(t)
+	h.signIn(h.adminToken)
+	section := films(t, h)
+	key := "/admin/api/sections/" + strconv.FormatInt(section, 10)
+	root := t.TempDir()
+
+	if res, body := h.call(http.MethodPatch, key, map[string]any{
+		"title": "Films", "roots": []string{root},
+		"settings": map[string]any{"scanEvery": 60},
+	}); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("save = %d: %v", res.StatusCode, body)
+	}
+
+	// A rename says nothing about settings, so it must not clear them: a
+	// patch that could not say "leave alone" would make the page resend
+	// every setting on every rename.
+	if res, body := h.call(http.MethodPatch, key, map[string]any{
+		"title": "The Films", "roots": []string{root},
+	}); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("rename = %d: %v", res.StatusCode, body)
+	}
+	listed := h.list("/admin/api/sections")
+	after := listed[0]
+	settings, _ := after["settings"].(map[string]any)
+	if settings == nil || int(settings["scanEvery"].(float64)) != 60 {
+		t.Fatalf("a rename changed the settings: %v", after["settings"])
+	}
+
+	// And an explicit null puts them back, which is how somebody turns a
+	// library's own arrangements off without knowing what every field was.
+	if res, body := h.call(http.MethodPatch, key, map[string]any{
+		"title": "The Films", "roots": []string{root}, "settings": nil,
+	}); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("clear = %d: %v", res.StatusCode, body)
+	}
+	listed = h.list("/admin/api/sections")
+	cleared := listed[0]
+	clearedSettings, _ := cleared["settings"].(map[string]any)
+	if len(clearedSettings) != 0 {
+		t.Fatalf("settings after clearing = %v", cleared["settings"])
 	}
 }

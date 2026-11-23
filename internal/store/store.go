@@ -613,6 +613,24 @@ var migrations = []string{
 	// The other direction: everything of one genre, which is what a client's
 	// filter asks and what the primary key above cannot answer.
 	`CREATE INDEX item_genres_genre ON item_genres(genre_id)`,
+
+	// What one library wants done to it, as JSON, and empty for the defaults.
+	//
+	// One column for the same reasons a smart collection's rules are one: the
+	// settings are only ever read and written whole, by the page that writes
+	// them, and a column per setting would be a migration for every new one.
+	// Empty means every default, so a library that existed before this
+	// column behaves exactly as it did.
+	`ALTER TABLE sections ADD COLUMN settings TEXT NOT NULL DEFAULT ''`,
+
+	// When a library was last looked at by the scheduler, as opposed to
+	// scanned_at, which is when a scan last finished.
+	//
+	// Separate because they answer different questions and a scan that found
+	// nothing still counts as a visit: without this, a library whose scan
+	// fails every time would be retried in a tight loop, and one whose scan
+	// is slower than its interval would be started again while it ran.
+	`ALTER TABLE sections ADD COLUMN swept_at INTEGER NOT NULL DEFAULT 0`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

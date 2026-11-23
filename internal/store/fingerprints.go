@@ -105,10 +105,23 @@ func (d *DB) SeasonsNeedingMarkers(ctx context.Context, limit int) ([]domain.Ite
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
+	// Libraries with marker detection turned off are left out. The audio
+	// pass is the slowest thing this server does, and a library whose shows
+	// have no intro to skip gets nothing for the cost.
+	allowed, all, err := d.allowedSections(ctx, func(section domain.Section) bool {
+		return section.Settings.MarkersWanted()
+	})
+	if err != nil {
+		return nil, err
+	}
+	only, scope := sectionFilter("section_id", allowed, all)
+
+	args := append([]any{}, scope...)
+	args = append(args, limit)
 	rows, err := d.sql.QueryContext(ctx,
 		`SELECT `+itemColumns+` FROM items
-		  WHERE kind = 'season' AND markers_at = 0
-		  ORDER BY id LIMIT ?`, limit)
+		  WHERE kind = 'season' AND markers_at = 0`+only+`
+		  ORDER BY id LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list seasons needing markers: %w", err)
 	}
