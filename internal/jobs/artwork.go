@@ -65,3 +65,35 @@ func ArtworkSources(db *store.DB, tmdbFallback string, concurrency int, log *slo
 		return out
 	}
 }
+
+// SpecialsPlacement is where a series' specials belong, resolved when a pass
+// runs.
+//
+// Only TheTVDB can answer this, so a server with no TheTVDB key gets
+// nothing and the specials are placed by their air dates alone — which for
+// a show whose Christmas episodes went out between series is already right.
+func SpecialsPlacement(db *store.DB, log *slog.Logger) func(context.Context) metadata.SpecialsSource {
+	return func(ctx context.Context) metadata.SpecialsSource {
+		if log == nil {
+			log = slog.Default()
+		}
+		key, err := db.ServerValue(ctx, store.KeyTVDB)
+		if err != nil {
+			log.Warn("could not read TheTVDB key", "error", err)
+			return nil
+		}
+		if key == "" {
+			return nil
+		}
+		pin, err := db.ServerValue(ctx, store.KeyTVDBPIN)
+		if err != nil {
+			log.Warn("could not read TheTVDB pin", "error", err)
+		}
+		client, err := tvdb.New(key, pin)
+		if err != nil {
+			log.Warn("TheTVDB is not available for specials", "error", err)
+			return nil
+		}
+		return client
+	}
+}

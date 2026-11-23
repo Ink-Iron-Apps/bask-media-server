@@ -99,6 +99,9 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /library/sections/{id}/prefs", s.prefs)
 	authed("GET /library/metadata/{key}", s.metadata)
 	authed("GET /library/metadata/{key}/children", s.children)
+	// Every episode of a show in one list, with the specials where they
+	// belong. This is what a client walks to play a series through.
+	authed("GET /library/metadata/{key}/allLeaves", s.allLeaves)
 	authed("GET /library/metadata/{key}/extras", s.extrasOf)
 	// Subtitles from a provider: offered by GET, fetched by PUT, which is
 	// Plex's own arrangement and the one Bask already speaks.

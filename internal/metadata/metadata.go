@@ -9,6 +9,7 @@ package metadata
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/inknironapps/bask-media-server/internal/domain"
 )
@@ -35,6 +36,15 @@ type Match struct {
 	// fact rather than a failure — plenty of films were never submitted to a
 	// board anywhere.
 	Rating string
+
+	// Aired is when this first went out, as the provider's own date, and
+	// zero when it does not say.
+	//
+	// The whole date and not just the year, because a special's date is what
+	// places it between two seasons: "The Christmas Invasion" went out on
+	// 25 December 2005, between series one and two, and the year alone
+	// cannot say that.
+	Aired time.Time
 
 	// Genres are what the provider says this is about, in its own words.
 	// Empty when it has none, which must not erase genres that are already
@@ -180,6 +190,21 @@ type Credits struct {
 // provider that cannot answer should not have to pretend.
 type PeopleSource interface {
 	People(ctx context.Context, want ArtQuery) (Credits, error)
+}
+
+// SpecialsSource is a provider that can say where a series' specials belong
+// in the order it is watched.
+//
+// Its own interface for the reason [PeopleSource] has one: it is configured
+// separately, costs a request of its own, and the provider BMS matches
+// against cannot answer it at all — the three fields this returns are
+// TheTVDB's, and TMDB has an open request for them.
+//
+// Keyed by the episode number within season zero, because that is what both
+// sides have: BMS files a special as season zero episode N from its
+// filename, and the archives number them the same way.
+type SpecialsSource interface {
+	Placements(ctx context.Context, want ArtQuery) (map[int]domain.Placement, error)
 }
 
 // ArtworkSource is somewhere pictures can be browsed.

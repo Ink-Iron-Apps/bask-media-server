@@ -39,6 +39,11 @@ var (
 	// "Season 01", "season 1", "S01" as a directory name.
 	seasonDir = regexp.MustCompile(`(?i)^(?:season[ ._-]*|s)(\d{1,3})$`)
 
+	// A folder of specials, which is season 0 by every convention that
+	// writes one: Plex, Sonarr and Jellyfin all name it this way, and
+	// without this the folder's own name becomes the show's.
+	specialsDir = regexp.MustCompile(`(?i)^(?:specials?|extras?[ ._-]*season|season[ ._-]*0+)$`)
+
 	// An edition: the two spellings the ecosystem settled on, Plex's
 	// "{edition-Director's Cut}" and the bracketed "[Director's Cut]" that
 	// everything else writes. Both are taken off the title before it is
@@ -179,12 +184,21 @@ func ParseEpisode(root, path string) (Episode, bool) {
 	base := strings.TrimSuffix(parts[len(parts)-1], filepath.Ext(parts[len(parts)-1]))
 
 	var ep Episode
+	// Whether the filename said which season, as opposed to leaving it to
+	// the folder. Tracked separately because season zero is a real season —
+	// it is where the specials live — and using the zero value as "nobody
+	// said" reads "S00E01" as unset and then lets a "Season 02" folder
+	// overwrite it, which files a special on top of that season's first
+	// episode.
+	named := false
 	if m := episodePattern.FindStringSubmatch(base); m != nil {
 		ep.Season, _ = strconv.Atoi(m[1])
 		ep.Number, _ = strconv.Atoi(m[2])
+		named = true
 	} else if m := altEpisode.FindStringSubmatch(base); m != nil {
 		ep.Season, _ = strconv.Atoi(m[1])
 		ep.Number, _ = strconv.Atoi(m[2])
+		named = true
 	} else {
 		return Episode{}, false
 	}
@@ -194,8 +208,18 @@ func ParseEpisode(root, path string) (Episode, bool) {
 	// immediate parent is the show, which is the flat layout some libraries use.
 	showIdx := -1
 	for i := len(parts) - 2; i >= 0; i-- {
+		// A folder of specials is season zero, and names no show: without
+		// this the folder's own name becomes the show's, and a library
+		// grows a series called "Specials".
+		if specialsDir.MatchString(parts[i]) {
+			if !named {
+				ep.Season = 0
+			}
+			showIdx = i - 1
+			break
+		}
 		if m := seasonDir.FindStringSubmatch(parts[i]); m != nil {
-			if n, err := strconv.Atoi(m[1]); err == nil && ep.Season == 0 {
+			if n, err := strconv.Atoi(m[1]); err == nil && !named {
 				ep.Season = n
 			}
 			showIdx = i - 1

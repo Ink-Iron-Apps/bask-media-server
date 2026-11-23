@@ -385,19 +385,13 @@ func (s *Server) episodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	seasons, _, err := s.db(r.Context()).Children(r.Context(), id, store.Page{Size: 200})
+	// Every episode of the show, with the specials where they belong rather
+	// than all of them before the pilot: this is the list a "play next"
+	// walks, so this is where the order has to be right.
+	all, err := s.db(r.Context()).EpisodeOrder(r.Context(), id)
 	if err != nil {
-		s.fail(w, "list seasons", err)
+		s.fail(w, "list episodes", err)
 		return
-	}
-	var all []domain.Item
-	for _, season := range seasons {
-		episodes, _, err := s.db(r.Context()).Children(r.Context(), season.ID, store.Page{Size: 500})
-		if err != nil {
-			s.fail(w, "list episodes", err)
-			return
-		}
-		all = append(all, episodes...)
 	}
 	page := store.Page{Start: intQuery(r, "StartIndex"), Size: intQuery(r, "Limit")}
 	total := len(all)

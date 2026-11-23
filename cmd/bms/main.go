@@ -278,6 +278,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 		Printer:     printer,
 		Provider:    jobs.TMDBProvider(db, cfg.tmdbKey, 4),
 		Sources:     jobs.ArtworkSources(db, cfg.tmdbKey, 4, log),
+		Specials:    jobs.SpecialsPlacement(db, log),
 		Artwork:     images,
 		Workers:     cfg.detectJobs,
 		BackupDir:   cfg.backupDir,

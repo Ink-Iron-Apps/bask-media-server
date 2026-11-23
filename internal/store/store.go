@@ -709,6 +709,34 @@ var migrations = []string{
 	// Plex carries it as an attribute rather than a tag element. So it is a
 	// column, and a film has one.
 	`ALTER TABLE items ADD COLUMN studio TEXT NOT NULL DEFAULT ''`,
+
+	// When an episode first went out, which is the only fact that can place
+	// a special among the seasons without anybody being asked.
+	//
+	// A provider sends this on every episode and BMS was reading the year
+	// off it and discarding the rest. Zero means nobody has said.
+	`ALTER TABLE items ADD COLUMN aired INTEGER NOT NULL DEFAULT 0`,
+
+	// Where a special belongs, as opposed to when it aired.
+	//
+	// The three fields TheTVDB records on a special and every client reads:
+	// after which season, before which season, and before which episode of
+	// it. Minus one for "nobody said", because zero is a real answer —
+	// before season zero is meaningless but before episode zero is not, and
+	// a sentinel that collides with a real value is the bug this file
+	// already has one of.
+	//
+	// Columns rather than JSON because they are read to sort by.
+	`ALTER TABLE items ADD COLUMN airs_after_season INTEGER NOT NULL DEFAULT -1`,
+	`ALTER TABLE items ADD COLUMN airs_before_season INTEGER NOT NULL DEFAULT -1`,
+	`ALTER TABLE items ADD COLUMN airs_before_episode INTEGER NOT NULL DEFAULT -1`,
+
+	// Whether somebody placed this special by hand.
+	//
+	// Separate from the item lock, which stops a metadata pass touching
+	// anything: placing one special should not freeze its title and its
+	// artwork too. A pass writes placement only where this is zero.
+	`ALTER TABLE items ADD COLUMN placed_by_hand INTEGER NOT NULL DEFAULT 0`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

@@ -202,6 +202,7 @@ func (c *Client) Episode(ctx context.Context, showProviderID string, season, num
 		ProviderID: strconv.FormatInt(out.ID, 10),
 		Title:      out.Name,
 		Year:       yearOf(out.AirDate),
+		Aired:      dateOf(out.AirDate),
 		Summary:    out.Overview,
 		// An episode's own image is its still; there is no episode backdrop.
 		PosterURL: imageURL(backdropBase, out.StillPath),
@@ -293,4 +294,17 @@ func yearOf(date string) int {
 		return 0
 	}
 	return year
+}
+
+// dateOf reads a provider's date, and the zero time when it does not say.
+//
+// The whole date, where [yearOf] takes only the year: a special's date is
+// what places it between two seasons, and 2005 cannot say "between series
+// one and two" while 25 December 2005 can.
+func dateOf(date string) time.Time {
+	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(date))
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed.UTC()
 }

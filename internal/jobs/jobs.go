@@ -152,6 +152,11 @@ type Runner struct {
 	// offers a link box and nothing to browse.
 	Sources func(ctx context.Context) []metadata.ArtworkSource
 
+	// Specials says where a series' specials belong, resolved when an
+	// enrichment pass runs — see [SpecialsPlacement]. Nil means they are
+	// placed by their air dates alone.
+	Specials func(ctx context.Context) metadata.SpecialsSource
+
 	// Workers is how many files marker detection fingerprints at once. Zero
 	// leaves the detector's own default, which is half the CPUs.
 	Workers int
@@ -352,7 +357,10 @@ func (r *Runner) enrich(ctx context.Context, rep report, provider metadata.Provi
 	}
 	total := stats.NeedsMetadata
 
-	enricher := &enrich.Enricher{DB: r.DB, Provider: provider, Artwork: r.Artwork, Log: r.logger()}
+	enricher := &enrich.Enricher{
+		DB: r.DB, Provider: provider, Artwork: r.Artwork, Log: r.logger(),
+		Specials: r.Specials,
+	}
 	enricher.Progress = func(result enrich.Result) {
 		done := result.Matched + result.Unmatched
 		rep(fmt.Sprintf("%d matched, %d not found, %d images", result.Matched, result.Unmatched, result.Images),

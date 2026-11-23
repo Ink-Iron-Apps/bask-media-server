@@ -78,6 +78,22 @@ func newFake(t *testing.T) *fake {
 		}
 	}))
 
+	mux.HandleFunc("GET /series/{id}/episodes/default", guard(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("season") != "0" {
+			t.Errorf("asked for season %q, want the specials", r.URL.Query().Get("season"))
+		}
+		writeJSON(w, map[string]any{"data": map[string]any{"episodes": []map[string]any{
+			{"number": 1, "seasonNumber": 0, "airsAfterSeason": 1},
+			{"number": 2, "seasonNumber": 0, "airsBeforeSeason": 2, "airsBeforeEpisode": 13},
+			// Says nothing, which is most specials in most archives.
+			{"number": 3, "seasonNumber": 0},
+			// Half filled in: an episode with no season to count it in.
+			{"number": 4, "seasonNumber": 0, "airsAfterSeason": 2, "airsBeforeEpisode": 4},
+			// Not a special at all, so not a placement.
+			{"number": 7, "seasonNumber": 2, "airsAfterSeason": 1},
+		}}})
+	}))
+
 	mux.HandleFunc("GET /series/{id}/artworks", guard(func(w http.ResponseWriter, r *http.Request) {
 		if r.PathValue("id") != "222" {
 			t.Errorf("asked for series %s, want the one matching the year", r.PathValue("id"))
@@ -270,5 +286,70 @@ func TestASubscriberPinIsSentAndAnEmptyOneIsNot(t *testing.T) {
 	withPin, _ := tvdb.New("a-key", "1234")
 	if _, err := withPin.Art(context.Background(), metadata.ArtQuery{Kind: domain.KindMovie, Title: "Epic"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPlacementsReadWhereTheSpecialsBelong(t *testing.T) {
+	newFake(t)
+	client, _ := tvdb.New("a-key", "")
+
+	placements, err := client.Placements(context.Background(), metadata.ArtQuery{
+		Kind: domain.KindShow, Title: "Hinterland", Year: 2020,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The Christmas special: after series one, which is the case this whole
+	// feature exists for.
+	first, found := placements[1]
+	if !found {
+		t.Fatalf("placements = %+v", placements)
+	}
+	if first.AfterSeason != 1 || first.BeforeSeason != domain.NoPlacement {
+		t.Fatalf("special 1 = %+v", first)
+	}
+
+	// One placed before a particular episode.
+	second := placements[2]
+	if second.BeforeSeason != 2 || second.BeforeEpisode != 13 {
+		t.Fatalf("special 2 = %+v", second)
+	}
+
+	// A record that says nothing is not a placement: storing it would
+	// overwrite nothing with nothing and cost a write per special.
+	if _, found := placements[3]; found {
+		t.Fatalf("an empty record became a placement: %+v", placements[3])
+	}
+
+	// "Before episode" with no season names nothing, so the episode is
+	// dropped rather than acted on — TheTVDB's own docs say the two go
+	// together, and a record with only one is half filled in.
+	fourth, found := placements[4]
+	if !found {
+		t.Fatalf("placements = %+v", placements)
+	}
+	if fourth.BeforeEpisode != domain.NoPlacement {
+		t.Fatalf("special 4 kept an episode with no season: %+v", fourth)
+	}
+}
+
+func TestPlacementsAreOnlyAskedAboutASeries(t *testing.T) {
+	f := newFake(t)
+	client, _ := tvdb.New("a-key", "")
+
+	before := f.searches.Load()
+	placements, err := client.Placements(context.Background(), metadata.ArtQuery{
+		Kind: domain.KindMovie, Title: "Epic",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(placements) != 0 {
+		t.Fatalf("a film had specials placed: %+v", placements)
+	}
+	// Nothing was even asked: a film has no seasons to sit between.
+	if f.searches.Load() != before {
+		t.Fatal("a film was searched for")
 	}
 }

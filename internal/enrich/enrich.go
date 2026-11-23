@@ -39,6 +39,12 @@ type Enricher struct {
 	// it has already matched.
 	Batch int
 
+	// Specials is where a series' specials belong, resolved when a pass
+	// runs. Nil, or a nil source, means the specials are placed by their
+	// air dates alone — which for a show whose Christmas episodes went out
+	// between series is already the right answer.
+	Specials func(ctx context.Context) metadata.SpecialsSource
+
 	// Progress is told what the pass has done so far, after each item. Called
 	// from the pass's own goroutine, so it must not block. Optional.
 	Progress func(Result)
@@ -187,6 +193,16 @@ func (e *Enricher) one(ctx context.Context, item domain.Item) (matched bool, ima
 			return false, images, err
 		}
 	}
+	// When it went out, which is what places a special between two seasons
+	// without anybody being asked. Filled in, never cleared: a provider
+	// that has stopped saying is not a reason to forget.
+	if err := e.DB.SetAired(ctx, item.ID, match.Aired); err != nil {
+		return false, images, err
+	}
+	// And where this series' specials belong, which only TheTVDB knows.
+	if err := e.placeSpecials(ctx, item); err != nil {
+		return false, images, err
+	}
 	// And the credits, which are the expensive half and so are asked for
 	// only where the library said it wanted them.
 	fetched, err := e.people(ctx, item, match.ProviderID)
@@ -277,6 +293,68 @@ func (e *Enricher) people(ctx context.Context, item domain.Item, providerID stri
 		return images, err
 	}
 	return images, nil
+}
+
+// placeSpecials asks where a series' specials belong and records it.
+//
+// Only for a series, and only once per series rather than per special: the
+// answer is one request covering all of them, and asking per episode would
+// be a request each for the same list.
+//
+// Only TheTVDB can answer this. The library is still matched against one
+// provider — nothing here replaces a title and no second id is stored — so
+// the join is the episode number within season zero, which is also why a
+// placement from here never overwrites one somebody set by hand.
+//
+// A failure is not a failure of the item. The specials still have their air
+// dates, which is a good enough answer on its own for a show whose
+// Christmas episodes went out between series.
+func (e *Enricher) placeSpecials(ctx context.Context, show domain.Item) error {
+	if show.Kind != domain.KindShow || e.Specials == nil {
+		return nil
+	}
+	source := e.Specials(ctx)
+	if source == nil {
+		return nil
+	}
+
+	placements, err := source.Placements(ctx, metadata.ArtQuery{
+		Kind: show.Kind, Title: show.Title, Year: show.Year,
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		e.logger().Debug("could not read where the specials belong",
+			"show", show.Title, "error", err)
+		return nil
+	}
+	if len(placements) == 0 {
+		return nil
+	}
+
+	specials, err := e.DB.Specials(ctx, show.ID)
+	if err != nil {
+		return err
+	}
+	placed := 0
+	for _, special := range specials {
+		placement, found := placements[special.Index]
+		if !found {
+			continue
+		}
+		// byHand false, so the store refuses to overwrite somebody's own
+		// answer rather than this having to know about it.
+		if err := e.DB.SetPlacement(ctx, special.ID, placement, false); err != nil {
+			return err
+		}
+		placed++
+	}
+	if placed > 0 {
+		e.logger().Info("placed specials among the seasons",
+			"show", show.Title, "specials", placed)
+	}
+	return nil
 }
 
 // episode needs its show's provider id, which is why shows are enriched first.

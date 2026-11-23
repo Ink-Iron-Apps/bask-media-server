@@ -172,6 +172,8 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /admin/api/items/{id}", s.readItem)
 	authed("PATCH /admin/api/items/{id}", s.editItem)
 	authed("POST /admin/api/items/{id}/revert", s.revertItem)
+	// Where a special belongs, which beats both TheTVDB and the air date.
+	authed("PUT /admin/api/items/{id}/placement", s.placeSpecial)
 	authed("GET /admin/api/items/{id}/candidates", s.candidates)
 	authed("POST /admin/api/items/{id}/match", s.rematchItem)
 	// Choosing the picture on an item: what every service has, and the three

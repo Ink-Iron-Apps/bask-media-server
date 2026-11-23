@@ -233,6 +233,41 @@ func (r CreditRole) Valid() bool {
 	}
 }
 
+// Placement is where a special belongs in the order a show is watched.
+//
+// The three facts TheTVDB records about a special and every client reads.
+// Unset is [NoPlacement] rather than zero, because zero is a real answer:
+// "before episode 0" is meaningless but "after season 0" is not, and a
+// sentinel that collides with a real value is a bug waiting to be found.
+//
+// ByHand says somebody set this themselves, which a metadata pass must then
+// leave alone — without freezing the item's title and artwork as the item
+// lock would.
+type Placement struct {
+	AfterSeason   int
+	BeforeSeason  int
+	BeforeEpisode int
+	ByHand        bool
+}
+
+// NoPlacement is what an unset field holds.
+const NoPlacement = -1
+
+// NewPlacement is a placement with nothing said, which is what every episode
+// starts as.
+func NewPlacement() Placement {
+	return Placement{
+		AfterSeason:   NoPlacement,
+		BeforeSeason:  NoPlacement,
+		BeforeEpisode: NoPlacement,
+	}
+}
+
+// Known reports whether anybody has said where this special goes.
+func (p Placement) Known() bool {
+	return p.AfterSeason != NoPlacement || p.BeforeSeason != NoPlacement
+}
+
 // Credit is one person's involvement in one thing.
 //
 // Here rather than only in the store because every surface renders it: a
@@ -355,6 +390,15 @@ type Item struct {
 	// Studio is who made it, as the provider names them. Empty until a
 	// metadata pass that was asked for people has reached it.
 	Studio string
+
+	// Aired is when an episode first went out, and zero for everything else
+	// and for anything nobody has said about. The only fact that can place a
+	// special among the seasons without being asked.
+	Aired time.Time
+
+	// Placement is where a special belongs, as opposed to when it aired.
+	// Only ever set on an episode in season zero.
+	Placement Placement
 
 	// People are the credits: who directed, wrote and produced it, and who
 	// is in it. In the order a detail page shows them — crew first, then the

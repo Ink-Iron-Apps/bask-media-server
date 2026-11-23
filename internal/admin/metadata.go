@@ -57,6 +57,16 @@ type itemDetail struct {
 	Studio string          `json:"studio,omitempty"`
 	People []domain.Credit `json:"people,omitempty"`
 
+	// Aired is when an episode first went out, which is what places a
+	// special among the seasons when nobody has said where it goes.
+	Aired string `json:"aired,omitempty"`
+
+	// Special says this is a season-zero episode, so the editor knows to
+	// offer the placement at all; Placement is where it currently sits and
+	// who decided that.
+	Special   bool           `json:"special,omitempty"`
+	Placement *placementView `json:"placement,omitempty"`
+
 	ProviderID string `json:"providerId,omitempty"`
 	Locked     bool   `json:"locked"`
 	Matched    bool   `json:"matched"`
@@ -120,12 +130,93 @@ func (s *Server) readItem(w http.ResponseWriter, r *http.Request) {
 		ProviderID: item.ProviderID, Locked: item.Locked,
 		Matched: item.ProviderID != "", Files: files,
 	}
+	if !item.Aired.IsZero() {
+		out.Aired = item.Aired.Format("2006-01-02")
+	}
+	// Only a special gets the placement controls: a regular episode's place
+	// is its season and its number, and offering to move it would be
+	// offering to lie about which episode it is.
+	if item.Kind == domain.KindEpisode && item.ParentID != nil {
+		if season, err := s.DB.Item(r.Context(), *item.ParentID); err == nil && season.Index == 0 {
+			out.Special = true
+			out.Placement = &placementView{
+				AfterSeason:   item.Placement.AfterSeason,
+				BeforeSeason:  item.Placement.BeforeSeason,
+				BeforeEpisode: item.Placement.BeforeEpisode,
+				ByHand:        item.Placement.ByHand,
+			}
+		}
+	}
 	if _, err := s.matcher(r.Context(), item.Kind); err != nil {
 		out.Why = err.Error()
 	} else {
 		out.CanRematch = true
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// placementView is where a special sits, as the page reads and writes it.
+//
+// Minus one means nobody has said, which the page draws as an empty field:
+// zero is a real answer — "after season 0" is meaningful — so a sentinel
+// that collided with it would make one unsayable.
+type placementView struct {
+	AfterSeason   int  `json:"afterSeason"`
+	BeforeSeason  int  `json:"beforeSeason"`
+	BeforeEpisode int  `json:"beforeEpisode"`
+	ByHand        bool `json:"byHand"`
+}
+
+// placeSpecial records where a special belongs, as somebody's own answer.
+//
+// Its own route rather than part of the item patch, because it is the one
+// correction that must survive a metadata pass without locking everything
+// else about the item: a placement set here beats both TheTVDB and the air
+// date, and leaves the title and the artwork to be fetched as usual.
+func (s *Server) placeSpecial(w http.ResponseWriter, r *http.Request) {
+	id, ok := idFrom(w, r)
+	if !ok {
+		return
+	}
+	var body placementView
+	if !decode(w, r, &body) {
+		return
+	}
+
+	placement := domain.Placement{
+		AfterSeason:   body.AfterSeason,
+		BeforeSeason:  body.BeforeSeason,
+		BeforeEpisode: body.BeforeEpisode,
+	}
+	// A placement that names both is contradictory: before season three and
+	// after season one describe two different gaps, and guessing which was
+	// meant would move somebody's special somewhere they did not ask for.
+	if placement.AfterSeason != domain.NoPlacement && placement.BeforeSeason != domain.NoPlacement {
+		writeError(w, http.StatusBadRequest,
+			"a special goes after one season or before another, not both")
+		return
+	}
+	// An episode without a season to count it in names nothing.
+	if placement.BeforeEpisode != domain.NoPlacement && placement.BeforeSeason == domain.NoPlacement {
+		writeError(w, http.StatusBadRequest,
+			"an episode number needs the season it is in — set the season as well")
+		return
+	}
+
+	err := s.DB.SetPlacement(r.Context(), id, placement, true)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "no such item")
+		return
+	}
+	if err != nil {
+		s.fail(w, "place the special", err)
+		return
+	}
+	s.logger().Info("placed a special by hand", "item", id,
+		"afterSeason", placement.AfterSeason, "beforeSeason", placement.BeforeSeason)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"note": "Saved. This beats both TheTVDB and the air date, and a metadata pass will not move it.",
+	})
 }
 
 // editItem applies a correction typed by hand.

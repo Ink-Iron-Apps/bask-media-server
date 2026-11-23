@@ -954,6 +954,8 @@ async function editItem(id) {
         ? el('div', { class: 'muted mono files' }, (detail.files || []).map((path) => el('div', { text: path })))
         : null),
 
+    placementCard(id, detail),
+
     artworkCard(id, detail),
 
     subtitleCard(id, detail),
@@ -967,6 +969,86 @@ async function editItem(id) {
             el('button', { text: 'Search the provider', on: { click: searchProvider } })),
           matches)
         : el('p', { class: 'muted', text: detail.why || 'This item cannot be matched to a provider.' })));
+}
+
+// placementCard is where a special goes in the order a show is watched.
+//
+// Only for a special, because a regular episode's place is its season and
+// its number, and offering to move one would be offering to lie about which
+// episode it is.
+//
+// An answer here beats both TheTVDB and the air date, and it does not lock
+// the item: the title and the artwork are still a metadata pass's to fetch,
+// which is why this is its own control and not the lock tick above.
+function placementCard(id, detail) {
+  if (!detail.special) return null;
+  const place = detail.placement || { afterSeason: -1, beforeSeason: -1, beforeEpisode: -1 };
+
+  // Minus one is "nobody has said", drawn as an empty field: zero is a real
+  // answer, so a blank is the only way to mean unset.
+  const num = (value) => el('input', {
+    type: 'number', min: '0', class: 'short',
+    value: value >= 0 ? String(value) : '',
+  });
+  const after = num(place.afterSeason);
+  const beforeSeason = num(place.beforeSeason);
+  const beforeEpisode = num(place.beforeEpisode);
+  const read = (box) => (box.value.trim() === '' ? -1 : Number(box.value));
+
+  const whereNow = () => {
+    if (place.afterSeason >= 0) return 'After season ' + place.afterSeason + '.';
+    if (place.beforeSeason >= 0) {
+      return place.beforeEpisode >= 0
+        ? 'Before S' + place.beforeSeason + 'E' + place.beforeEpisode + '.'
+        : 'At the start of season ' + place.beforeSeason + '.';
+    }
+    return detail.aired
+      ? 'Nobody has placed it, so it sits by when it aired (' + detail.aired + ').'
+      : 'Nobody has placed it and it has no air date, so it sits at the end.';
+  };
+
+  return el('div', { class: 'card' },
+    el('h2', { text: 'Where this special goes' }),
+    el('p', { class: 'muted', text: whereNow() + (place.byHand ? ' Set by hand.' : '') }),
+    el('p', { class: 'muted', text: 'A Christmas episode that went out between two series belongs between them, not before the pilot. The air date usually gets this right on its own; this is for the ones it does not.' }),
+
+    el('label', { text: 'After season' }), after,
+    el('p', { class: 'muted', text: 'Leave the others empty.' }),
+    el('label', { text: 'Or before season' }), beforeSeason,
+    el('label', { text: 'and before episode' }), beforeEpisode,
+    el('p', { class: 'muted', text: 'An episode number needs its season. Leave it empty for the start of that season.' }),
+
+    el('div', { class: 'row' },
+      el('button', {
+        class: 'primary',
+        text: 'Save placement',
+        on: {
+          click: async () => {
+            try {
+              const answer = await api('PUT', '/items/' + id + '/placement', {
+                afterSeason: read(after),
+                beforeSeason: read(beforeSeason),
+                beforeEpisode: read(beforeEpisode),
+              });
+              toast((answer && answer.note) || 'Saved.');
+              editItem(id);
+            } catch (err) { failed(err); }
+          },
+        },
+      }),
+      el('button', {
+        text: 'Let the air date decide',
+        on: {
+          click: async () => {
+            try {
+              await api('PUT', '/items/' + id + '/placement',
+                { afterSeason: -1, beforeSeason: -1, beforeEpisode: -1 });
+              toast('Cleared. It will sit by when it aired.');
+              editItem(id);
+            } catch (err) { failed(err); }
+          },
+        },
+      })));
 }
 
 // artworkCard is where the picture on an item is chosen.

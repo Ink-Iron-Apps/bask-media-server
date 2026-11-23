@@ -156,7 +156,7 @@ func (d *DB) MarkSectionScanned(ctx context.Context, id int64, at time.Time) err
 	return nil
 }
 
-const itemColumns = `id, section_id, kind, parent_id, title, sort_title, year, idx, disc, summary, duration_ms, added_at, updated_at, provider_id, poster_key, art_key, metadata_at, taken_at, performer, locked, extra, rating, rating_age, studio`
+const itemColumns = `id, section_id, kind, parent_id, title, sort_title, year, idx, disc, summary, duration_ms, added_at, updated_at, provider_id, poster_key, art_key, metadata_at, taken_at, performer, locked, extra, rating, rating_age, studio, aired, airs_after_season, airs_before_season, airs_before_episode, placed_by_hand`
 
 func scanItem(rows interface{ Scan(...any) error }) (domain.Item, error) {
 	var (
@@ -167,14 +167,20 @@ func scanItem(rows interface{ Scan(...any) error }) (domain.Item, error) {
 		addedAt, updatedAt, metadataAt, takenAt int64
 		locked                                  int
 		extra                                   string
+		aired                                   int64
+		placedByHand                            int
 	)
 	if err := rows.Scan(&it.ID, &it.SectionID, &kind, &parent, &it.Title, &it.SortTitle,
 		&it.Year, &it.Index, &it.Disc, &it.Summary, &durationMS, &addedAt, &updatedAt,
 		&it.ProviderID, &it.PosterKey, &it.ArtKey, &metadataAt, &takenAt, &it.Performer,
-		&locked, &extra, &it.Rating, &it.RatingAge, &it.Studio); err != nil {
+		&locked, &extra, &it.Rating, &it.RatingAge, &it.Studio,
+		&aired, &it.Placement.AfterSeason, &it.Placement.BeforeSeason,
+		&it.Placement.BeforeEpisode, &placedByHand); err != nil {
 		return domain.Item{}, err
 	}
 	it.Locked = locked != 0
+	it.Placement.ByHand = placedByHand != 0
+	it.Aired = fromMillis(aired)
 	it.Extra = domain.ExtraKind(extra)
 	it.MetadataAt, it.TakenAt = fromMillis(metadataAt), fromMillis(takenAt)
 	it.Kind = domain.Kind(kind)
@@ -699,11 +705,15 @@ func (d *DB) RecentlyAdded(ctx context.Context, limit int) ([]domain.Item, error
 
 // NextUp is the next unwatched episode of each show this viewer has started.
 //
-// The question a television asks on its home screen, and the one BMS already
-// has the rows to answer: for every show with a watched episode, the lowest
-// season-and-episode that has not been watched. One query rather than a walk
-// per show, because a library of forty shows would otherwise be forty round
-// trips before anything is drawn.
+// The question a television asks on its home screen. One query finds the
+// candidate per show — a library of forty shows must not be forty round
+// trips before anything is drawn — and then only the shows whose candidate
+// might be wrong are looked at again.
+//
+// It might be wrong because the query orders by season and then episode,
+// which puts a show's specials before its pilot. A show with no specials is
+// unaffected and most shows have none, so the second look is paid for only
+// where it buys something: see [DB.nextWovenInto].
 func (d *DB) NextUp(ctx context.Context, userID int64, limit int) ([]domain.Item, error) {
 	only, scope := d.only("episode.section_id")
 	if limit <= 0 || limit > 100 {
@@ -736,7 +746,81 @@ func (d *DB) NextUp(ctx context.Context, userID int64, limit int) ([]domain.Item
 		return nil, fmt.Errorf("next up: %w", err)
 	}
 	defer rows.Close()
-	return d.collect(ctx, rows)
+
+	candidates, err := d.collect(ctx, rows)
+	if err != nil {
+		return nil, err
+	}
+	return d.nextWovenInto(ctx, userID, candidates)
+}
+
+// nextWovenInto corrects the candidates for the shows that have specials.
+//
+// The query that found them orders by season and then episode, so for a show
+// with specials it may have offered one of those rather than the episode
+// that actually comes next. Rather than express the whole placement rule as
+// a window function, the shows with specials are re-read in the order they
+// should be watched and their candidate replaced.
+//
+// Only those shows. A show with no season zero is already correct, which is
+// most of them, so this costs nothing on a library of ordinary series.
+func (d *DB) nextWovenInto(ctx context.Context, userID int64, candidates []domain.Item) ([]domain.Item, error) {
+	if len(candidates) == 0 {
+		return candidates, nil
+	}
+
+	// Which show each candidate belongs to, and which of those shows have
+	// specials at all.
+	shows := make(map[int]int64, len(candidates))
+	for i, candidate := range candidates {
+		if candidate.ParentID == nil {
+			continue
+		}
+		season, err := d.Item(ctx, *candidate.ParentID)
+		if err != nil {
+			continue
+		}
+		if season.ParentID == nil {
+			continue
+		}
+		var specials int
+		if err := d.sql.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM items
+			  WHERE parent_id = ? AND kind = 'season' AND idx = 0`,
+			*season.ParentID).Scan(&specials); err != nil {
+			return nil, fmt.Errorf("next up: %w", err)
+		}
+		if specials > 0 {
+			shows[i] = *season.ParentID
+		}
+	}
+	if len(shows) == 0 {
+		return candidates, nil
+	}
+
+	out := append([]domain.Item(nil), candidates...)
+	for i, showID := range shows {
+		episodes, err := d.EpisodeOrder(ctx, showID)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]int64, 0, len(episodes))
+		for _, episode := range episodes {
+			ids = append(ids, episode.ID)
+		}
+		seen, err := d.Progress(ctx, userID, ids)
+		if err != nil {
+			return nil, err
+		}
+		for _, episode := range episodes {
+			if progress, found := seen[episode.ID]; found && progress.Watched {
+				continue
+			}
+			out[i] = episode
+			break
+		}
+	}
+	return out, nil
 }
 
 // Extras are the trailers, featurettes and deleted scenes that belong to an

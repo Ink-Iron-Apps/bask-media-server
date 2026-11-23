@@ -10,6 +10,7 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/serve"
+	"github.com/inknironapps/bask-media-server/internal/store"
 )
 
 // Browsing a library by who made what, and the pictures of the people.
@@ -153,4 +154,58 @@ func creditsWanted(r *http.Request, role domain.CreditRole) []string {
 		}
 	}
 	return out
+}
+
+// allLeaves is every episode of a show in the order it should be watched.
+//
+// The specials go where they belong rather than all of them before the
+// pilot, which is what season-then-episode does to a show whose Christmas
+// episodes went out between series. See [store.DB.EpisodeOrder] for which
+// answer wins when the sources disagree.
+func (s *Server) allLeaves(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("key"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad key", http.StatusBadRequest)
+		return
+	}
+	show, err := s.db(r.Context()).Item(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		http.Error(w, "no such item", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		s.fail(w, "read item", err)
+		return
+	}
+
+	episodes, err := s.db(r.Context()).EpisodeOrder(r.Context(), id)
+	if err != nil {
+		s.fail(w, "list episodes", err)
+		return
+	}
+	section, err := s.db(r.Context()).Section(r.Context(), show.SectionID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.fail(w, "read section", err)
+		return
+	}
+
+	out := container{
+		Identifier:          "com.plexapp.plugins.library",
+		LibrarySectionID:    show.SectionID,
+		LibrarySectionTitle: sectionTitle(section),
+		Title1:              sectionTitle(section),
+		Title2:              show.Title,
+		ViewGroup:           "episode",
+		MediaTagPrefix:      "/system/bundle/media/flags/",
+	}
+	s.appendItems(r.Context(), &out, section, episodes, extrasFrom(r))
+	write(w, r, out)
+}
+
+// sectionTitle is a library's name, or nothing when it has gone.
+func sectionTitle(section *domain.Section) string {
+	if section == nil {
+		return ""
+	}
+	return section.Title
 }
