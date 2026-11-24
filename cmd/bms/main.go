@@ -73,6 +73,7 @@ func main() {
 		enrichNow   = flag.Bool("enrich", false, "ask the metadata provider about anything it has not seen")
 		detectNow   = flag.Bool("detect-markers", false, "find intro and credits markers by comparing each season's audio")
 		ffmpegPath  = flag.String("ffmpeg", "", "path to ffmpeg, used for marker detection (default: found on PATH)")
+		ffprobePath = flag.String("ffprobe", "", "path to ffprobe, used to measure durations and read chapters (default: found on PATH)")
 		detectJobs  = flag.Int("detect-workers", 0, "how many files to fingerprint at once (default: half the CPUs)")
 		adminUI     = flag.Bool("admin", true, "serve the admin web interface at /admin")
 		webUI       = flag.Bool("web", true, "serve the viewing web interface at /web")
@@ -119,6 +120,7 @@ func main() {
 		transcodes:  *transcodes,
 		accel:       *accel,
 		ffmpegPath:  *ffmpegPath,
+		ffprobePath: *ffprobePath,
 		detectJobs:  *detectJobs,
 		artworkDir:  *artworkDir,
 		artworkMB:   *artworkMB,
@@ -147,10 +149,15 @@ type runConfig struct {
 	transcodes int
 	accel      string
 	ffmpegPath string
-	detectJobs int
-	artworkDir string
-	artworkMB  int64
-	tmdbKey    string
+
+	// ffprobePath is where ffprobe is, for the same reason ffmpegPath is: a
+	// service does not share the PATH of whoever installed it, and Go
+	// refuses to run a binary it found relative to the working directory.
+	ffprobePath string
+	detectJobs  int
+	artworkDir  string
+	artworkMB   int64
+	tmdbKey     string
 
 	// backupEvery is how often the database is copied, backupDir where the
 	// copies go and keepBackups how many are kept. The copy is taken while
@@ -219,7 +226,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	// detected intros, and both are browsable and playable regardless.
 	var prober scan.Prober
 	if cfg.probe {
-		found, err := ffprobe.New("")
+		found, err := ffprobe.New(cfg.ffprobePath)
 		if err != nil {
 			log.Warn("no ffprobe; durations and chapters will be missing until one is installed", "error", err)
 		} else {
