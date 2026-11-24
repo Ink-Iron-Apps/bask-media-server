@@ -156,7 +156,51 @@ func (w *Writer) Add(ctx context.Context, f Found) error {
 	if err := w.begin(ctx); err != nil {
 		return err
 	}
+	if err := w.add(ctx, f); err != nil {
+		return err
+	}
+	w.pending++
+	if w.pending >= w.batch {
+		return w.Commit(ctx)
+	}
+	return nil
+}
 
+// AddAll records a batch of discoveries in one transaction and commits it.
+//
+// This is what a scan uses, and the difference from calling [Writer.Add] in a
+// loop is the only thing that matters about it: the transaction is open for
+// the writes and nothing else.
+//
+// Add leaves a transaction open between calls, which is correct when the
+// caller has the next row ready and catastrophic when it does not. A scan
+// probes its files on worker goroutines and reads them off a channel, so a
+// loop over Add holds SQLite's single write lock while it waits for ffprobe —
+// for a batch of 500 files that is minutes, during which every other writer
+// in the process fails with SQLITE_BUSY once the busy timeout expires. On a
+// real library that meant the admin interface could not even create a
+// session: signing in is a write.
+//
+// So the caller gathers a batch first and hands it over whole. The lock is
+// then held for a few hundred inserts with no I/O of any kind between them.
+func (w *Writer) AddAll(ctx context.Context, found []Found) error {
+	if len(found) == 0 {
+		return nil
+	}
+	if err := w.begin(ctx); err != nil {
+		return err
+	}
+	for _, f := range found {
+		if err := w.add(ctx, f); err != nil {
+			return err
+		}
+		w.pending++
+	}
+	return w.Commit(ctx)
+}
+
+// add writes one discovery inside whatever transaction is already open.
+func (w *Writer) add(ctx context.Context, f Found) error {
 	spec := itemSpec{
 		sectionID: f.SectionID,
 		kind:      f.Kind,
@@ -266,10 +310,6 @@ func (w *Writer) Add(ctx context.Context, f Found) error {
 	}
 
 	w.seen[f.Path] = struct{}{}
-	w.pending++
-	if w.pending >= w.batch {
-		return w.Commit(ctx)
-	}
 	return nil
 }
 

@@ -120,6 +120,12 @@ type found struct {
 }
 
 // Section scans one library and prunes anything that has vanished from disk.
+// defaultBatch is how many discoveries one transaction carries when the
+// caller did not say. Large enough that a scan is not a fsync per file,
+// small enough that the write lock is held briefly and the write-ahead log
+// stays small.
+const defaultBatch = 500
+
 func (s *Scanner) Section(ctx context.Context, section domain.Section) (Result, error) {
 	started := time.Now()
 	workers := s.Workers
@@ -169,15 +175,38 @@ func (s *Scanner) Section(ctx context.Context, section domain.Section) (Result, 
 	writer := s.DB.NewWriter(s.Batch)
 	defer writer.Rollback()
 
+	// Gathered into a batch and written whole, rather than written one at a
+	// time as each file is probed.
+	//
+	// The difference is which lock is held and for how long. Writing per
+	// file leaves SQLite's single write lock open while this loop waits on
+	// the channel for the next probe, so a batch of 500 files holds it for
+	// as long as 500 probes take — minutes on a busy disk, during which
+	// every other writer in the process fails with SQLITE_BUSY. Gathering
+	// first means the lock is held for a few hundred inserts with no I/O
+	// between them.
+	size := s.Batch
+	if size <= 0 {
+		size = defaultBatch
+	}
+	batch := make([]store.Found, 0, size)
+
 	result := Result{}
 	for f := range probed {
-		if err := writer.Add(ctx, f); err != nil {
-			return result, err
-		}
+		batch = append(batch, f)
 		result.Files++
 		if s.Progress != nil {
 			s.Progress(result.Files)
 		}
+		if len(batch) >= size {
+			if err := writer.AddAll(ctx, batch); err != nil {
+				return result, err
+			}
+			batch = batch[:0]
+		}
+	}
+	if err := writer.AddAll(ctx, batch); err != nil {
+		return result, err
 	}
 	if err := writer.Commit(ctx); err != nil {
 		return result, err
