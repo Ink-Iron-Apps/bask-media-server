@@ -74,6 +74,7 @@ func main() {
 		detectNow   = flag.Bool("detect-markers", false, "find intro and credits markers by comparing each season's audio")
 		ffmpegPath  = flag.String("ffmpeg", "", "path to ffmpeg, used for marker detection (default: found on PATH)")
 		ffprobePath = flag.String("ffprobe", "", "path to ffprobe, used to measure durations and read chapters (default: found on PATH)")
+		logPath     = flag.String("log", "", "write the log to this file instead of standard error")
 		detectJobs  = flag.Int("detect-workers", 0, "how many files to fingerprint at once (default: half the CPUs)")
 		adminUI     = flag.Bool("admin", true, "serve the admin web interface at /admin")
 		webUI       = flag.Bool("web", true, "serve the viewing web interface at /web")
@@ -91,7 +92,28 @@ func main() {
 	flag.Var(&sections, "section", `add a library on first run, as "Title:movies|shows|music|photos:/path" (repeatable)`)
 	flag.Parse()
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// Where the log goes.
+	//
+	// Standard error by default, which is right for a terminal and for
+	// anything that captures a child's output. A path instead, for the case
+	// this exists for: a Windows scheduled task has no console, so the only
+	// way to keep a log was to wrap the server in cmd.exe and append with
+	// ">>". That wrapper is worse than it looks — every start leaves a
+	// cmd.exe holding the file open, and the next server's first write
+	// contends with it, which presents as a process that is alive, silent
+	// and not listening. Opening the file here removes the wrapper and the
+	// whole class of problem with it.
+	logTo := os.Stderr
+	if path := strings.TrimSpace(*logPath); path != "" {
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bms: cannot open the log at %s: %v\n", path, err)
+			os.Exit(1)
+		}
+		defer file.Close()
+		logTo = file
+	}
+	log := slog.New(slog.NewTextHandler(logTo, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(log)
 
 	// A soft ceiling rather than a hard one: Go's collector becomes more
@@ -175,10 +197,17 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Said before it happens, because both of the things that can be slow
+	// here are silent otherwise: another process still holding the file, and
+	// a write-ahead log to replay after an unclean stop. A server that is
+	// alive with a closed port and an empty log is the hardest kind of
+	// problem to look at, and this is one line.
+	log.Info("opening the library database", "path", cfg.dbPath)
 	db, err := store.Open(ctx, cfg.dbPath)
 	if err != nil {
 		return err
 	}
+	log.Info("library database open")
 	defer db.Close()
 
 	machineID, err := machineIdentity(ctx, db)
