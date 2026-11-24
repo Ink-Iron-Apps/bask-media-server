@@ -1,0 +1,66 @@
+# Bask Media Server configuration.
+#
+# Every setting here has the same name as the matching command-line flag, and
+# `bms -help` lists all of them with their defaults. Anything given on the
+# command line wins over this file, so a one-off override needs no edit here.
+#
+# Lines beginning with # or ; are ignored. A value is taken literally: inner
+# spaces are kept, and surrounding quotes are optional.
+
+# Where the library database lives. Everything else — artwork cache, backups —
+# is kept beside it unless told otherwise.
+db = /var/lib/bask-media-server/bms.db
+
+# The address to listen on. 0.0.0.0 answers on every interface, which is what
+# a server other machines connect to needs; 127.0.0.1 answers only locally.
+addr = 0.0.0.0:32500
+
+# The name clients show for this server.
+name = Bask Media Server
+
+# Libraries, as "Title:kind:/path", where kind is movies, shows, music or
+# photos. These are read on the first start only; after that, libraries are
+# managed from the admin interface, which browses to a folder rather than
+# asking anyone to type a path.
+#
+# section = Movies:movies:/mnt/media/Movies
+# section = TV Shows:shows:/mnt/media/TV Shows
+# section = Music:music:/mnt/media/Music
+# section = Photos:photos:/mnt/media/Pictures
+
+# Scan every library at startup. Cheap once the first scan has been done, so
+# leaving it on keeps a restart in step with the disk.
+scan = true
+
+# Posters, backdrops and summaries, which need a TMDB key. The key can come
+# from BMS_TMDB_API_KEY instead, which keeps it out of this file.
+# enrich = true
+# tmdb-key =
+
+# Skip Intro and Skip Credits. Decodes the first and last ten minutes of each
+# episode once, then compares each season, so the first pass costs real time
+# and later ones cost nothing.
+# detect-markers = true
+
+# Converting for clients that cannot play a file as it is. 0 turns it off.
+# Needs ffmpeg on PATH, or the -ffmpeg setting below.
+transcode-sessions = 3
+
+# The hardware encoder to convert with: auto, off, or one of vaapi, nvenc,
+# qsv, videotoolbox, amf. Anything but off falls back to the processor when the
+# hardware will not do it.
+hwaccel = auto
+
+# ffmpeg and ffprobe are found on PATH when these are empty. Set them when the
+# service runs with a PATH that does not include them.
+# ffmpeg =
+# ffprobe =
+
+# A copy of the database on this interval, keeping this many. 0 turns it off.
+backup-every = 24h
+keep-backups = 7
+
+# The log goes to standard error when this is empty, which is what a service
+# manager wants — it captures the output itself. Set a path to write a file
+# instead.
+# log =

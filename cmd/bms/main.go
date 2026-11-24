@@ -87,10 +87,31 @@ func main() {
 		backupEvery = flag.Duration("backup-every", 24*time.Hour, "how often to copy the database; 0 turns it off")
 		backupDir   = flag.String("backup-dir", "", "where to write database copies (default: a folder beside the database)")
 		keepBackups = flag.Int("keep-backups", 7, "how many database copies to keep")
+		configPath  = flag.String("config", "", "read settings from this file; anything also given on the command line wins")
+		showVersion = flag.Bool("version", false, "print the version and exit")
 		sections    sectionFlag
 	)
 	flag.Var(&sections, "section", `add a library on first run, as "Title:movies|shows|music|photos:/path" (repeatable)`)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("bms %s %s/%s\n", version, runtime.GOOS, runtime.GOARCH)
+		return
+	}
+
+	// Settings from a file, for an installation that runs as a service.
+	//
+	// The service unit names a file rather than carrying the whole command
+	// line, so changing a library means editing a text file instead of a unit
+	// or a scheduled task. Applied after parsing so the command line still
+	// wins, which is what makes a one-off override possible without editing
+	// the file the service depends on.
+	if path := strings.TrimSpace(*configPath); path != "" {
+		if err := applyConfig(flag.CommandLine, path); err != nil {
+			fmt.Fprintf(os.Stderr, "bms: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	// Where the log goes.
 	//

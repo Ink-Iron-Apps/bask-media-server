@@ -92,20 +92,93 @@ and the Plex vocabulary never reaches storage or scanning.
 - Nothing from the list this project set out with. What comes next is whatever
   the household asks for.
 
-## Running it
+## Installing it
+
+Nothing here needs compiling, and there is no runtime to install first. Each
+release carries a binary for every platform, checked against published
+SHA-256 sums, and sets the server up to start at boot.
+
+**Linux.** Installs the binary, creates a service account, writes
+`/etc/bask-media-server/bms.conf` and enables a systemd service:
+
+```
+curl -fsSL https://baskmedia.app/install.sh | sudo sh
+```
+
+**Windows.** From an elevated PowerShell. Installs under Program Files and
+registers a task that starts the server at boot:
+
+```
+irm https://baskmedia.app/install.ps1 | iex
+```
+
+**Docker.**
+
+```
+docker run -d --name bask-media-server \
+  -p 32500:32500 \
+  -v bms-data:/var/lib/bask-media-server \
+  -v /mnt/media:/mnt/media:ro \
+  ghcr.io/ink-iron-apps/bask-media-server:latest
+```
+
+**macOS, and anything else.** Download the archive for the platform from
+[Releases](https://github.com/Ink-Iron-Apps/bask-media-server/releases/latest),
+unpack it, and run the binary.
+
+`ffmpeg` and `ffprobe` are found on `PATH` and are needed only for converting
+files a client cannot play, measuring durations during a scan, and finding
+intro and credits markers. Direct play works without them, and the container
+image already has them.
+
+### From source
 
 ```
 go build ./cmd/bms
-./bms -db ~/bms.db -addr 127.0.0.1:32500 \
-      -section "Movies:movies:/mnt/media/Movies" \
-      -section "TV Shows:shows:/mnt/media/TV Shows" \
-      -section "Music:music:/mnt/media/Music" \
-      -section "Photos:photos:/mnt/media/Pictures" \
-      -scan
 ```
 
+## Running it
+
+A release installation reads its settings from a file, and
+`packaging/bms.conf.example` is the annotated version of it with every setting
+and its default. Each one has the same name as the matching flag, so there is
+one vocabulary rather than two, and anything given on the command line wins
+over the file:
+
+```
+db   = /var/lib/bask-media-server/bms.db
+addr = 0.0.0.0:32500
+
+section = Movies:movies:/mnt/media/Movies
+section = TV Shows:shows:/mnt/media/TV Shows
+scan = true
+```
+
+```
+bms -config /etc/bask-media-server/bms.conf
+```
+
+The same thing with no file at all, which is what a first look wants:
+
+```
+bms -db ~/bms.db -addr 127.0.0.1:32500 \
+    -section "Movies:movies:/mnt/media/Movies" \
+    -section "TV Shows:shows:/mnt/media/TV Shows" \
+    -section "Music:music:/mnt/media/Music" \
+    -section "Photos:photos:/mnt/media/Pictures" \
+    -scan
+```
+
+Libraries are read from `-section` on the first start only. After that they are
+managed from the admin interface, which browses to a folder rather than asking
+anyone to type a path.
+
 The first start prints the admin token. Point a client at the address and give
-it that token.
+it that token. Under systemd that line is in the journal:
+
+```
+journalctl -u bask-media-server | grep 'admin token'
+```
 
 Two catch-up passes are opt-in, because each one costs real time the first
 time it runs and nothing afterwards:

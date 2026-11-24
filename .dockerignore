@@ -1,0 +1,11 @@
+.git
+.github
+cloud/node_modules
+cloud/test
+docs
+*.db
+*.db-wal
+*.db-shm
+bms
+bms.exe
+dist

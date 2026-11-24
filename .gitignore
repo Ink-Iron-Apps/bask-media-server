@@ -2,6 +2,7 @@
 /bms
 /bms.exe
 /dist/
+cloud/node_modules/
 
 # A library database is machine state, never source
 *.db

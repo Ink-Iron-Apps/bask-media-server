@@ -1,0 +1,58 @@
+# Bask Media Server as a systemd service.
+#
+# Installed at /etc/systemd/system/bask-media-server.service by
+# packaging/install.sh, which also creates the service user and the state
+# directory. To change a setting, edit /etc/bask-media-server/bms.conf and
+# restart; the unit itself should not need touching.
+
+[Unit]
+Description=Bask Media Server
+Documentation=https://baskmedia.app/server
+# Wants the network up, but does not insist the whole stack is online: the
+# server binds its address and serves local clients regardless.
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bms
+Group=bms
+ExecStart=/usr/local/bin/bms -config /etc/bask-media-server/bms.conf
+Restart=on-failure
+RestartSec=5s
+
+# The log goes to the journal, which is what leaving -log unset gives.
+StandardOutput=journal
+StandardError=journal
+
+# /var/lib/bask-media-server, created and owned by the service user on first
+# start, which is where the database, the artwork cache and the backups go.
+StateDirectory=bask-media-server
+StateDirectoryMode=0750
+
+# Hardening. The media folders are mounted read-only into the namespace by
+# install.sh adding ReadOnlyPaths= in a drop-in, because where they are is a
+# local decision this file cannot know.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=false
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# PrivateDevices stays off and MemoryDenyWriteExecute stays off on purpose:
+# hardware encoding needs /dev/dri, and the ffmpeg this starts for conversion
+# maps executable pages.
+
+[Install]
+WantedBy=multi-user.target
