@@ -49,6 +49,26 @@ CREATE TABLE IF NOT EXISTS link_requests (
 );
 CREATE INDEX IF NOT EXISTS link_expiry ON link_requests(expires_at);
 
+-- A claim token is how a server comes to be owned, and it exists so that the
+-- two things that must never meet do not have to: the server never sees an
+-- account's credentials, and the owner never hand-carries a server's
+-- long-lived secret. The owner mints one while signed in, reads it to the
+-- server, and the server redeems it itself. Four minutes and one use, so a
+-- token read aloud, pasted into a chat or left in a terminal's scrollback is
+-- worth nothing by the time anybody else finds it.
+--
+-- Only the hash is stored, for the same reason passwords are not stored:
+-- a copy of this table is not a set of working claim tokens.
+CREATE TABLE IF NOT EXISTS claim_tokens (
+    token_hash TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL,
+    used_at    INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS claim_tokens_expiry ON claim_tokens(expires_at);
+
 CREATE TABLE IF NOT EXISTS servers (
     id          TEXT PRIMARY KEY,
     owner_id    TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,

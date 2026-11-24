@@ -77,6 +77,13 @@ async function route(request, env, url) {
   if (method === "GET" && path === "/me") return me(request, env);
   if (method === "GET" && path === "/me/servers") return myServers(request, env);
 
+  // Claiming, in the order the two halves happen: the owner mints a token
+  // while signed in, then the server redeems it on its own behalf.
+  if (method === "POST" && path === "/claim") return mintClaim(request, env);
+  // Before the /servers/{id} pattern below, which would otherwise read
+  // "claim" as a server id.
+  if (method === "POST" && path === "/servers/claim") return redeemClaim(request, env);
+
   if (method === "POST" && path === "/servers") return claimServer(request, env);
 
   const server = path.match(/^\/servers\/([A-Za-z0-9_-]{1,64})(\/[A-Za-z0-9_\-/]*)?$/);
@@ -359,29 +366,115 @@ async function linkApprove(request, env) {
 /* ---------- servers ---------- */
 
 /** claimServer is an administrator saying "this one is mine". */
+/**
+ * CLAIM_TTL is how long a claim token is worth anything.
+ *
+ * Four minutes, which is Plex's figure, and it is short for a reason: the
+ * token travels by whatever means the owner has to hand — read off a screen,
+ * typed into a setup form, pasted into a terminal — so it should be expired
+ * by the time it reaches anybody's scrollback or history.
+ */
+const CLAIM_TTL = 240;
+
+/** serverName reads a server's own name for itself, with a fallback. */
+function serverName(body) {
+  return String(body.name || "").trim().slice(0, 64) || "Bask Media Server";
+}
+
+/**
+ * createServer records a server and its owner's membership.
+ *
+ * One definition of what it means for a server to exist, because there are
+ * two ways in — an owner creating one from their own session, and a server
+ * redeeming a claim token — and they must not drift.
+ */
+async function createServer(env, accountID, name) {
+  const serverID = id();
+  const secret = random(32);
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO servers (id, owner_id, name, secret_hash, created_at) VALUES (?, ?, ?, ?, ?)`,
+    ).bind(serverID, accountID, name, await hash(secret), now()),
+    // The owner is a member of their own server, so one query answers "what
+    // may this account reach" without a special case for the person who owns
+    // the thing.
+    env.DB.prepare(
+      `INSERT INTO memberships (server_id, account_id, created_at) VALUES (?, ?, ?)`,
+    ).bind(serverID, accountID, now()),
+  ]);
+  return { server: { id: serverID, name }, secret };
+}
+
 async function claimServer(request, env) {
   const account = await accountFor(request, env);
   if (!account) return fail(401, "sign in first");
 
   const { value: body, error } = await readJSON(request);
   if (error) return error;
-  const name = String(body.name || "").trim().slice(0, 64) || "Bask Media Server";
 
-  const serverID = id();
-  const secret = random(32);
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO servers (id, owner_id, name, secret_hash, created_at) VALUES (?, ?, ?, ?, ?)`,
-    ).bind(serverID, account.id, name, await hash(secret), now()),
-    // The owner is a member of their own server, so one query answers "what
-    // may this account reach" without a special case for the person who owns
-    // the thing.
-    env.DB.prepare(
-      `INSERT INTO memberships (server_id, account_id, created_at) VALUES (?, ?, ?)`,
-    ).bind(serverID, account.id, now()),
-  ]);
+  return json(await createServer(env, account.id, serverName(body)), 201);
+}
 
-  return json({ server: { id: serverID, name }, secret }, 201);
+/**
+ * mintClaim issues a claim token to a signed-in owner.
+ *
+ * The owner reads this to their server; they do not give the server their
+ * password, and they do not copy a long-lived secret out of here by hand.
+ * Plex does the same thing at plex.tv/claim and for the same reason.
+ */
+async function mintClaim(request, env) {
+  const account = await accountFor(request, env);
+  if (!account) return fail(401, "sign in first");
+  if (!(await limit(env, "claim:" + account.id))) return tooMany();
+
+  // The "claim-" prefix is for the human in the middle: it makes the string
+  // recognisable in a setup form and obvious in a paste, and it is what Plex
+  // users already expect a claim token to look like.
+  const token = "claim-" + random(24);
+  await env.DB.prepare(
+    `INSERT INTO claim_tokens (token_hash, account_id, expires_at, created_at) VALUES (?, ?, ?, ?)`,
+  )
+    .bind(await hash(token), account.id, now() + CLAIM_TTL, now())
+    .run();
+
+  return json({ token, expiresIn: CLAIM_TTL }, 201);
+}
+
+/**
+ * redeemClaim is the server's own call, and the only one it can make before
+ * it has an identity.
+ *
+ * Unauthenticated by necessity — an unclaimed server holds no secret yet —
+ * so the token is the whole of the authority, which is why it is single-use
+ * and short-lived. Spending it is a conditional update rather than a read
+ * followed by a write, so two servers racing with the same token cannot both
+ * win it.
+ */
+async function redeemClaim(request, env) {
+  if (!(await limit(env, "redeem:" + clientAddress(request)))) return tooMany();
+
+  const { value: body, error } = await readJSON(request);
+  if (error) return error;
+  const token = String(body.token || "").trim();
+  if (!token) return fail(400, "need a claim token");
+
+  const spent = await env.DB.prepare(
+    `UPDATE claim_tokens SET used_at = ? WHERE token_hash = ? AND used_at = 0 AND expires_at > ?`,
+  )
+    .bind(now(), await hash(token), now())
+    .run();
+  if (!spent.meta || spent.meta.changes !== 1) {
+    // One message for expired, already spent and never existed. Which of the
+    // three it is would tell an attacker whether a guess was ever a token.
+    return fail(404, "that claim token is not good any more");
+  }
+
+  const row = await env.DB.prepare(`SELECT account_id FROM claim_tokens WHERE token_hash = ?`)
+    .bind(await hash(token))
+    .first();
+  if (!row) return fail(404, "that claim token is not good any more");
+
+  return json(await createServer(env, row.account_id, serverName(body)), 201);
 }
 
 /** serverFor resolves a server secret, for the routes a server itself calls. */

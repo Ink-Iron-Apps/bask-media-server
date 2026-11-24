@@ -9,9 +9,28 @@ const encoder = new TextEncoder();
 
 // PASSWORD_ITERATIONS is OWASP's figure for PBKDF2-HMAC-SHA256, which is the
 // strongest thing this runtime does natively. It is a real cost per sign-in —
-// tens of milliseconds of CPU — which is why only signing in pays it and a
-// client token is checked with a hash.
+// a few hundred milliseconds of CPU — which is why only signing in pays it and
+// a client token is checked with a hash.
 export const PASSWORD_ITERATIONS = 600_000;
+
+// ROUND_ITERATIONS is the most this runtime will do in one call. Workers
+// refuses a PBKDF2 request above 100,000 outright:
+//
+//   NotSupportedError: Pbkdf2 failed: iteration counts above 100000 are not
+//   supported (requested 600000).
+//
+// workerd does not enforce the cap, so a suite that passes locally says
+// nothing about this. The cap is a property of the platform, not advice about
+// how much stretching a password deserves.
+const ROUND_ITERATIONS = 100_000;
+
+// So the work is done as a chain of rounds instead of one call. Each round's
+// output is the next round's input, which costs an attacker the same
+// 600,000 iterations and cannot be split across cores: round six cannot start
+// until round five has finished. Lowering the count to fit the cap would have
+// been the other option, and it would have quietly made every password in
+// here six times cheaper to attack.
+const ROUNDS = PASSWORD_ITERATIONS / ROUND_ITERATIONS;
 
 /** random returns n bytes from the runtime's random source, base64url. */
 export function random(n = 32) {
@@ -52,22 +71,32 @@ export async function hash(secret) {
   return base64url(digest);
 }
 
-/** derive stretches a password against its salt. */
+/**
+ * derive stretches a password against its salt.
+ *
+ * PASSWORD_ITERATIONS in total, taken ROUND_ITERATIONS at a time because the
+ * runtime will not do more than that in a single call. See the note on
+ * ROUNDS: the chain is sequential, so the total work is the same as one call
+ * of PASSWORD_ITERATIONS would have been.
+ */
 export async function derive(password, salt) {
-  const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, [
-    "deriveBits",
-  ]);
-  const bits = await crypto.subtle.deriveBits(
-    {
-      name: "PBKDF2",
-      hash: "SHA-256",
-      salt: fromBase64url(salt),
-      iterations: PASSWORD_ITERATIONS,
-    },
-    key,
-    256,
-  );
-  return base64url(bits);
+  const saltBytes = fromBase64url(salt);
+  let material = encoder.encode(password);
+  for (let round = 0; round < ROUNDS; round++) {
+    const key = await crypto.subtle.importKey("raw", material, "PBKDF2", false, ["deriveBits"]);
+    const bits = await crypto.subtle.deriveBits(
+      {
+        name: "PBKDF2",
+        hash: "SHA-256",
+        salt: saltBytes,
+        iterations: ROUND_ITERATIONS,
+      },
+      key,
+      256,
+    );
+    material = new Uint8Array(bits);
+  }
+  return base64url(material);
 }
 
 /**

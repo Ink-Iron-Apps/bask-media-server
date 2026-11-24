@@ -19,7 +19,7 @@
     {
       "binding": "DB",
       "database_name": "bask-cloud",
-      "database_id": "set-by-wrangler-d1-create"
+      "database_id": "d8558e03-0cf4-4f9a-80cb-b5541c998231"
     }
   ],
 
@@ -36,6 +36,11 @@
       }
     ]
   },
+
+  // Stretching a password six times through PBKDF2 costs real CPU, and the
+  // default allowance is tens of milliseconds. Only registering and signing
+  // in pay it; every other route is a lookup.
+  "limits": { "cpu_ms": 10000 },
 
   "observability": { "enabled": true }
 }

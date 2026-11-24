@@ -492,3 +492,73 @@ function bytes(part) {
   for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
   return out;
 }
+
+describe("claiming a server", () => {
+  it("lets a server claim itself with a token its owner minted", async () => {
+    const rae = await account("rae@example.com");
+
+    const minted = await call("POST", "/claim", { token: rae.token });
+    expect(minted.status).toBe(201);
+    expect(minted.body.token).toMatch(/^claim-/);
+    expect(minted.body.expiresIn).toBe(240);
+
+    // The server's own call. It has no account token and no secret yet: the
+    // claim token is the whole of its authority, which is the point.
+    const claimed = await call("POST", "/servers/claim", {
+      body: { token: minted.body.token, name: "The house" },
+    });
+    expect(claimed.status).toBe(201);
+    expect(claimed.body.server.name).toBe("The house");
+    expect(claimed.body.secret).toBeTruthy();
+
+    // And the owner can now see it, which is the whole purpose.
+    const mine = await call("GET", "/me/servers", { token: rae.token });
+    expect(mine.status).toBe(200);
+    expect(mine.body.servers.map((s) => s.id)).toContain(claimed.body.server.id);
+  });
+
+  it("spends a claim token on the first server to use it", async () => {
+    const rae = await account("spend@example.com");
+    const minted = await call("POST", "/claim", { token: rae.token });
+
+    const first = await call("POST", "/servers/claim", { body: { token: minted.body.token } });
+    expect(first.status).toBe(201);
+
+    const second = await call("POST", "/servers/claim", { body: { token: minted.body.token } });
+    expect(second.status).toBe(404);
+
+    // One server, not two, however many times the token was presented.
+    const mine = await call("GET", "/me/servers", { token: rae.token });
+    expect(mine.body.servers).toHaveLength(1);
+  });
+
+  it("refuses a claim token that has expired", async () => {
+    const rae = await account("stale@example.com");
+    const minted = await call("POST", "/claim", { token: rae.token });
+
+    // Reach into the table rather than wait four minutes.
+    await env.DB.prepare(`UPDATE claim_tokens SET expires_at = 1`).run();
+
+    const late = await call("POST", "/servers/claim", { body: { token: minted.body.token } });
+    expect(late.status).toBe(404);
+  });
+
+  it("says the same thing about a token that never existed", async () => {
+    const spent = await account("same@example.com");
+    const minted = await call("POST", "/claim", { token: spent.token });
+    await call("POST", "/servers/claim", { body: { token: minted.body.token } });
+
+    const used = await call("POST", "/servers/claim", { body: { token: minted.body.token } });
+    const never = await call("POST", "/servers/claim", { body: { token: "claim-nonsense" } });
+
+    // A different answer for "spent" and "never existed" would tell somebody
+    // guessing whether a guess had ever been a real token.
+    expect(never.status).toBe(used.status);
+    expect(never.body.error).toBe(used.body.error);
+  });
+
+  it("will not mint a claim token for somebody who is not signed in", async () => {
+    const anonymous = await call("POST", "/claim");
+    expect(anonymous.status).toBe(401);
+  });
+});
