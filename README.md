@@ -112,15 +112,43 @@ registers a task that starts the server at boot:
 irm https://baskmedia.app/install.ps1 | iex
 ```
 
-**Docker.**
+**Docker.** The image carries `ffmpeg`, so conversion and marker detection work
+with nothing else installed. Nothing in it is specific to any one
+installation — no paths, no libraries, no keys — and it runs with no arguments
+at all:
 
 ```
 docker run -d --name bask-media-server \
   -p 32500:32500 \
+  -v "$PWD/config:/config" \
   -v bms-data:/var/lib/bask-media-server \
   -v /mnt/media:/mnt/media:ro \
   ghcr.io/ink-iron-apps/bask-media-server:latest
 ```
+
+It reads `/config/bms.conf` when one is mounted.
+`packaging/docker-compose.yml` is the same thing as a compose file.
+
+On the first start it tries to leave an annotated `bms.conf.example` beside it.
+A mounted folder belongs to the host, so that only works when the folder is
+writable by the container; when it is not, the log says so and gives you this
+instead:
+
+```
+docker run --rm --entrypoint cat \
+  ghcr.io/ink-iron-apps/bask-media-server:latest \
+  /usr/share/bask-media-server/bms.conf.example > config/bms.conf
+```
+
+It runs as `1000:1000`, which is the first user on most machines, so media
+owned by whoever downloaded it is usually readable as it stands. Where it is
+not, `--user "$(id -u):$(id -g)"` is the answer rather than changing the files —
+and then the data volume needs to be a directory you own too, because a named
+volume is created owned by 1000 from the image. Mount `./data` over
+`/var/lib/bask-media-server` and the server says so in its log if you forget.
+
+Hardware encoding needs the device passed in: `--device /dev/dri` for VAAPI and
+QSV, the NVIDIA runtime for NVENC.
 
 **macOS, and anything else.** Download the archive for the platform from
 [Releases](https://github.com/Ink-Iron-Apps/bask-media-server/releases/latest),

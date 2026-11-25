@@ -1,0 +1,42 @@
+# Bask Media Server with Docker Compose.
+#
+# Copy this, change the two paths under volumes, and run `docker compose up -d`.
+# Then edit config/bms.conf to add your libraries -- an annotated example is
+# written next to it on the first start.
+
+services:
+  bask-media-server:
+    image: ghcr.io/ink-iron-apps/bask-media-server:latest
+    container_name: bask-media-server
+    restart: unless-stopped
+    ports:
+      - "32500:32500"
+    volumes:
+      # Settings. The first start leaves bms.conf.example here to copy.
+      - ./config:/config
+      # The library database, artwork cache and backups.
+      - bms-data:/var/lib/bask-media-server
+      # Your media, read-only, at the same path the configuration names.
+      - /mnt/media:/mnt/media:ro
+    environment:
+      # Optional, and only for posters, backdrops and summaries. Keeping it
+      # here rather than in bms.conf keeps the key out of a file you might
+      # share.
+      - BMS_TMDB_API_KEY=
+    # The image runs as 1000:1000, which is the first user on most machines.
+    # If your media is owned by somebody else, say so here instead of changing
+    # the files: `id -u`:`id -g` is usually what you want.
+    #
+    # Setting this means the bms-data volume below will not be writable, since
+    # it is created owned by 1000 from the image. Mount a directory you own in
+    # its place -- ./data:/var/lib/bask-media-server -- and the server says so
+    # in its log if you forget.
+    # user: "1000:1000"
+    #
+    # Hardware encoding needs the device passed in. VAAPI and QSV want
+    # /dev/dri; NVENC wants the NVIDIA runtime instead.
+    # devices:
+    #   - /dev/dri:/dev/dri
+
+volumes:
+  bms-data:

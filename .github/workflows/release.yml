@@ -96,7 +96,8 @@ jobs:
             cp packaging/bms.conf.example "$staging/packaging/"
             case "$os" in
               linux)
-                cp packaging/bask-media-server.service packaging/install.sh "$staging/packaging/"
+                cp packaging/bask-media-server.service packaging/install.sh \
+                   packaging/docker-compose.yml "$staging/packaging/"
                 ;;
               windows)
                 cp packaging/install.ps1 "$staging/packaging/"
@@ -151,10 +152,16 @@ jobs:
           \`\`\`
           docker run -d --name bask-media-server \\
             -p 32500:32500 \\
+            -v "$PWD/config:/config" \\
             -v bms-data:/var/lib/bask-media-server \\
             -v /mnt/media:/mnt/media:ro \\
             ${{ steps.version.outputs.image }}:${VERSION}
           \`\`\`
+
+          The image runs with no arguments and takes \`/config/bms.conf\` when
+          one is mounted. It runs as 1000:1000, so pass \`--user\` where your
+          media belongs to somebody else. \`packaging/docker-compose.yml\` in
+          the Linux archive is the same thing as a compose file.
 
           **macOS**, and anything else: download the archive below, unpack it,
           and run \`./bms -config bms.conf\`.
