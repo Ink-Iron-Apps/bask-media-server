@@ -45,6 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.plain }}
+      image: ${{ steps.version.outputs.image }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -61,6 +62,9 @@ jobs:
           tag="${{ inputs.tag || github.ref_name }}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "plain=${tag#v}" >> "$GITHUB_OUTPUT"
+          # A container registry refuses a repository name that is not all
+          # lowercase, and this owner is not.
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       # One runner builds every target. The SQLite driver is pure Go, so
       # CGO_ENABLED=0 cross-compiles all six without a toolchain per platform
@@ -149,7 +153,7 @@ jobs:
             -p 32500:32500 \\
             -v bms-data:/var/lib/bask-media-server \\
             -v /mnt/media:/mnt/media:ro \\
-            ghcr.io/${{ github.repository_owner }}/bask-media-server:${VERSION}
+            ${{ steps.version.outputs.image }}:${VERSION}
           \`\`\`
 
           **macOS**, and anything else: download the archive below, unpack it,
@@ -171,7 +175,6 @@ jobs:
               --verify-tag
           fi
 
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -188,7 +191,7 @@ jobs:
           push: true
           build-args: VERSION=${{ steps.version.outputs.plain }}
           tags: |
-            ghcr.io/${{ github.repository_owner }}/bask-media-server:${{ steps.version.outputs.plain }}
-            ghcr.io/${{ github.repository_owner }}/bask-media-server:latest
+            ${{ steps.version.outputs.image }}:${{ steps.version.outputs.plain }}
+            ${{ steps.version.outputs.image }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max

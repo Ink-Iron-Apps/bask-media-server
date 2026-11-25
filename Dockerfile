@@ -7,7 +7,10 @@
 # of what this does; it is included because being told to install something
 # after the fact is exactly what this project is trying to avoid.
 
-FROM golang:1.27-alpine AS build
+# On the runner's own architecture, whatever is being built for: compiling Go
+# for another one is a cross-compile, and emulating that architecture to run a
+# native compiler in it costs tens of minutes for nothing.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 WORKDIR /src
 
 # Dependencies first, so editing the source does not re-download them.
@@ -16,7 +19,8 @@ RUN go mod download
 
 COPY . .
 ARG VERSION=0.0.0-container
-RUN CGO_ENABLED=0 go build -trimpath \
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOARCH=${TARGETARCH:-amd64} go build -trimpath \
         -ldflags "-s -w -X main.version=${VERSION}" \
         -o /out/bms ./cmd/bms
 
