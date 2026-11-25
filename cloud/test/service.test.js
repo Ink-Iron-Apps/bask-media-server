@@ -562,3 +562,298 @@ describe("claiming a server", () => {
     expect(anonymous.status).toBe(401);
   });
 });
+
+/* ---------- the pages a person uses ---------- */
+
+describe("the pages", () => {
+  // A browser's request, as opposed to a program's: a form post, an Origin,
+  // and a cookie instead of an Authorization header.
+  async function visit(method, path, { fields, cookie, origin, site } = {}) {
+    const headers = { "cf-connecting-ip": `198.51.100.${++caller % 250}` };
+    if (cookie) headers.cookie = cookie;
+    if (site !== null) headers["sec-fetch-site"] = site || "same-origin";
+    if (origin) headers.origin = origin;
+
+    let body;
+    if (fields) {
+      body = new URLSearchParams(fields);
+      headers["content-type"] = "application/x-www-form-urlencoded";
+    }
+
+    const request = new Request("https://account.example" + path, { method, headers, body });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(request, configured(), ctx);
+    await waitOnExecutionContext(ctx);
+    return {
+      status: response.status,
+      location: response.headers.get("location"),
+      cookie: response.headers.get("set-cookie"),
+      type: response.headers.get("content-type"),
+      csp: response.headers.get("content-security-policy"),
+      text: await response.text(),
+    };
+  }
+
+  /** signedIn registers through the sign-up form and keeps the cookie. */
+  async function signedIn(email, password = "a-long-enough-password") {
+    const made = await visit("POST", "/web/sign-up", {
+      fields: { email, password, name: "Somebody" },
+    });
+    expect(made.status).toBe(303);
+    expect(made.cookie).toBeTruthy();
+    return made.cookie.split(";")[0];
+  }
+
+  it("offers a sign-in form to a stranger", async () => {
+    const home = await visit("GET", "/");
+    expect(home.status).toBe(200);
+    expect(home.type).toContain("text/html");
+    expect(home.text).toContain('action="/web/sign-in"');
+  });
+
+  it("forbids script on every page it serves", async () => {
+    const home = await visit("GET", "/");
+    // The pages carry no script at all, so this is not a mitigation that has
+    // to be kept in step with a bundle: it is the actual shape of the page.
+    expect(home.csp).toContain("default-src 'none'");
+    expect(home.csp).not.toContain("script-src");
+    expect(home.text).not.toContain("<script");
+  });
+
+  it("creates an account from the form and lands on the servers page", async () => {
+    const cookie = await signedIn("formed@example.com");
+    const servers = await visit("GET", "/servers", { cookie });
+    expect(servers.status).toBe(200);
+    expect(servers.text).toContain("No servers yet");
+  });
+
+  it("keeps the session cookie out of reach of script and of other sites", async () => {
+    const made = await visit("POST", "/web/sign-up", {
+      fields: { email: "cookie@example.com", password: "a-long-enough-password" },
+    });
+    expect(made.cookie).toContain("HttpOnly");
+    expect(made.cookie).toContain("Secure");
+    expect(made.cookie).toContain("SameSite=Strict");
+  });
+
+  it("signs in an existing account", async () => {
+    await signedIn("returning@example.com");
+    const again = await visit("POST", "/web/sign-in", {
+      fields: { email: "returning@example.com", password: "a-long-enough-password" },
+    });
+    expect(again.status).toBe(303);
+    expect(again.location).toBe("/servers");
+  });
+
+  it("says so, on the form, when the password is wrong", async () => {
+    await signedIn("wrong@example.com");
+    const refused = await visit("POST", "/web/sign-in", {
+      fields: { email: "wrong@example.com", password: "not-the-password" },
+    });
+    expect(refused.status).toBe(401);
+    expect(refused.text).toContain("do not match");
+    // Re-rendered with the address kept, because retyping it is a small
+    // insult on top of a failed sign-in.
+    expect(refused.text).toContain("wrong@example.com");
+    expect(refused.cookie).toBeNull();
+  });
+
+  it("refuses a form that did not come from here", async () => {
+    await signedIn("csrf@example.com");
+    const crossSite = await visit("POST", "/web/sign-in", {
+      fields: { email: "csrf@example.com", password: "a-long-enough-password" },
+      site: "cross-site",
+    });
+    expect(crossSite.status).toBe(403);
+    expect(crossSite.cookie).toBeNull();
+  });
+
+  it("refuses a form from a client that claims no origin at all", async () => {
+    const nothing = await visit("POST", "/web/sign-in", {
+      fields: { email: "nobody@example.com", password: "a-long-enough-password" },
+      site: null,
+    });
+    expect(nothing.status).toBe(403);
+  });
+
+  it("will not let the cookie drive an API route", async () => {
+    const cookie = await signedIn("api@example.com");
+    // accountFor reads the Authorization header and nothing else, so a cookie
+    // that a page could be tricked into sending cannot mint anything.
+    const minted = await call("POST", "/claim");
+    expect(minted.status).toBe(401);
+
+    const request = new Request("https://account.example/claim", {
+      method: "POST",
+      headers: { cookie, "cf-connecting-ip": "198.51.100.251" },
+    });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(request, configured(), ctx);
+    await waitOnExecutionContext(ctx);
+    expect(response.status).toBe(401);
+  });
+
+  it("mints a claim token on the page and shows it once", async () => {
+    const cookie = await signedIn("claimer@example.com");
+    const minted = await visit("POST", "/web/claim", { cookie, fields: {} });
+    expect(minted.status).toBe(200);
+    expect(minted.text).toMatch(/claim-[A-Za-z0-9_-]+/);
+
+    // And it is a real one: the server half redeems it.
+    const token = minted.text.match(/claim-[A-Za-z0-9_-]+/)[0];
+    const claimed = await call("POST", "/servers/claim", { body: { token } });
+    expect(claimed.status).toBe(201);
+  });
+
+  it("lists a claimed server with the addresses it publishes", async () => {
+    const cookie = await signedIn("owner@example.com");
+    const minted = await visit("POST", "/web/claim", { cookie, fields: {} });
+    const token = minted.text.match(/claim-[A-Za-z0-9_-]+/)[0];
+    const claimed = await call("POST", "/servers/claim", { body: { token, name: "The attic" } });
+
+    await call("PUT", `/servers/${claimed.body.server.id}/addresses`, {
+      body: { addresses: ["https://attic.example:32500"] },
+      token: claimed.body.secret,
+    });
+
+    const servers = await visit("GET", "/servers", { cookie });
+    expect(servers.text).toContain("The attic");
+    expect(servers.text).toContain("attic.example:32500");
+  });
+
+  it("approves a waiting device from the page", async () => {
+    const cookie = await signedIn("linker@example.com");
+    const started = await call("POST", "/link/start", {
+      body: { client: "Bask", device: "The big television" },
+    });
+    expect(started.status).toBe(200);
+
+    const approved = await visit("POST", "/web/link", {
+      cookie,
+      fields: { user_code: started.body.user_code },
+    });
+    expect(approved.status).toBe(200);
+    expect(approved.text).toContain("The big television");
+
+    const polled = await call("POST", "/link/poll", {
+      body: { device_code: started.body.device_code },
+    });
+    expect(polled.body.status).toBe("linked");
+  });
+
+  it("says so on the page when a code is not waiting", async () => {
+    const cookie = await signedIn("badcode@example.com");
+    const refused = await visit("POST", "/web/link", {
+      cookie,
+      fields: { user_code: "ZZZZ-ZZZZ" },
+    });
+    expect(refused.status).toBe(400);
+    expect(refused.text).toContain("not waiting for approval");
+  });
+
+  it("sends a stranger away from the servers page without a redirect loop", async () => {
+    const servers = await visit("GET", "/servers");
+    expect(servers.status).toBe(303);
+    expect(servers.location).toBe("/");
+  });
+
+  it("sends somebody already signed in past the sign-in form", async () => {
+    const cookie = await signedIn("already@example.com");
+    const home = await visit("GET", "/", { cookie });
+    expect(home.status).toBe(303);
+    expect(home.location).toBe("/servers");
+  });
+
+  it("clears the cookie on sign-out", async () => {
+    const cookie = await signedIn("leaving@example.com");
+    const out = await visit("POST", "/web/sign-out", { cookie, fields: {} });
+    expect(out.status).toBe(303);
+    expect(out.cookie).toContain("Max-Age=0");
+  });
+
+  it("will not create an account the form would then reject", async () => {
+    const short = await visit("POST", "/web/sign-up", {
+      fields: { email: "short@example.com", password: "tiny" },
+    });
+    expect(short.status).toBe(400);
+    expect(short.text).toContain("ten characters");
+    expect(short.cookie).toBeNull();
+
+    const taken = await signedIn("taken@example.com");
+    expect(taken).toBeTruthy();
+    const again = await visit("POST", "/web/sign-up", {
+      fields: { email: "taken@example.com", password: "a-long-enough-password" },
+    });
+    expect(again.status).toBe(409);
+    expect(again.text).toContain("already an account");
+  });
+
+  it("escapes what somebody typed rather than rendering it", async () => {
+    // A server name comes from whoever claimed it, and it is shown on a page.
+    const cookie = await signedIn("escaping@example.com");
+    const minted = await visit("POST", "/web/claim", { cookie, fields: {} });
+    const token = minted.text.match(/claim-[A-Za-z0-9_-]+/)[0];
+    await call("POST", "/servers/claim", {
+      body: { token, name: '<img src=x onerror="alert(1)">' },
+    });
+
+    const servers = await visit("GET", "/servers", { cookie });
+    expect(servers.text).not.toContain("<img src=x");
+    expect(servers.text).toContain("&lt;img src=x");
+  });
+
+  it("serves the page a device sends somebody to", async () => {
+    // linkStart hands a device verification_uri = PUBLIC_ORIGIN + "/link",
+    // so that path has to render rather than 404.
+    const cookie = await signedIn("visiting@example.com");
+    const started = await call("POST", "/link/start", {
+      body: { client: "Bask", device: "The set-top box" },
+    });
+
+    const prompt = await visit("GET", `/link?code=${started.body.user_code}`, { cookie });
+    expect(prompt.status).toBe(200);
+    expect(prompt.text).toContain(started.body.user_code);
+  });
+
+  it("sends a stranger at /link to sign in, then back to /link", async () => {
+    const prompt = await visit("GET", "/link");
+    expect(prompt.status).toBe(200);
+    expect(prompt.text).toContain('action="/web/sign-in"');
+    expect(prompt.text).toContain('value="/link"');
+
+    await signedIn("afterlink@example.com");
+    const back = await visit("POST", "/web/sign-in", {
+      fields: {
+        email: "afterlink@example.com",
+        password: "a-long-enough-password",
+        next: "/link",
+      },
+    });
+    expect(back.location).toBe("/link");
+  });
+
+  it("will not be redirected somewhere else after signing in", async () => {
+    await signedIn("offsite@example.com");
+    for (const next of ["https://elsewhere.example/", "//elsewhere.example/", "/\\evil"]) {
+      const away = await visit("POST", "/web/sign-in", {
+        fields: { email: "offsite@example.com", password: "a-long-enough-password", next },
+      });
+      expect(away.location).toBe("/servers");
+    }
+  });
+
+  it("answers HEAD the way it answers GET", async () => {
+    // A monitor, a link checker and a browser's preflight all send HEAD, and
+    // routing it as anything but GET lands them at the 404 at the bottom of
+    // the table.
+    const head = await visit("HEAD", "/");
+    expect(head.status).toBe(200);
+    expect(head.type).toContain("text/html");
+  });
+
+  it("serves its stylesheet as CSS", async () => {
+    const css = await visit("GET", "/styles.css");
+    expect(css.status).toBe(200);
+    expect(css.type).toContain("text/css");
+  });
+});

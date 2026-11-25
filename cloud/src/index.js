@@ -22,6 +22,7 @@ import {
   signAssertion,
   userCode,
 } from "./crypto.js";
+import { useOperations, webRoute } from "./web.js";
 import {
   bearer,
   clientAddress,
@@ -45,6 +46,18 @@ const ASSERTION_LIFETIME = 5 * 60;
 // What a polling client is told to wait between attempts.
 const POLL_INTERVAL = 5;
 
+// The pages use the same implementations as the API rather than their own
+// copies: two versions of a password comparison is exactly the kind of thing
+// that drifts apart and leaves one of them weaker.
+useOperations({
+  authenticate,
+  createAccount,
+  mintClaimToken,
+  serversFor,
+  approveCode,
+  issueBrowser: (env, accountID) => issueClient(env, accountID, "browser"),
+});
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -62,7 +75,10 @@ export default {
 
 async function route(request, env, url) {
   const path = url.pathname.replace(/\/+$/, "") || "/";
-  const method = request.method.toUpperCase();
+  // HEAD is a GET whose body the runtime drops, so routing it as GET is what
+  // makes a link checker and a monitor see the same answer a browser does
+  // rather than a 404 from the bottom of this table.
+  const method = request.method.toUpperCase() === "HEAD" ? "GET" : request.method.toUpperCase();
 
   if (method === "GET" && path === "/.well-known/bask-keys.json") return keys(env);
   if (method === "GET" && path === "/health") return json({ ok: true });
@@ -99,6 +115,11 @@ async function route(request, env, url) {
 
   const invitation = path.match(/^\/invitations\/([A-Za-z0-9_-]{1,128})\/accept$/);
   if (method === "POST" && invitation) return acceptInvitation(request, env, invitation[1]);
+
+  // The pages a person uses, tried last so that nothing here can shadow an
+  // API route. webRoute answers null for a path it does not serve.
+  const web = await webRoute(request, env, url, path, method);
+  if (web) return web;
 
   return fail(404, "no such endpoint");
 }
@@ -156,28 +177,34 @@ async function register(request, env) {
   if (password.length < 10) return fail(400, "a password needs at least ten characters");
   if (password.length > 512) return fail(400, "that password is unreasonably long");
 
-  const folded = foldEmail(email);
-  const salt = random(16);
-  const accountID = id();
-  const derived = await derive(password, salt);
+  const created = await createAccount(env, { email, password, name });
 
-  // The uniqueness is the database's to enforce, not ours to check first:
-  // checking and then inserting is two steps that two requests can interleave.
-  const inserted = await env.DB.prepare(
-    `INSERT INTO accounts (id, email, email_folded, name, password_hash, password_salt, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(email_folded) DO NOTHING`,
-  )
-    .bind(accountID, email, folded, name, derived, salt, now())
-    .run();
-
-  if (!inserted.meta.changes) {
+  if (!created) {
     // Deliberately the same answer as a successful registration would give a
     // stranger nothing: this route tells you an address is taken, because a
     // sign-up form that silently does nothing is worse than useless and the
     // address is one somebody is claiming to own anyway.
     return fail(409, "there is already an account with that address");
   }
-  return json({ account: { id: accountID, email, name } }, 201);
+  return json({ account: { id: created.id, email, name } }, 201);
+}
+
+/**
+ * createAccount inserts one, or returns null when the address is taken.
+ *
+ * The uniqueness is the database's to enforce, not ours to check first:
+ * checking and then inserting is two steps that two requests can interleave.
+ */
+async function createAccount(env, { email, password, name }) {
+  const salt = random(16);
+  const accountID = id();
+  const inserted = await env.DB.prepare(
+    `INSERT INTO accounts (id, email, email_folded, name, password_hash, password_salt, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(email_folded) DO NOTHING`,
+  )
+    .bind(accountID, email, foldEmail(email), name, await derive(password, salt), salt, now())
+    .run();
+  return inserted.meta.changes ? { id: accountID, email, name } : null;
 }
 
 /**
@@ -193,26 +220,36 @@ async function signIn(request, env) {
   const { value: body, error } = await readJSON(request);
   if (error) return error;
   const folded = foldEmail(body.email);
-  const password = String(body.password || "");
   const label = String(body.device || "browser").trim().slice(0, 64);
 
-  const account = await env.DB.prepare(
-    `SELECT id, email, name, password_hash, password_salt FROM accounts WHERE email_folded = ?`,
-  )
-    .bind(folded)
-    .first();
-
-  // The work happens either way. Answering a missing address faster than a
-  // wrong password is how an attacker enumerates which addresses exist.
-  const salt = account ? account.password_salt : random(16);
-  const derived = await derive(password, salt);
-  if (!account || !sameSecret(derived, account.password_hash)) {
+  const account = await authenticate(env, body.email, String(body.password || ""));
+  if (!account) {
     if (!(await limit(env, "signin-fail:" + folded))) return tooMany();
     return fail(401, "that email address and password do not match");
   }
 
   const token = await issueClient(env, account.id, label);
   return json({ token, account: { id: account.id, email: account.email, name: account.name } });
+}
+
+/**
+ * authenticate checks an email address and password, or returns null.
+ *
+ * The work happens either way. Answering a missing address faster than a wrong
+ * password is how an attacker enumerates which addresses exist, so the
+ * derivation runs against a throwaway salt when there is no such account.
+ */
+async function authenticate(env, email, password) {
+  const account = await env.DB.prepare(
+    `SELECT id, email, name, password_hash, password_salt FROM accounts WHERE email_folded = ?`,
+  )
+    .bind(foldEmail(email))
+    .first();
+
+  const salt = account ? account.password_salt : random(16);
+  const derived = await derive(password, salt);
+  if (!account || !sameSecret(derived, account.password_hash)) return null;
+  return { id: account.id, email: account.email, name: account.name };
 }
 
 async function issueClient(env, accountID, label) {
@@ -342,25 +379,44 @@ async function linkApprove(request, env) {
 
   const { value: body, error } = await readJSON(request);
   if (error) return error;
-  const code = normaliseUserCode(body.user_code);
-  if (!code) return fail(400, "that is not one of this service's codes");
+
+  const approved = await approveCode(env, account.id, body.user_code);
+  if (!approved.ok) return fail(approved.status, approved.why);
+  return json({ status: "approved", device: approved.device });
+}
+
+/**
+ * approveCode marks a waiting device as belonging to this account.
+ *
+ * The condition is in the UPDATE rather than in a read before it, so two
+ * approvals of the same code cannot both succeed.
+ */
+async function approveCode(env, accountID, userCode) {
+  const code = normaliseUserCode(userCode);
+  if (!code) {
+    return { ok: false, status: 400, why: "That is not one of this service's codes." };
+  }
 
   const updated = await env.DB.prepare(
     `UPDATE link_requests SET account_id = ?, approved_at = ?
       WHERE user_code = ? AND approved_at = 0 AND expires_at >= ?`,
   )
-    .bind(account.id, now(), code, now())
+    .bind(accountID, now(), code, now())
     .run();
   if (!updated.meta.changes) {
-    return fail(404, "that code is not waiting for approval; it may have expired");
+    return {
+      ok: false,
+      status: 404,
+      why: "That code is not waiting for approval; it may have expired.",
+    };
   }
 
   const waiting = await env.DB.prepare(
-    `SELECT client_name, device_name FROM link_requests WHERE user_code = ?`,
+    `SELECT device_name FROM link_requests WHERE user_code = ?`,
   )
     .bind(code)
     .first();
-  return json({ status: "approved", device: waiting ? waiting.device_name : "" });
+  return { ok: true, device: waiting ? waiting.device_name : "" };
 }
 
 /* ---------- servers ---------- */
@@ -427,17 +483,24 @@ async function mintClaim(request, env) {
   if (!account) return fail(401, "sign in first");
   if (!(await limit(env, "claim:" + account.id))) return tooMany();
 
-  // The "claim-" prefix is for the human in the middle: it makes the string
-  // recognisable in a setup form and obvious in a paste, and it is what Plex
-  // users already expect a claim token to look like.
+  return json(await mintClaimToken(env, account.id), 201);
+}
+
+/**
+ * mintClaimToken makes one claim token, good once and briefly.
+ *
+ * The "claim-" prefix is for the human in the middle: it makes the string
+ * recognisable in a setup form and obvious in a paste, and it is what Plex
+ * users already expect a claim token to look like.
+ */
+async function mintClaimToken(env, accountID) {
   const token = "claim-" + random(24);
   await env.DB.prepare(
     `INSERT INTO claim_tokens (token_hash, account_id, expires_at, created_at) VALUES (?, ?, ?, ?)`,
   )
-    .bind(await hash(token), account.id, now() + CLAIM_TTL, now())
+    .bind(await hash(token), accountID, now() + CLAIM_TTL, now())
     .run();
-
-  return json({ token, expiresIn: CLAIM_TTL }, 201);
+  return { token, expiresIn: CLAIM_TTL };
 }
 
 /**
@@ -546,7 +609,14 @@ async function setAddresses(request, env, serverID) {
 async function myServers(request, env) {
   const account = await accountFor(request, env);
   if (!account) return fail(401, "sign in first");
+  return json({ servers: await serversFor(env, account.id) });
+}
 
+/**
+ * serversFor lists what an account may reach, owned or shared, with the
+ * addresses each server has published.
+ */
+async function serversFor(env, accountID) {
   const { results } = await env.DB.prepare(
     `SELECT s.id, s.name, s.owner_id, a.address
        FROM memberships m
@@ -555,7 +625,7 @@ async function myServers(request, env) {
       WHERE m.account_id = ?
       ORDER BY s.created_at, a.position`,
   )
-    .bind(account.id)
+    .bind(accountID)
     .all();
 
   const byID = new Map();
@@ -564,13 +634,13 @@ async function myServers(request, env) {
       byID.set(row.id, {
         id: row.id,
         name: row.name,
-        owned: row.owner_id === account.id,
+        owned: row.owner_id === accountID,
         addresses: [],
       });
     }
     if (row.address) byID.get(row.id).addresses.push(row.address);
   }
-  return json({ servers: [...byID.values()] });
+  return [...byID.values()];
 }
 
 /* ---------- invitations ---------- */
