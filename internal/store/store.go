@@ -737,6 +737,21 @@ var migrations = []string{
 	// anything: placing one special should not freeze its title and its
 	// artwork too. A pass writes placement only where this is zero.
 	`ALTER TABLE items ADD COLUMN placed_by_hand INTEGER NOT NULL DEFAULT 0`,
+
+	// The account a cloud identity maps to, and whether an account may be
+	// used at all. See docs/CLOUD-ACCOUNTS.md.
+	//
+	// A cloud identity never arrives as an administrator and never arrives
+	// able to watch anything: the first assertion from a new subject creates
+	// an account here, inactive, and an administrator decides what it may
+	// reach. Active defaults to 1 so every account that already exists is
+	// unaffected -- they were created by an administrator, which is the
+	// approval this column records.
+	`ALTER TABLE users ADD COLUMN cloud_subject TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1`,
+	// One local account per cloud identity. Partial, because the empty string
+	// is every ordinary account and they must not collide with each other.
+	`CREATE UNIQUE INDEX users_cloud_subject ON users(cloud_subject) WHERE cloud_subject <> ''`,
 }
 
 func (d *DB) migrate(ctx context.Context) error {

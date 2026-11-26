@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/inknironapps/bask-media-server/internal/artwork"
+	"github.com/inknironapps/bask-media-server/internal/cloud"
 	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/jobs"
 	"github.com/inknironapps/bask-media-server/internal/nowplaying"
@@ -96,6 +97,12 @@ type Server struct {
 	BackupDir   string
 	KeepBackups int
 
+	// Cloud is the link to the Bask account service. Nil means this server
+	// was built without it, which the page reports as unsupported rather
+	// than as unclaimed -- they are different situations and only one of
+	// them has a claim button.
+	Cloud *cloud.Service
+
 	// Started is when the process came up, for the uptime on the status page.
 	// Zero means the first request sets it.
 	Started time.Time
@@ -149,6 +156,11 @@ func (s *Server) Handler() http.Handler {
 	authed("GET /admin/api/jobs", s.listJobs)
 	authed("POST /admin/api/jobs", s.startJob)
 	authed("POST /admin/api/jobs/{id}/cancel", s.cancelJob)
+
+	authed("GET /admin/api/cloud", s.cloudStatus)
+	authed("POST /admin/api/cloud/claim", s.claimCloud)
+	authed("DELETE /admin/api/cloud", s.unlinkCloud)
+	authed("PUT /admin/api/cloud/addresses", s.publishCloudAddresses)
 
 	authed("GET /admin/api/users", s.listUsers)
 	authed("POST /admin/api/users", s.createUser)

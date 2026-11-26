@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/inknironapps/bask-media-server/internal/artwork"
+	"github.com/inknironapps/bask-media-server/internal/cloud"
 	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/scan"
@@ -54,6 +55,12 @@ type Server struct {
 	// means this server does not offer that, which is also what no key
 	// looks like.
 	Fetcher *subtitles.Fetcher
+
+	// Cloud verifies what the Bask account service signs, for the clients
+	// that arrive with an assertion rather than a token this server issued.
+	// Nil is a server nobody has claimed: local accounts, local tokens, and
+	// nothing reaches anywhere. See docs/CLOUD-ACCOUNTS.md.
+	Cloud *cloud.Service
 }
 
 type credKey struct{}
@@ -153,6 +160,25 @@ func (s *Server) authenticate(next http.HandlerFunc) http.HandlerFunc {
 		if token == "" {
 			token = r.URL.Query().Get("X-Plex-Token")
 		}
+
+		// An account-service assertion, either in its own header or in the
+		// token header a client already sends everywhere. Checked first so a
+		// JWS is never put through the token lookup, which would hash it and
+		// report it as simply unknown.
+		assertion := r.Header.Get(AssertionHeader)
+		if assertion == "" && looksLikeAnAssertion(token) {
+			assertion = token
+		}
+		if assertion != "" && s.Cloud != nil {
+			cred, err := s.cloudCredential(r.Context(), assertion)
+			if err != nil {
+				s.refuseCloud(w, err)
+				return
+			}
+			next(w, r.WithContext(context.WithValue(r.Context(), credKey{}, cred)))
+			return
+		}
+
 		cred, err := s.Store.Credential(r.Context(), token)
 		if errors.Is(err, store.ErrNotFound) {
 			// 401 with the header Plex clients expect, so a client prompts for

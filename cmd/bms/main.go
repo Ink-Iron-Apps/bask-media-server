@@ -26,6 +26,7 @@ import (
 
 	"github.com/inknironapps/bask-media-server/internal/admin"
 	"github.com/inknironapps/bask-media-server/internal/artwork"
+	"github.com/inknironapps/bask-media-server/internal/cloud"
 	"github.com/inknironapps/bask-media-server/internal/detect"
 	"github.com/inknironapps/bask-media-server/internal/domain"
 	"github.com/inknironapps/bask-media-server/internal/enrich"
@@ -451,9 +452,16 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 		},
 	}
 
+	// The link to the Bask account service, if this server has ever been
+	// claimed. Constructed unconditionally and cheaply: it reads nothing
+	// until something asks it to, and an unclaimed server answers every
+	// question with "not linked". See docs/CLOUD-ACCOUNTS.md.
+	accounts := &cloud.Service{Values: db, Log: log}
+
 	api := &plexapi.Server{
 		Store: db, Log: log, Name: cfg.name, MachineID: machineID, Version: version,
 		Artwork: images, Subtitles: converter, Playing: playing, Fetcher: fetcher,
+		Cloud: accounts,
 	}
 
 	// One listener for every surface. The Plex-compatible API owns the root,
@@ -506,6 +514,7 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 				// what is actually there rather than where it would guess.
 				BackupDir:   cfg.backupDir,
 				KeepBackups: cfg.keepBackups,
+				Cloud:       accounts,
 			}
 			if transcoder != nil {
 				panel.Transcoding = transcoder.Sessions

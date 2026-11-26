@@ -26,7 +26,153 @@ func (d *DB) CreateUser(ctx context.Context, username string, admin bool) (*doma
 	if err != nil {
 		return nil, fmt.Errorf("create user: %w", err)
 	}
-	return &domain.User{ID: id, Username: username, Admin: admin, CreatedAt: now}, nil
+	// Active: an administrator making an account is the approval that the
+	// `active` column exists to record for the accounts nobody approved.
+	return &domain.User{ID: id, Username: username, Admin: admin, CreatedAt: now, Active: true}, nil
+}
+
+// UserForCloudSubject resolves an account id the account service signs for to
+// the local account it maps to, or [ErrNotFound] the first time one turns up.
+func (d *DB) UserForCloudSubject(ctx context.Context, subject string) (*domain.User, error) {
+	if subject == "" {
+		return nil, ErrNotFound
+	}
+	var (
+		u         domain.User
+		createdAt int64
+	)
+	err := d.sql.QueryRowContext(ctx,
+		`SELECT id, username, admin, created_at, cloud_subject, active FROM users WHERE cloud_subject = ?`, subject).
+		Scan(&u.ID, &u.Username, &u.Admin, &createdAt, &u.CloudSubject, &u.Active)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve cloud subject: %w", err)
+	}
+	u.CreatedAt = fromMillis(createdAt)
+	return &u, nil
+}
+
+// CreateCloudUser records a local account for a cloud identity that has
+// presented a verified assertion for the first time.
+//
+// Never an administrator and never active: an assertion says who somebody is,
+// and what they may reach here is the administrator's decision, made on this
+// machine. The username is taken from the assertion only as a starting label
+// and is made unique against what already exists, because two people with the
+// same display name must not collide into one account.
+func (d *DB) CreateCloudUser(ctx context.Context, subject, name, email string) (*domain.User, error) {
+	if subject == "" {
+		return nil, errors.New("a cloud account needs a subject")
+	}
+	now := time.Now().UTC()
+	for attempt := 0; attempt < 50; attempt++ {
+		username := candidateUsername(name, email, subject, attempt)
+		res, err := d.sql.ExecContext(ctx,
+			`INSERT INTO users (username, admin, created_at, cloud_subject, active) VALUES (?, 0, ?, ?, 0)`,
+			username, millis(now), subject)
+		if err != nil {
+			// A clash on the username is the one error worth another go: the
+			// unique index on cloud_subject means a clash there is a race
+			// with another request for the same person, and the caller should
+			// see that as the account it is.
+			if isUniqueViolation(err) && !strings.Contains(err.Error(), "cloud_subject") {
+				continue
+			}
+			return nil, fmt.Errorf("create cloud user: %w", err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return nil, fmt.Errorf("create cloud user: %w", err)
+		}
+		return &domain.User{
+			ID: id, Username: username, Admin: false, CreatedAt: now,
+			CloudSubject: subject, Active: false,
+		}, nil
+	}
+	return nil, errors.New("could not find a free username for a cloud account")
+}
+
+// candidateUsername is the label a cloud account starts with.
+//
+// The display name first because it is what the administrator will recognise
+// in the list, then the local part of the email, then the subject -- which is
+// opaque but always there, so there is no case where this produces nothing.
+func candidateUsername(name, email, subject string, attempt int) string {
+	base := strings.TrimSpace(name)
+	if base == "" {
+		if local, _, found := strings.Cut(email, "@"); found {
+			base = strings.TrimSpace(local)
+		}
+	}
+	if base == "" {
+		base = "cloud-" + subject
+	}
+	if len(base) > 48 {
+		base = base[:48]
+	}
+	if attempt == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s (%d)", base, attempt+1)
+}
+
+func isUniqueViolation(err error) bool {
+	// The driver is pure Go and reports this in its message rather than as a
+	// typed code, so the message is what there is to read.
+	return strings.Contains(strings.ToLower(err.Error()), "unique")
+}
+
+// CredentialForUser builds a credential for an account that authenticated
+// without a token row -- which is what a cloud assertion is.
+//
+// The same grants an ordinary credential gets, read the same way, so a cloud
+// identity reaches exactly what the administrator granted its account and
+// nothing is special-cased into a wider view. An account that is not active
+// resolves to [ErrNotFound]: it exists to be granted libraries, not to watch.
+func (d *DB) CredentialForUser(ctx context.Context, userID int64) (*domain.Credential, error) {
+	var (
+		u            domain.User
+		createdAt    int64
+		ceiling      int
+		allowUnrated bool
+		maxStreams   int
+		maxBitRate   int64
+	)
+	err := d.sql.QueryRowContext(ctx,
+		`SELECT id, username, admin, created_at, cloud_subject, active,
+		        max_rating_age, allow_unrated, max_streams, max_bitrate
+		   FROM users WHERE id = ?`, userID).
+		Scan(&u.ID, &u.Username, &u.Admin, &createdAt, &u.CloudSubject, &u.Active,
+			&ceiling, &allowUnrated, &maxStreams, &maxBitRate)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve account: %w", err)
+	}
+	if !u.Active {
+		return nil, ErrNotFound
+	}
+	u.CreatedAt = fromMillis(createdAt)
+
+	// Unscoped for the same reason [Credential] gives: a narrowed handle
+	// resolving a credential would filter the rows that decide the narrowing.
+	open := d.unscoped()
+	account, err := open.UserSections(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	// No token row, so there is no device grant to combine: the account's own
+	// grants are the whole of it. TokenID stays zero, which is what every
+	// caller that notes a device checks for.
+	sections, restricted := narrow(account, nil)
+	return &domain.Credential{
+		User: u, TokenID: 0, Restricted: restricted, Sections: sections,
+		Ceiling: ceiling, AllowUnrated: allowUnrated,
+		MaxStreams: maxStreams, MaxBitRate: maxBitRate,
+	}, nil
 }
 
 // CountUsers reports how many accounts exist, which is how first run is
@@ -89,16 +235,22 @@ func (d *DB) Credential(ctx context.Context, token string) (*domain.Credential, 
 		maxBitRate   int64
 	)
 	err := d.sql.QueryRowContext(ctx,
-		`SELECT t.id, u.id, u.username, u.admin, u.created_at,
+		`SELECT t.id, u.id, u.username, u.admin, u.created_at, u.cloud_subject, u.active,
 		        u.max_rating_age, u.allow_unrated, u.max_streams, u.max_bitrate
 		   FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.hash = ?`, sum[:]).
-		Scan(&tokenID, &u.ID, &u.Username, &u.Admin, &createdAt,
+		Scan(&tokenID, &u.ID, &u.Username, &u.Admin, &createdAt, &u.CloudSubject, &u.Active,
 			&ceiling, &allowUnrated, &maxStreams, &maxBitRate)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("resolve token: %w", err)
+	}
+	// An account that is not active authenticates as nothing, whatever it is
+	// holding. Suspending somebody and leaving their television working would
+	// not be suspending them.
+	if !u.Active {
+		return nil, ErrNotFound
 	}
 	u.CreatedAt = fromMillis(createdAt)
 

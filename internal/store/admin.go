@@ -203,7 +203,8 @@ func (d *DB) SweepSessions(ctx context.Context) (int, error) {
 
 // Users lists every account, oldest first.
 func (d *DB) Users(ctx context.Context) ([]domain.User, error) {
-	rows, err := d.sql.QueryContext(ctx, `SELECT id, username, admin, created_at FROM users ORDER BY id`)
+	rows, err := d.sql.QueryContext(ctx,
+		`SELECT id, username, admin, created_at, cloud_subject, active FROM users ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
@@ -215,7 +216,7 @@ func (d *DB) Users(ctx context.Context) ([]domain.User, error) {
 			u         domain.User
 			createdAt int64
 		)
-		if err := rows.Scan(&u.ID, &u.Username, &u.Admin, &createdAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Admin, &createdAt, &u.CloudSubject, &u.Active); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
 		u.CreatedAt = fromMillis(createdAt)
@@ -231,8 +232,8 @@ func (d *DB) User(ctx context.Context, id int64) (*domain.User, error) {
 		createdAt int64
 	)
 	err := d.sql.QueryRowContext(ctx,
-		`SELECT id, username, admin, created_at FROM users WHERE id = ?`, id).
-		Scan(&u.ID, &u.Username, &u.Admin, &createdAt)
+		`SELECT id, username, admin, created_at, cloud_subject, active FROM users WHERE id = ?`, id).
+		Scan(&u.ID, &u.Username, &u.Admin, &createdAt, &u.CloudSubject, &u.Active)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -248,6 +249,19 @@ func (d *DB) SetUserAdmin(ctx context.Context, id int64, admin bool) error {
 	res, err := d.sql.ExecContext(ctx, `UPDATE users SET admin = ? WHERE id = ?`, admin, id)
 	if err != nil {
 		return fmt.Errorf("set admin: %w", err)
+	}
+	return affected(res, "user")
+}
+
+// SetUserActive allows or stops an account being used.
+//
+// What an administrator does with a cloud identity that has turned up and is
+// waiting: until this is set, the account exists so libraries can be granted
+// to it and authenticates as nothing.
+func (d *DB) SetUserActive(ctx context.Context, id int64, active bool) error {
+	res, err := d.sql.ExecContext(ctx, `UPDATE users SET active = ? WHERE id = ?`, active, id)
+	if err != nil {
+		return fmt.Errorf("set active: %w", err)
 	}
 	return affected(res, "user")
 }

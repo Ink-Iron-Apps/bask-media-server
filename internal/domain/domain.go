@@ -462,7 +462,24 @@ type User struct {
 	Username  string
 	Admin     bool
 	CreatedAt time.Time
+
+	// CloudSubject is the account id the Bask account service signs for, when
+	// this account came from there. Empty for every account an administrator
+	// made here, which is most of them.
+	CloudSubject string
+
+	// Active is whether this account may be used at all.
+	//
+	// It exists for cloud identities: the first assertion from an unknown
+	// subject creates an account so the administrator has something to grant
+	// libraries to, and it must not be able to watch anything before they
+	// have. Every account made by an administrator is active, because making
+	// it was the approval.
+	Active bool
 }
+
+// FromCloud reports whether the account service vouches for this account.
+func (u User) FromCloud() bool { return u.CloudSubject != "" }
 
 // Token is a long-lived credential a client presents on every request, in the
 // header or the query string. Stored hashed: a leaked database should not be a

@@ -392,6 +392,14 @@ type userView struct {
 	MaxStreams   int   `json:"maxStreams"`
 	MaxBitRate   int64 `json:"maxBitRate"`
 	HasPIN       bool  `json:"hasPin"`
+
+	// FromCloud is whether the account service vouches for this account, and
+	// Active whether it may be used at all. A cloud identity that has just
+	// turned up is the one account that is not active, and these two are what
+	// put it in front of the administrator rather than leaving it in the list
+	// looking like any other.
+	FromCloud bool `json:"fromCloud"`
+	Active    bool `json:"active"`
 }
 
 func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
@@ -427,7 +435,7 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 			Tokens: len(tokens), Self: me != nil && me.ID == u.ID, Sections: sections,
 			Ceiling: limits.Ceiling, AllowUnrated: limits.AllowUnrated,
 			MaxStreams: limits.MaxStreams, MaxBitRate: limits.MaxBitRate,
-			HasPIN: limits.HasPIN,
+			HasPIN: limits.HasPIN, FromCloud: u.FromCloud(), Active: u.Active,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -483,13 +491,17 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		MaxStreams   *int    `json:"maxStreams"`
 		MaxBitRate   *int64  `json:"maxBitRate"`
 		PIN          *string `json:"pin"`
+
+		// Whether the account may be used at all. What an administrator sets
+		// on a cloud identity that has turned up and is waiting.
+		Active *bool `json:"active"`
 	}
 	if !decode(w, r, &body) {
 		return
 	}
 	if body.Admin == nil && body.Sections == nil && body.Ceiling == nil &&
 		body.AllowUnrated == nil && body.MaxStreams == nil && body.MaxBitRate == nil &&
-		body.PIN == nil {
+		body.PIN == nil && body.Active == nil {
 		writeError(w, http.StatusBadRequest, "nothing to change")
 		return
 	}
@@ -545,6 +557,20 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.DB.SetUserLimits(r.Context(), id, limits); err != nil {
 			s.fail(w, "set account limits", err)
+			return
+		}
+	}
+	if body.Active != nil {
+		// An administrator must not suspend themselves out of the server: the
+		// last one standing is what stops this becoming unadministrable, same
+		// as demotion and deletion.
+		if user.Active && !*body.Active && user.Admin {
+			if ok, err := s.lastAdmin(w, r); err != nil || ok {
+				return
+			}
+		}
+		if err := s.DB.SetUserActive(r.Context(), id, *body.Active); err != nil {
+			s.fail(w, "set active", err)
 			return
 		}
 	}

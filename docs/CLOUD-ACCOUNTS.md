@@ -186,6 +186,59 @@ live, so there is never a moment when a valid assertion cannot be checked.
 The private keys live in Workers Secrets Store and are never in the database,
 in the repository, or in a log.
 
+## On the server
+
+What the administrator does, and what a client presents.
+
+### Claiming, from the admin interface
+
+Settings carries a Bask account card. The administrator signs in to the service
+in a browser, asks it for a claim token, and pastes that in; the server redeems
+it, fetches the published keys and pins them, and stores the whole link in the
+`server` table under `cloud.link`. The secret is in that row and in nothing the
+interface ever serves — the card shows the issuer, the server id and when it was
+claimed, and no more.
+
+A claim that cannot fetch the keys fails and stores nothing. A link with a
+secret and no keys would look claimed while verifying nothing a client
+presented, which is worse than being unclaimed.
+
+The same card publishes the addresses this server can be reached at, and
+unlinks. Unlinking leaves the local accounts a cloud identity created: they hold
+library grants somebody made by hand, and removing them would quietly undo that
+work. Nothing can authenticate as them while there is no link.
+
+### Presenting an assertion
+
+```
+X-Bask-Assertion: <compact JWS>
+```
+
+Also accepted in `X-Plex-Token`, in the header or the query string, because a
+client that speaks this dialect already sends that everywhere and a stream URL
+can carry nothing else. The two cannot be confused: an assertion has two dots
+in it and a token this server issued has none. A server that has not been
+claimed ignores the header entirely and its own tokens are untouched.
+
+### Becoming a local account
+
+A verified `sub` is looked up in `users.cloud_subject`. The first time one
+turns up, an account is created for it — never an administrator, never active —
+named from the assertion, and the request is refused with **403** rather than
+401: the identity is good, signing in again would not help, and a client told
+401 would loop asking the service for another assertion. The account appears on
+the Users page marked *invited* and *waiting*, with an Allow button, and the
+Settings card counts how many are.
+
+Once allowed it reaches exactly the libraries that account was granted, read
+through the same path every other credential uses. There is no token row, so
+there is no device grant to combine and nothing to revoke per device; revoking
+is done at the service, or by suspending the account here.
+
+`users.active` applies to every account, not only to these. An account that is
+not active authenticates as nothing whatever it is holding — suspending somebody
+and leaving their television working would not be suspending them.
+
 ## What the service stores
 
 Six tables, and deliberately nothing else:

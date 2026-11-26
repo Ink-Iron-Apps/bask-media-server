@@ -1646,12 +1646,34 @@ views.users = async function (main) {
 
   const rows = users.flatMap((user) => [el('tr', {},
     el('td', {}, el('strong', { text: user.username }), user.self ? el('span', { class: 'muted', text: ' (you)' }) : null),
-    el('td', {}, user.admin ? el('span', { class: 'badge done', text: 'administrator' }) : el('span', { class: 'badge', text: 'viewer' })),
-    el('td', { class: 'muted', text: count(user.tokens, 'token') }),
+    el('td', {},
+      user.admin ? el('span', { class: 'badge done', text: 'administrator' }) : el('span', { class: 'badge', text: 'viewer' }),
+      // An invited account arrives here able to reach nothing, so saying so
+      // in the row is what tells an administrator there is something to do.
+      user.active === false ? el('span', { class: 'badge failed', text: 'waiting' }) : null,
+      user.fromCloud ? el('span', { class: 'badge', text: 'invited' }) : null),
+    el('td', { class: 'muted', text: user.fromCloud ? 'a Bask account' : count(user.tokens, 'token') }),
     el('td', { class: 'muted', text: when(user.createdAt) }),
     el('td', { class: 'right' }, el('div', { class: 'row actions' },
-      el('button', { text: 'Tokens', on: { click: () => showTokens(user) } }),
+      // An invited account holds no token: the account service signs for it
+      // on each request, so there is nothing here to list or revoke.
+      user.fromCloud ? null : el('button', { text: 'Tokens', on: { click: () => showTokens(user) } }),
       el('button', { text: 'Limits', on: { click: () => editLimits(user) } }),
+      el('button', {
+        class: user.active === false ? 'primary' : '',
+        text: user.active === false ? 'Allow' : 'Suspend',
+        on: {
+          click: async () => {
+            if (user.active !== false
+              && !confirm('Suspend "' + user.username + '"?\n\nEvery credential they hold stops working at once. Their watched state and resume positions are kept, and allowing them again puts everything back.')) return;
+            try {
+              await api('PATCH', '/users/' + user.id, { active: user.active === false });
+              toast(user.active === false ? 'Allowed.' : 'Suspended.');
+              render();
+            } catch (err) { failed(err); }
+          },
+        },
+      }),
       el('button', {
         text: user.admin ? 'Make viewer' : 'Make administrator',
         on: {
@@ -1692,7 +1714,8 @@ views.users = async function (main) {
 
   fill(main,
     el('div', { class: 'head' }, el('div', {}, el('h1', { text: 'Users' }),
-      el('p', { class: 'muted', text: 'Accounts live on this server. The libraries ticked under an account are the only ones it can reach, and a device can be narrowed further under Tokens but never past this.' }))),
+      el('p', { class: 'muted', text: 'Accounts live on this server. The libraries ticked under an account are the only ones it can reach, and a device can be narrowed further under Tokens but never past this. '
+        + 'An account marked invited comes from a Bask account and is vouched for by the account service; what it may watch is still decided here.' }))),
     el('div', { class: 'card' }, el('table', {},
       el('thead', {}, el('tr', {}, ['Account', 'Can', 'Credentials', 'Added', ''].map(
         (h, i) => el('th', { class: i === 4 ? 'right' : '', text: h })))),
@@ -2062,8 +2085,8 @@ function forgetCard(draw) {
 /* ---------- settings ---------- */
 
 views.settings = async function (main) {
-  const [settings, backups, hooks] = await Promise.all([
-    api('GET', '/settings'), api('GET', '/backups'), api('GET', '/webhooks'),
+  const [settings, backups, hooks, account] = await Promise.all([
+    api('GET', '/settings'), api('GET', '/backups'), api('GET', '/webhooks'), api('GET', '/cloud'),
   ]);
   const name = el('input', { id: 'server-name', value: settings.name || '' });
   const key = el('input', { id: 'tmdb-key', type: 'password', placeholder: settings.tmdbKeyStored ? 'stored' : 'not set', spellcheck: 'false' });
@@ -2271,12 +2294,111 @@ views.settings = async function (main) {
       el('h2', { text: 'Tools found on this machine' }),
       el('table', {}, el('tbody', {}, tools)),
       el('p', { class: 'muted', text: 'Both are optional. Without them the library still scans, browses and plays; it has no durations, chapters or detected intros.' })),
+    accountServiceCard(account),
     webhookCard(hooks),
     backupCard(backups),
     el('div', { class: 'card' },
       el('h2', { text: 'This sign-in' }),
       el('p', { class: 'muted', text: 'A browser session lasts ' + settings.sessionDays + ' days and is separate from the tokens clients hold, so signing out here signs nothing else out.' })));
 };
+
+// accountServiceCard is claiming this server with a Bask account, and letting
+// it go again.
+//
+// Optional, and the card says so: a server nobody claims serves its library
+// exactly as it always has. What claiming buys is being able to invite
+// somebody without making them an account here, and what it never buys is the
+// service deciding anything -- which libraries a guest reaches is set on the
+// Users page, on this machine.
+function accountServiceCard(account) {
+  const data = account || {};
+  if (data.supported === false) {
+    return el('div', { class: 'card' },
+      el('h2', { text: 'Bask account' }),
+      el('p', { class: 'muted', text: 'This server was built without account-service support, so it cannot be claimed. Local accounts and the tokens clients hold work as they always have.' }));
+  }
+
+  if (data.linked && data.link) {
+    const addresses = el('textarea', {
+      id: 'cloud-addresses', rows: '3', spellcheck: 'false',
+      placeholder: 'https://bask.example.com\nhttp://192.168.1.10:32400',
+    });
+    return el('div', { class: 'card' },
+      el('h2', { text: 'Bask account' }),
+      el('table', {}, el('tbody', {},
+        el('tr', {}, el('th', { text: 'Service' }), el('td', { class: 'mono', text: data.link.issuer })),
+        el('tr', {}, el('th', { text: 'This server' }), el('td', { class: 'mono', text: data.link.serverId })),
+        el('tr', {}, el('th', { text: 'Claimed' }), el('td', { class: 'muted', text: when(data.link.claimedAt) })))),
+      data.waiting
+        ? el('p', {}, el('a', { href: '#/users',
+          text: data.waiting === 1
+            ? 'One account is waiting to be allowed →'
+            : data.waiting + ' accounts are waiting to be allowed →' }))
+        : el('p', { class: 'muted', text: 'Nobody is waiting. An invited account appears on the Users page the first time it asks for something, and reaches nothing until you allow it.' }),
+      el('h3', { text: 'Where this server can be reached' }),
+      el('label', { for: 'cloud-addresses', text: 'One address per line' }), addresses,
+      el('p', { class: 'muted', text: 'The service hands these to clients and never connects to them, so it never learns whether they work. A client tries them in order. Nothing here is proxied: reaching this server is still your arrangement -- a tunnel, a tailnet, a forwarded port.' }),
+      el('div', { class: 'row' },
+        el('button', {
+          class: 'primary',
+          text: 'Publish addresses',
+          on: {
+            click: async () => {
+              const lines = addresses.value.split('\n').map((line) => line.trim()).filter(Boolean);
+              if (!lines.length) { toast('That needs at least one address.', true); return; }
+              try {
+                await api('PUT', '/cloud/addresses', { addresses: lines });
+                toast('Published.');
+              } catch (err) { failed(err); }
+            },
+          },
+        }),
+        el('button', {
+          class: 'danger',
+          text: 'Unlink this server',
+          on: {
+            click: async () => {
+              if (!confirm('Unlink this server?\n\nInvited accounts stop being able to sign in. The accounts themselves stay, with whatever libraries you granted them, so claiming again does not undo your work.')) return;
+              try {
+                await api('DELETE', '/cloud');
+                toast('Unlinked.');
+                render();
+              } catch (err) { failed(err); }
+            },
+          },
+        })));
+  }
+
+  const issuer = el('input', { id: 'cloud-issuer', value: 'https://account.baskmedia.app', spellcheck: 'false' });
+  const token = el('input', { id: 'cloud-claim', type: 'password', placeholder: 'claim-...', spellcheck: 'false' });
+  const name = el('input', { id: 'cloud-name', placeholder: 'the name your account will show' });
+  return el('div', { class: 'card' },
+    el('h2', { text: 'Bask account' }),
+    el('p', { class: 'muted', text: 'Claiming this server lets you invite somebody without giving them an account on this machine. It is optional, and nothing changes for the clients you already have.' }),
+    el('label', { for: 'cloud-issuer', text: 'Account service' }), issuer,
+    el('label', { for: 'cloud-claim', text: 'Claim token' }), token,
+    el('label', { for: 'cloud-name', text: 'Name for this server' }), name,
+    el('p', { class: 'muted', text: 'Sign in to the account service in a browser and ask it for a claim token, then paste it here. It is good for four minutes and once only, so it is expired by the time it reaches anybody\'s scrollback -- and you never type your account password into this server.' }),
+    el('div', { class: 'row' }, el('button', {
+      class: 'primary',
+      text: 'Claim this server',
+      on: {
+        click: async () => {
+          if (!token.value.trim()) { toast('That needs a claim token.', true); return; }
+          try {
+            await api('POST', '/cloud/claim', {
+              issuer: issuer.value.trim(),
+              token: token.value.trim(),
+              name: name.value.trim(),
+            });
+            token.value = '';
+            toast('Claimed.');
+            render();
+          } catch (err) { failed(err); }
+        },
+      },
+    })));
+}
 
 // webhookCard is where this server tells somewhere else what happened.
 //
