@@ -464,6 +464,18 @@ func run(ctx context.Context, log *slog.Logger, cfg runConfig) error {
 		Cloud: accounts,
 	}
 
+	// Where a browser that asks for the root is sent. The watching interface
+	// when there is one, because that is what most people opening the
+	// address want; the admin panel otherwise, since a server with no
+	// watching interface is one being set up. The API still owns the root
+	// for every request that is not a browser.
+	switch {
+	case cfg.webUI:
+		api.RootRedirect = "/web/"
+	case cfg.adminUI:
+		api.RootRedirect = "/admin/"
+	}
+
 	// One listener for every surface. The Plex-compatible API owns the root,
 	// because that is where clients look for it; the interfaces are mounted
 	// under /admin and /web, where Go's mux redirects the bare path to the

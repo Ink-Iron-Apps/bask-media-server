@@ -316,3 +316,71 @@ func TestSearchFindsAcrossSections(t *testing.T) {
 }
 
 func itoa(id int64) string { return strconv.FormatInt(id, 10) }
+
+// The root is the address a person pastes into a browser and the address a
+// client checks its token against. Both have to work, and the only thing
+// telling them apart is the Accept header.
+func TestRootSendsABrowserToTheInterface(t *testing.T) {
+	srv, _, _ := library(t)
+	srv.RootRedirect = "/web/"
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302; body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "/web/" {
+		t.Fatalf("Location = %q", got)
+	}
+}
+
+func TestRootAnswersAClientAsTheAPI(t *testing.T) {
+	// Anchor: Bask's "add a server by address and token" flow checks a token
+	// by reading this container. A 404 here, or a redirect, is a server the
+	// client reports as unreachable while every other route works.
+	srv, token, _ := library(t)
+	srv.RootRedirect = "/web/"
+
+	mc := get(t, srv, token, "/")
+
+	if mc["machineIdentifier"] != "machine-1" {
+		t.Fatalf("machineIdentifier = %v", mc["machineIdentifier"])
+	}
+	if mc["friendlyName"] != "BMS test" {
+		t.Fatalf("friendlyName = %v", mc["friendlyName"])
+	}
+}
+
+func TestRootRefusesAClientWithoutAToken(t *testing.T) {
+	srv, _, _ := library(t)
+	srv.RootRedirect = "/web/"
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestRootStaysTheAPIWithNoInterfaceMounted(t *testing.T) {
+	// A server started with both interfaces off has nowhere to send a
+	// browser, and inventing a destination would be worse than the API's own
+	// answer.
+	srv, token, _ := library(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Accept", "text/html")
+	req.Header.Set("X-Plex-Token", token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+}

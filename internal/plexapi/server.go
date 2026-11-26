@@ -61,6 +61,17 @@ type Server struct {
 	// Nil is a server nobody has claimed: local accounts, local tokens, and
 	// nothing reaches anywhere. See docs/CLOUD-ACCOUNTS.md.
 	Cloud *cloud.Service
+
+	// RootRedirect is where a browser that asks for the root is sent: the
+	// watching interface when one is mounted, otherwise the admin panel.
+	//
+	// The root of a Plex-dialect server belongs to the API, because that is
+	// the request a client makes to check its token. A person typing the
+	// address into a browser is asking a different question with the same
+	// URL, and answering it with a MediaContainer -- or a 404 -- leaves them
+	// guessing which path to try. Empty means no interface is mounted and the
+	// root answers only as the API.
+	RootRedirect string
 }
 
 type credKey struct{}
@@ -73,6 +84,12 @@ func (s *Server) Handler() http.Handler {
 	// Unauthenticated: a client asks who this is before it has a token, and
 	// Bask's "connect to a server" flow needs exactly this much.
 	mux.HandleFunc("GET /identity", s.identity)
+
+	// The root, which is two requests wearing one URL: a browser is sent to
+	// an interface, and everything else is answered as the API. Registered
+	// unauthenticated because the redirect happens before any credential
+	// would be read; the container behind it is not.
+	mux.HandleFunc("GET /{$}", s.root)
 
 	authed := func(pattern string, h http.HandlerFunc) {
 		mux.Handle(pattern, s.authenticate(h))
@@ -255,6 +272,63 @@ func (s *Server) friendlyName(ctx context.Context) string {
 		return stored
 	}
 	return s.Name
+}
+
+// root answers the address somebody pasted into a browser and the address a
+// client checks its token against, which are the same address.
+//
+// A browser is redirected to an interface. Anything else gets the root
+// MediaContainer, which is what a Plex client reads to learn a server's
+// identity once it holds a credential -- and, because it is authenticated, the
+// cheapest way for a client to find out whether the token it was given works.
+func (s *Server) root(w http.ResponseWriter, r *http.Request) {
+	if s.RootRedirect != "" && wantsHTML(r) {
+		http.Redirect(w, r, s.RootRedirect, http.StatusFound)
+		return
+	}
+	s.authenticate(s.serverInfo)(w, r)
+}
+
+// wantsHTML reports whether this request came from something rendering pages
+// rather than reading an API.
+//
+// Browsers put text/html first in Accept; Plex clients ask for XML or JSON, or
+// send no Accept header at all. A request that says it will take anything
+// (*/*) is a tool rather than a browser, so it is answered as the API.
+func wantsHTML(r *http.Request) bool {
+	for _, part := range strings.Split(r.Header.Get("Accept"), ",") {
+		if media, _, _ := strings.Cut(strings.TrimSpace(part), ";"); media == "text/html" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) serverInfo(w http.ResponseWriter, r *http.Request) {
+	write(w, r, container{
+		Size:              0,
+		MachineIdentifier: s.MachineID,
+		Version:           s.Version,
+		FriendlyName:      s.friendlyName(r.Context()),
+		// Whether this server belongs to a Bask account. Reported here and
+		// not on /identity, which anybody can read.
+		Claimed: s.claimed(r.Context()),
+	})
+}
+
+// claimed reports whether this server is linked to an account service.
+func (s *Server) claimed(ctx context.Context) bool {
+	if s.Cloud == nil {
+		return false
+	}
+	link, err := s.Cloud.Link(ctx)
+	if err != nil {
+		if !errors.Is(err, cloud.ErrNotLinked) {
+			s.logger().Warn("could not read the account link", "error", err)
+		}
+		return false
+	}
+	return link != nil
 }
 
 func (s *Server) identity(w http.ResponseWriter, r *http.Request) {
