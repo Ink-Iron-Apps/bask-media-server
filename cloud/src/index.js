@@ -81,7 +81,13 @@ async function route(request, env, url) {
   const method = request.method.toUpperCase() === "HEAD" ? "GET" : request.method.toUpperCase();
 
   if (method === "GET" && path === "/.well-known/bask-keys.json") return keys(env);
-  if (method === "GET" && path === "/health") return json({ ok: true });
+  // The deployed commit comes from the deploy itself (--var COMMIT), so what is
+  // live can be identified without trusting anybody's memory of what they last
+  // pushed. A Worker deployed by hand reports "unknown", which is the honest
+  // answer and the reason the deploy is a workflow now.
+  if (method === "GET" && path === "/health") {
+    return json({ ok: true, commit: env.COMMIT || "unknown" });
+  }
 
   if (method === "POST" && path === "/accounts") return register(request, env);
   if (method === "POST" && path === "/sessions") return signIn(request, env);

@@ -451,6 +451,23 @@ describe("the service itself", () => {
     expect(JSON.stringify(published.body)).not.toContain(signingKey);
   });
 
+  it("names the commit it was deployed from, and says so when nobody told it", async () => {
+    // The deploy workflow passes the commit as a var. A Worker put there by
+    // hand has none, and saying "unknown" is what makes that visible rather
+    // than leaving the field out and looking the same as an old deploy.
+    const unknown = await call("GET", "/health");
+    expect(unknown.status).toBe(200);
+    expect(unknown.body).toMatchObject({ ok: true, commit: "unknown" });
+
+    const request = new Request("https://account.example/health", {
+      headers: { "cf-connecting-ip": "198.51.100.9" },
+    });
+    const ctx = createExecutionContext();
+    const response = await worker.fetch(request, { ...configured(), COMMIT: "0f1e2d3" }, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(await response.json()).toMatchObject({ ok: true, commit: "0f1e2d3" });
+  });
+
   it("answers an unknown path with a 404 rather than a stack trace", async () => {
     const missing = await call("GET", "/nothing/here");
     expect(missing.status).toBe(404);

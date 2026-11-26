@@ -1,0 +1,96 @@
+name: Deploy the cloud account service
+
+# What is live used to be whatever was last pushed from somebody's laptop, with
+# no record of which commit that was. Now a deploy is a run: it names the
+# commit, it only happens after the suite passes, and /health reports the
+# commit afterwards so the live Worker can be identified without trusting
+# anybody's memory.
+#
+# Requires two repository secrets. CLOUDFLARE_API_TOKEN needs Workers Scripts
+# Edit and D1 Edit on the account that owns bask-cloud, and nothing else -- in
+# particular not the permission to create tokens. CLOUDFLARE_ACCOUNT_ID is not
+# secret but lives beside it so the workflow reads one place.
+#
+# SIGNING_KEY is not set here. It is a Worker secret, set once with
+# `wrangler secret put`, and a deployment never deletes secrets.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cloud/**"
+      - ".github/workflows/cloud-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Two deploys racing would leave the live Worker naming whichever commit
+  # finished last rather than the newest one.
+  group: cloud-deploy
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: cloud
+
+jobs:
+  deploy:
+    name: Test and deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloud/package-lock.json
+
+      - run: npm ci
+
+      # The same suite CI runs, again here rather than trusted from the push
+      # build: this is the step between a commit and the thing strangers' phones
+      # talk to, and it is twenty seconds.
+      - run: npm test
+
+      - name: Check for the credentials before doing anything else
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Set these repository secrets before this can deploy:$missing"
+            exit 1
+          fi
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # The commit travels as a var so the running Worker can name itself.
+        # Config vars from wrangler.jsonc still apply; --var adds to them.
+        run: npx wrangler deploy --var COMMIT:${{ github.sha }}
+
+      - name: Confirm the live service is the commit that was just deployed
+        # A deploy that reported success and did not take effect is the failure
+        # this whole workflow exists to rule out, so it is checked rather than
+        # assumed. Propagation is quick but not instant.
+        run: |
+          set -euo pipefail
+          expected='${{ github.sha }}'
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            live=$(curl -fsS --max-time 10 https://account.baskmedia.app/health | sed -n 's/.*"commit":"\([^"]*\)".*/\1/p' || true)
+            if [ "$live" = "$expected" ]; then
+              echo "live service is at $live"
+              exit 0
+            fi
+            echo "live service reports '${live:-nothing}'; waiting (attempt $attempt)"
+            sleep 6
+          done
+          echo "::error::The live service never reported $expected"
+          exit 1
