@@ -106,8 +106,43 @@ func (d *DB) CreateSession(ctx context.Context, userID, tokenID int64, ttl time.
 // the whole library through a web page would be a restriction with a door
 // beside it.
 func (d *DB) SessionCredential(ctx context.Context, secret string) (*domain.Credential, error) {
+	cred, _, err := d.SessionCredentialRenewing(ctx, secret, 0)
+	return cred, err
+}
+
+// SessionCredentialRenewing is [SessionCredential] that also extends the
+// session while it is being used, and reports whether it did so the caller can
+// refresh the browser's cookie to match.
+//
+// A session used every day used to expire a fortnight after it was created,
+// which meant typing a token again for no reason anybody could see. Renewal
+// happens once the session is past half its life rather than on every request:
+// the row is already being written for last_seen_at, so the extension is free,
+// but the Set-Cookie header it obliges the caller to send is not.
+//
+// A ttl of zero means [SessionTTL].
+func (d *DB) SessionCredentialRenewing(
+	ctx context.Context,
+	secret string,
+	ttl time.Duration,
+) (*domain.Credential, bool, error) {
+	cred, renewed, err := d.sessionCredential(ctx, secret, ttl)
+	if err != nil {
+		return nil, false, err
+	}
+	return cred, renewed, nil
+}
+
+func (d *DB) sessionCredential(
+	ctx context.Context,
+	secret string,
+	ttl time.Duration,
+) (*domain.Credential, bool, error) {
+	if ttl <= 0 {
+		ttl = SessionTTL
+	}
 	if secret == "" {
-		return nil, ErrNotFound
+		return nil, false, ErrNotFound
 	}
 	sum := sha256.Sum256([]byte(secret))
 
@@ -128,16 +163,16 @@ func (d *DB) SessionCredential(ctx context.Context, secret string) (*domain.Cred
 		Scan(&sessionID, &tokenID, &expiresAt, &unlockedUntil, &u.ID, &u.Username, &u.Admin, &createdAt,
 			&ceiling, &allowUnrated, &maxStreams, &maxBitRate)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
+		return nil, false, ErrNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("resolve session: %w", err)
+		return nil, false, fmt.Errorf("resolve session: %w", err)
 	}
 	if time.Now().UTC().After(fromMillis(expiresAt)) {
 		// Expired sessions are deleted on sight rather than swept on a timer:
 		// the row is already in hand, and nothing else has to remember to run.
 		_, _ = d.sql.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, sessionID)
-		return nil, ErrNotFound
+		return nil, false, ErrNotFound
 	}
 	u.CreatedAt = fromMillis(createdAt)
 
@@ -146,12 +181,12 @@ func (d *DB) SessionCredential(ctx context.Context, secret string) (*domain.Cred
 	if tokenID != 0 {
 		granted, err = open.TokenSections(ctx, tokenID)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	account, err := open.UserSections(ctx, u.ID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	sections, restricted := narrow(account, granted)
 	cred := &domain.Credential{
@@ -163,9 +198,17 @@ func (d *DB) SessionCredential(ctx context.Context, secret string) (*domain.Cred
 		Unlocked: unlockedUntil > 0 && time.Now().UTC().Before(fromMillis(unlockedUntil)),
 	}
 
-	_, _ = d.sql.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id = ?`,
-		millis(time.Now().UTC()), sessionID)
-	return cred, nil
+	// One statement for both: the session is being used, and if it is past
+	// half its life it is good for another full one from now.
+	now := time.Now().UTC()
+	renewed := now.After(fromMillis(expiresAt).Add(-ttl / 2))
+	if renewed {
+		_, _ = d.sql.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?`,
+			millis(now), millis(now.Add(ttl)), sessionID)
+	} else {
+		_, _ = d.sql.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id = ?`, millis(now), sessionID)
+	}
+	return cred, renewed, nil
 }
 
 // SessionUser resolves a session secret to its user, for the callers that only

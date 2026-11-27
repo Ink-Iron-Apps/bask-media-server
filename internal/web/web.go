@@ -25,14 +25,11 @@ import (
 
 	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/httpsession"
 	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/store"
 	"github.com/inknironapps/bask-media-server/internal/subtitles"
 )
-
-// cookieName holds the viewer's session, scoped to /web so it is not sent
-// with a request a media client makes.
-const cookieName = "bms_web"
 
 // csrfHeader is required on the requests that change something — which here
 // is playback progress. Same reasoning as the admin interface: a cross-site
@@ -151,12 +148,12 @@ func (s *Server) authenticate(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusForbidden, "this request has to come from the page")
 			return
 		}
-		cookie, err := r.Cookie(cookieName)
-		if err != nil {
+		secret, fromLegacy := httpsession.Read(r)
+		if secret == "" {
 			writeError(w, http.StatusUnauthorized, "sign in first")
 			return
 		}
-		cred, err := s.Store.SessionCredential(r.Context(), cookie.Value)
+		cred, renewed, err := s.Store.SessionCredentialRenewing(r.Context(), secret, s.sessionTTL())
 		if errors.Is(err, store.ErrNotFound) {
 			s.clearCookie(w, r)
 			writeError(w, http.StatusUnauthorized, "that session has expired")
@@ -165,6 +162,14 @@ func (s *Server) authenticate(next http.HandlerFunc) http.HandlerFunc {
 		if err != nil {
 			s.fail(w, "resolve session", err)
 			return
+		}
+		// A browser still holding the old per-interface cookie is signed in;
+		// upgrade it in place rather than asking for the token again.
+		if fromLegacy {
+			httpsession.Set(w, r, secret, s.sessionTTL())
+			httpsession.ClearLegacy(w, r)
+		} else if renewed {
+			httpsession.Set(w, r, secret, s.sessionTTL())
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), credKey{}, cred)))
 	}
@@ -218,21 +223,13 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "create session", err)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
-		Value:    secret,
-		Path:     "/web",
-		HttpOnly: true,
-		Secure:   isTLS(r),
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(s.sessionTTL().Seconds()),
-	})
+	httpsession.Set(w, r, secret, s.sessionTTL())
 	writeJSON(w, http.StatusOK, map[string]any{"username": cred.User.Username, "admin": cred.User.Admin})
 }
 
 func (s *Server) signOut(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(cookieName); err == nil {
-		if err := s.Store.DeleteSession(r.Context(), cookie.Value); err != nil {
+	if secret, _ := httpsession.Read(r); secret != "" {
+		if err := s.Store.DeleteSession(r.Context(), secret); err != nil {
 			s.fail(w, "delete session", err)
 			return
 		}
@@ -257,30 +254,13 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *Server) clearCookie(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
-		Value:    "",
-		Path:     "/web",
-		HttpOnly: true,
-		Secure:   isTLS(r),
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   -1,
-	})
-}
+func (s *Server) clearCookie(w http.ResponseWriter, r *http.Request) { httpsession.Clear(w, r) }
 
 func (s *Server) sessionTTL() time.Duration {
 	if s.SessionTTL > 0 {
 		return s.SessionTTL
 	}
 	return store.SessionTTL
-}
-
-func isTLS(r *http.Request) bool {
-	if r.TLS != nil {
-		return true
-	}
-	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func clientIP(r *http.Request) string {

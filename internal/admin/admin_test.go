@@ -19,6 +19,7 @@ import (
 
 	"github.com/inknironapps/bask-media-server/internal/admin"
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/httpsession"
 	"github.com/inknironapps/bask-media-server/internal/jobs"
 	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/plexapi"
@@ -44,6 +45,7 @@ type harness struct {
 	adminToken  string
 	viewerToken string
 	adminID     int64
+	viewerID    int64
 
 	playing *nowplaying.Registry
 
@@ -112,6 +114,7 @@ func newHarness(t *testing.T) *harness {
 		adminToken:  adminToken,
 		viewerToken: viewerToken,
 		adminID:     owner.ID,
+		viewerID:    viewer.ID,
 		playing:     playing,
 		runner:      runner,
 		panel:       panel,
@@ -646,8 +649,9 @@ func TestThePageAndItsAssetsAreEmbedded(t *testing.T) {
 	}
 }
 
-// A session lasts until it expires, and then it is simply gone: no refresh, no
-// sliding window to get wrong.
+// A session that is used keeps living (see the store's renewal), but one that
+// is not simply expires, and then it is gone rather than lingering in the
+// table.
 func TestAnExpiredSessionIsNotASession(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t)
@@ -711,3 +715,93 @@ func TestTheStatusPageCountsTheLibrary(t *testing.T) {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
+
+// One session covers watching and administering. The viewing interface signs a
+// browser in, and the admin interface accepts that same session rather than
+// asking for the token a second time — which is what two cookies at two paths
+// used to mean for whoever runs the server.
+func TestASessionTheViewingInterfaceIssuedAdministers(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	// What /web/api/session does: a session for this account, carrying the
+	// token it was signed in with.
+	secret, err := h.db.CreateSession(ctx, h.adminID, 0, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, h.server.URL+"/admin/api/overview", nil)
+	req.AddCookie(&http.Cookie{Name: httpsession.Name, Value: secret})
+	res, err := h.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /admin/api/overview with a shared session = %d, want 200", res.StatusCode)
+	}
+}
+
+// Sharing the cookie does not share the authority. A household account's
+// viewing session reaches the admin interface's door and no further.
+func TestAViewerSessionStillCannotAdminister(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	secret, err := h.db.CreateSession(ctx, h.viewerID, 0, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, h.server.URL+"/admin/api/overview", nil)
+	req.AddCookie(&http.Cookie{Name: httpsession.Name, Value: secret})
+	res, err := h.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("a viewer's session administers: got %d, want 403", res.StatusCode)
+	}
+}
+
+// A browser holding the cookie this replaced is signed in, and says so. It is
+// upgraded in place rather than being asked for the token again, and the old
+// cookie is expired so the browser stops sending both.
+func TestTheOldAdminCookieIsHonouredAndUpgraded(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	secret, err := h.db.CreateSession(ctx, h.adminID, 0, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, h.server.URL+"/admin/api/overview", nil)
+	req.AddCookie(&http.Cookie{Name: "bms_admin", Value: secret})
+	res, err := h.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("an old cookie was refused: %d", res.StatusCode)
+	}
+
+	var upgraded, cleared bool
+	for _, cookie := range res.Cookies() {
+		if cookie.Name == httpsession.Name && cookie.Value == secret && cookie.Path == "/" {
+			upgraded = true
+		}
+		if cookie.Name == "bms_admin" && cookie.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !upgraded {
+		t.Error("the response did not issue the shared cookie")
+	}
+	if !cleared {
+		t.Error("the response did not expire the old cookie")
+	}
+}

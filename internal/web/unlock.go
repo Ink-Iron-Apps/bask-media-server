@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/inknironapps/bask-media-server/internal/httpsession"
 	"github.com/inknironapps/bask-media-server/internal/store"
 )
 
@@ -48,12 +49,12 @@ func (s *Server) unlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cookie, err := r.Cookie(cookieName)
-	if err != nil {
+	secret, _ := httpsession.Read(r)
+	if secret == "" {
 		writeError(w, http.StatusUnauthorized, "sign in first")
 		return
 	}
-	until, err := s.Store.UnlockSession(r.Context(), cookie.Value)
+	until, err := s.Store.UnlockSession(r.Context(), secret)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusUnauthorized, "that session has expired")
 		return
@@ -69,12 +70,12 @@ func (s *Server) unlock(w http.ResponseWriter, r *http.Request) {
 
 // lock puts the ceiling back before the unlock runs out.
 func (s *Server) lock(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(cookieName)
-	if err != nil {
+	secret, _ := httpsession.Read(r)
+	if secret == "" {
 		writeError(w, http.StatusUnauthorized, "sign in first")
 		return
 	}
-	if err := s.Store.LockSession(r.Context(), cookie.Value); err != nil {
+	if err := s.Store.LockSession(r.Context(), secret); err != nil {
 		s.fail(w, "lock", err)
 		return
 	}

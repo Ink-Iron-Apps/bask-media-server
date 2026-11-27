@@ -18,6 +18,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/httpsession"
 	"github.com/inknironapps/bask-media-server/internal/store"
 	"github.com/inknironapps/bask-media-server/internal/web"
 )
@@ -468,5 +469,74 @@ func TestAnItemWithNoPosterSaysSo(t *testing.T) {
 	res, _ := h.call(http.MethodGet, "/web/image/"+strconv.FormatInt(h.filmID, 10), nil)
 	if res.StatusCode != http.StatusNotFound {
 		t.Errorf("an image for an unenriched film = %d, want 404", res.StatusCode)
+	}
+}
+
+// Signing in to watch issues the session both interfaces read, at the root
+// rather than at /web, so the admin panel takes it too.
+func TestSigningInIssuesTheSharedSession(t *testing.T) {
+	h := newHarness(t)
+
+	res, body := h.call(http.MethodPost, "/web/api/session", map[string]string{"token": h.token})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("sign-in = %d: %v", res.StatusCode, body)
+	}
+
+	var found *http.Cookie
+	for _, cookie := range res.Cookies() {
+		if cookie.Name == httpsession.Name {
+			found = cookie
+		}
+	}
+	if found == nil {
+		t.Fatal("sign-in issued no shared session cookie")
+	}
+	if found.Path != "/" {
+		t.Errorf("the session is scoped to %q, so the admin interface would not see it", found.Path)
+	}
+	if !found.HttpOnly || found.SameSite != http.SameSiteStrictMode {
+		t.Errorf("the session cookie lost its protections: HttpOnly=%v SameSite=%v", found.HttpOnly, found.SameSite)
+	}
+	if found.MaxAge <= 0 {
+		t.Errorf("MaxAge=%d, so the session dies with the browser window", found.MaxAge)
+	}
+}
+
+// A browser still holding the cookie this replaced keeps watching, and is
+// upgraded without being asked for a token.
+func TestTheOldWatchCookieIsHonouredAndUpgraded(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+
+	secret, err := h.db.CreateSession(ctx, h.userID, 0, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, h.server.URL+"/web/api/session", nil)
+	req.AddCookie(&http.Cookie{Name: "bms_web", Value: secret})
+	res, err := h.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("an old cookie was refused: %d", res.StatusCode)
+	}
+
+	var upgraded, cleared bool
+	for _, cookie := range res.Cookies() {
+		if cookie.Name == httpsession.Name && cookie.Value == secret {
+			upgraded = true
+		}
+		if cookie.Name == "bms_web" && cookie.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !upgraded {
+		t.Error("the response did not issue the shared cookie")
+	}
+	if !cleared {
+		t.Error("the response did not expire the old cookie")
 	}
 }

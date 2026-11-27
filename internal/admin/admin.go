@@ -31,17 +31,13 @@ import (
 	"github.com/inknironapps/bask-media-server/internal/artwork"
 	"github.com/inknironapps/bask-media-server/internal/cloud"
 	"github.com/inknironapps/bask-media-server/internal/domain"
+	"github.com/inknironapps/bask-media-server/internal/httpsession"
 	"github.com/inknironapps/bask-media-server/internal/jobs"
 	"github.com/inknironapps/bask-media-server/internal/nowplaying"
 	"github.com/inknironapps/bask-media-server/internal/store"
 	"github.com/inknironapps/bask-media-server/internal/subtitles"
 	"github.com/inknironapps/bask-media-server/internal/webhook"
 )
-
-// cookieName holds the browser session. Scoped to /admin so it is not sent
-// with a media request, which is a URL that can end up in a log or a player's
-// crash report.
-const cookieName = "bms_admin"
 
 // csrfHeader is required on every request that changes something.
 //
@@ -228,12 +224,12 @@ func (s *Server) authenticate(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		cookie, err := r.Cookie(cookieName)
-		if err != nil {
+		secret, fromLegacy := httpsession.Read(r)
+		if secret == "" {
 			writeError(w, http.StatusUnauthorized, "sign in first")
 			return
 		}
-		user, err := s.DB.SessionUser(r.Context(), cookie.Value)
+		cred, renewed, err := s.DB.SessionCredentialRenewing(r.Context(), secret, s.sessionTTL())
 		if errors.Is(err, store.ErrNotFound) {
 			s.clearCookie(w, r)
 			writeError(w, http.StatusUnauthorized, "that session has expired")
@@ -242,6 +238,15 @@ func (s *Server) authenticate(next http.HandlerFunc) http.HandlerFunc {
 		if err != nil {
 			s.fail(w, "resolve session", err)
 			return
+		}
+		user := &cred.User
+		// The same session the viewing interface uses. Sharing the cookie does
+		// not share the authority: the check below is what administers.
+		if fromLegacy {
+			httpsession.Set(w, r, secret, s.sessionTTL())
+			httpsession.ClearLegacy(w, r)
+		} else if renewed {
+			httpsession.Set(w, r, secret, s.sessionTTL())
 		}
 		if !user.Admin {
 			// A session for a non-administrator exists only if an account was
@@ -302,15 +307,7 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.gate.succeeded()
-	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
-		Value:    secret,
-		Path:     "/admin",
-		HttpOnly: true,
-		Secure:   isTLS(r),
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(s.sessionTTL().Seconds()),
-	})
+	httpsession.Set(w, r, secret, s.sessionTTL())
 	// Expired sessions are cheapest to clear when somebody signs in, which is
 	// the only moment the table grows.
 	if _, err := s.DB.SweepSessions(r.Context()); err != nil {
@@ -320,8 +317,8 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) signOut(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(cookieName); err == nil {
-		if err := s.DB.DeleteSession(r.Context(), cookie.Value); err != nil {
+	if secret, _ := httpsession.Read(r); secret != "" {
+		if err := s.DB.DeleteSession(r.Context(), secret); err != nil {
 			s.fail(w, "delete session", err)
 			return
 		}
@@ -335,17 +332,7 @@ func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"username": user.Username, "admin": user.Admin})
 }
 
-func (s *Server) clearCookie(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
-		Value:    "",
-		Path:     "/admin",
-		HttpOnly: true,
-		Secure:   isTLS(r),
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   -1,
-	})
-}
+func (s *Server) clearCookie(w http.ResponseWriter, r *http.Request) { httpsession.Clear(w, r) }
 
 func (s *Server) sessionTTL() time.Duration {
 	if s.SessionTTL > 0 {
@@ -395,16 +382,6 @@ func (g *signInGate) succeeded() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.failures = 0
-}
-
-func isTLS(r *http.Request) bool {
-	if r.TLS != nil {
-		return true
-	}
-	// Behind a reverse proxy the connection to this process is plain even
-	// though the browser's is not, and a cookie marked Secure over what the
-	// browser thinks is HTTP is a cookie the browser discards.
-	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func clientIP(r *http.Request) string {
